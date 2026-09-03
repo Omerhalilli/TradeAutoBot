@@ -1,0 +1,25 @@
+﻿[Unit]
+Description=MetaTrader 4 Institutional Telegram Bot & ZeroMQ Bridge
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mt4-telegram-bridge
+EnvironmentFile=/opt/mt4-telegram-bridge/.env
+ExecStart=/usr/bin/python3 -u /opt/mt4-telegram-bridge/bot.py
+Restart=always
+RestartSec=5s
+KillMode=mixed
+TimeoutStopSec=10s
+StandardOutput=journal
+StandardError=journal
+
+# Security Sandboxing
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

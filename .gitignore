@@ -1,0 +1,25 @@
+﻿# Secrets & Environment Variables (NEVER COMMIT)
+.env
+
+# Runtime Logs
+logs/
+*.log
+
+# Runtime Data & State
+data/
+*.flag
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*.class
+.venv/
+env/
+venv/
+
+# Backup & Temp Files
+*.bak
+*.tmp
+
+# System Generated
+.system_generated/
