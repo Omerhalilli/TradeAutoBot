@@ -162,6 +162,18 @@ class MT4ZmqClient:
     def get_screenshot(self, symbol: str = "", timeframe: str = "", width: int = 1280, height: int = 720) -> Dict[str, Any]:
         return self.send_command("SCREENSHOT", symbol=symbol, timeframe=timeframe, width=width, height=height)
 
+    def get_boost(self) -> Dict[str, Any]:
+        return self.send_command("GET_BOOST")
+
+    def ping_latency_ms(self) -> float:
+        """Measures roundtrip latency to MT4 ZeroMQ bridge in milliseconds."""
+        t0 = time.perf_counter()
+        res = self.ping()
+        t1 = time.perf_counter()
+        if res.get("status") == "ok":
+            return round((t1 - t0) * 1000.0, 2)
+        return -1.0
+
     def close(self):
         """Stops heartbeat thread and closes socket cleanly."""
         self._stop_heartbeat.set()

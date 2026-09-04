@@ -42,6 +42,7 @@ async def post_init(application) -> None:
     """Synchronize Telegram native Menu button commands."""
     try:
         commands = [
+            BotCommand("boost", "⚡ Institutional Turbo Boost & Diagnostics"),
             BotCommand("accounts", "👥 Switch Accounts & Inspect BUY/SELL"),
             BotCommand("status", "📊 Account Balance, Equity & Health"),
             BotCommand("positions", "💼 View & Manage Active Trades"),
@@ -108,6 +109,7 @@ def create_application():
 
     # Command Handlers (Supporting exact Menu commands + aliases)
     app.add_handler(CommandHandler(["start", "help"], handlers.cmd_help))
+    app.add_handler(CommandHandler(["boost", "turbo"], handlers.cmd_boost))
     app.add_handler(CommandHandler(["accounts", "switch"], handlers.cmd_accounts))
     app.add_handler(CommandHandler(["status", "account"], handlers.cmd_account))
     app.add_handler(CommandHandler("positions", handlers.cmd_positions))
@@ -126,7 +128,7 @@ def create_application():
 
     # Callback Query Handlers
     app.add_handler(CallbackQueryHandler(handlers.cb_switch_account, pattern=r"^switch_acc:"))
-    app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^nav_"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^(nav_|boost_colors)"))
     app.add_handler(CallbackQueryHandler(handlers.callback_closeall, pattern=r"^(confirm_close_all|cancel_close_all)$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_screenshot_symbol, pattern=r"^shotsym:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_screenshot_tf, pattern=r"^shottf:"))

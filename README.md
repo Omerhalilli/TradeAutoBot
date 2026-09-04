@@ -208,6 +208,7 @@ Everything is also accessible directly through Telegram's blue **`[Menu]`** butt
 
 | Command | Action | Description |
 | :--- | :--- | :--- |
+| **`/boost`** or **`/turbo`** | ⚡ Turbo Boost | Instant 4 Hz telemetry, roundtrip latency (ms), major pair spreads, and one-touch actions. |
 | **`/accounts`** or **`/switch`** | 👥 Switch Accounts | Toggle between Invest-AZ Demo and Real accounts with instant BUY/SELL diagnostics. |
 | **`/status`** or **`/account`** | 📊 Account Overview | Check live balance, equity, used margin, free margin, margin level %, and server time. |
 | **`/positions`** | 💼 Open Positions | List of all currently open market trades with ticket numbers, lots, and floating P/L. |

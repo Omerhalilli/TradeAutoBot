@@ -264,15 +264,64 @@ string Zmq_HandleCloseAll()
    return json;
 }
 
+//+------------------------------------------------------------------+
+//| Symbol Suffix & Fuzzy Matching Helper                            |
+//+------------------------------------------------------------------+
+bool Zmq_SymbolsMatch(string orderSym, string targetSym)
+{
+   if(targetSym == "" || targetSym == "*") return true;
+   string s1 = orderSym;
+   string s2 = targetSym;
+   StringToUpper(s1);
+   StringToUpper(s2);
+   StringTrimLeft(s1);
+   StringTrimRight(s1);
+   StringTrimLeft(s2);
+   StringTrimRight(s2);
+   
+   if(s1 == s2) return true;
+   // User passed GBPUSD, broker has GBPUSDm or GBPUSD.ecn
+   if(StringFind(s1, s2) == 0) return true;
+   // User passed GBPUSDm, broker has GBPUSD
+   if(StringFind(s2, s1) == 0) return true;
+   // Substring check
+   if(StringFind(s1, s2) >= 0) return true;
+   return false;
+}
+
+ENUM_TIMEFRAMES Zmq_StringToTimeframe(string tfStr)
+{
+   string tf = tfStr;
+   StringToUpper(tf);
+   StringTrimLeft(tf);
+   StringTrimRight(tf);
+   if(tf == "M1" || tf == "PERIOD_M1" || tf == "1") return PERIOD_M1;
+   if(tf == "M5" || tf == "PERIOD_M5" || tf == "5") return PERIOD_M5;
+   if(tf == "M15" || tf == "PERIOD_M15" || tf == "15") return PERIOD_M15;
+   if(tf == "M30" || tf == "PERIOD_M30" || tf == "30") return PERIOD_M30;
+   if(tf == "H1" || tf == "PERIOD_H1" || tf == "60") return PERIOD_H1;
+   if(tf == "H4" || tf == "PERIOD_H4" || tf == "240") return PERIOD_H4;
+   if(tf == "D1" || tf == "PERIOD_D1" || tf == "1440") return PERIOD_D1;
+   if(tf == "W1" || tf == "PERIOD_W1" || tf == "10080") return PERIOD_W1;
+   if(tf == "MN1" || tf == "PERIOD_MN1" || tf == "43200") return PERIOD_MN1;
+   return (ENUM_TIMEFRAMES)Period();
+}
+
 string Zmq_HandleCloseSymbol(const string reqJson)
 {
    string targetSymbol = Zmq_ExtractJsonString(reqJson, "symbol");
+   int ticketParam = (int)Zmq_ExtractJsonNumber(reqJson, "ticket", 0);
+   if(ticketParam == 0 && StringToInteger(targetSymbol) > 0)
+   {
+      ticketParam = (int)StringToInteger(targetSymbol);
+   }
+   
    StringToUpper(targetSymbol);
    StringTrimLeft(targetSymbol);
    StringTrimRight(targetSymbol);
    
-   if(targetSymbol == "")
-      return "{\"status\":\"error\",\"message\":\"Missing symbol parameter\"}";
+   if(targetSymbol == "" && ticketParam == 0)
+      return "{\"status\":\"error\",\"message\":\"Missing symbol or ticket parameter\"}";
    
    int closed = 0;
    int failed = 0;
@@ -282,9 +331,14 @@ string Zmq_HandleCloseSymbol(const string reqJson)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       
-      string orderSym = OrderSymbol();
-      StringToUpper(orderSym);
-      if(StringFind(orderSym, targetSymbol) < 0) continue;
+      if(ticketParam > 0)
+      {
+         if(OrderTicket() != ticketParam) continue;
+      }
+      else
+      {
+         if(!Zmq_SymbolsMatch(OrderSymbol(), targetSymbol)) continue;
+      }
       
       int type = OrderType();
       if(type != OP_BUY && type != OP_SELL)
@@ -327,6 +381,12 @@ string Zmq_HandleModifySL(const string reqJson)
    string symbol = Zmq_ExtractJsonString(reqJson, "symbol");
    double newSL = Zmq_ExtractJsonNumber(reqJson, "sl", 0.0);
    
+   if(ticket == 0 && StringToInteger(symbol) > 0)
+   {
+      ticket = (int)StringToInteger(symbol);
+      symbol = "";
+   }
+   
    int modified = 0;
    int total = OrdersTotal();
    
@@ -334,7 +394,7 @@ string Zmq_HandleModifySL(const string reqJson)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(ticket > 0 && OrderTicket() != ticket) continue;
-      if(symbol != "" && OrderSymbol() != symbol) continue;
+      if(symbol != "" && !Zmq_SymbolsMatch(OrderSymbol(), symbol)) continue;
       
       if(OrderModify(OrderTicket(), OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrGold))
          modified++;
@@ -349,6 +409,12 @@ string Zmq_HandleModifyTP(const string reqJson)
    string symbol = Zmq_ExtractJsonString(reqJson, "symbol");
    double newTP = Zmq_ExtractJsonNumber(reqJson, "tp", 0.0);
    
+   if(ticket == 0 && StringToInteger(symbol) > 0)
+   {
+      ticket = (int)StringToInteger(symbol);
+      symbol = "";
+   }
+   
    int modified = 0;
    int total = OrdersTotal();
    
@@ -356,7 +422,7 @@ string Zmq_HandleModifyTP(const string reqJson)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(ticket > 0 && OrderTicket() != ticket) continue;
-      if(symbol != "" && OrderSymbol() != symbol) continue;
+      if(symbol != "" && !Zmq_SymbolsMatch(OrderSymbol(), symbol)) continue;
       
       if(OrderModify(OrderTicket(), OrderOpenPrice(), OrderStopLoss(), newTP, 0, clrDodgerBlue))
          modified++;
@@ -402,6 +468,332 @@ string Zmq_HandlePing()
    return "{\"status\":\"ok\",\"action\":\"PING\",\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"}";
 }
 
+string Zmq_HandleGetProp()
+{
+   double curEquity = AccountEquity();
+   double curBalance = AccountBalance();
+   
+   double peakEq = curEquity;
+   if(GlobalVariableCheck("Prop_Peak_Equity"))
+   {
+      peakEq = GlobalVariableGet("Prop_Peak_Equity");
+      if(curEquity > peakEq)
+      {
+         peakEq = curEquity;
+         GlobalVariableSet("Prop_Peak_Equity", peakEq);
+      }
+   }
+   else
+   {
+      GlobalVariableSet("Prop_Peak_Equity", curEquity);
+   }
+   
+   double startEquity = curBalance;
+   if(GlobalVariableCheck("Prop_Starting_Day_Equity"))
+   {
+      startEquity = GlobalVariableGet("Prop_Starting_Day_Equity");
+   }
+   else
+   {
+      startEquity = curEquity;
+      GlobalVariableSet("Prop_Starting_Day_Equity", startEquity);
+   }
+   
+   double maxDailyPct = 4.5;
+   double maxTotalPct = 8.0;
+   double targetGoalPct = 8.0;
+   
+   double dayLoss = (startEquity > curEquity) ? (startEquity - curEquity) : 0.0;
+   double dayLossLimit = startEquity * (maxDailyPct / 100.0);
+   double dayLossPct = (startEquity > 0.0) ? (dayLoss / startEquity * 100.0) : 0.0;
+   
+   double peakLoss = (peakEq > curEquity) ? (peakEq - curEquity) : 0.0;
+   double peakLossLimit = peakEq * (maxTotalPct / 100.0);
+   double peakLossPct = (peakEq > 0.0) ? (peakLoss / peakEq * 100.0) : 0.0;
+   
+   double currentGain = (curEquity > startEquity) ? (curEquity - startEquity) : 0.0;
+   double targetProfitGoal = startEquity * (targetGoalPct / 100.0);
+   
+   string dayStatus = (dayLossPct < maxDailyPct * 0.7) ? "Safe" : ((dayLossPct < maxDailyPct) ? "Caution" : "BREACHED");
+   string peakStatus = (peakLossPct < maxTotalPct * 0.7) ? "Safe" : ((peakLossPct < maxTotalPct) ? "Caution" : "BREACHED");
+   
+   bool isPaused = false;
+   if(GlobalVariableCheck("AutoTrading_Paused"))
+      isPaused = (GlobalVariableGet("AutoTrading_Paused") > 0.5);
+      
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_PROP\",";
+   json += "\"account\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"company\":\"" + Zmq_JsonEscape(AccountCompany()) + "\",";
+   json += "\"currency\":\"" + Zmq_JsonEscape(AccountCurrency()) + "\",";
+   json += "\"equity\":" + DoubleToString(curEquity, 2) + ",";
+   json += "\"peak_equity\":" + DoubleToString(peakEq, 2) + ",";
+   json += "\"day_loss\":" + DoubleToString(dayLoss, 2) + ",";
+   json += "\"day_loss_limit\":" + DoubleToString(dayLossLimit, 2) + ",";
+   json += "\"day_loss_pct\":" + DoubleToString(dayLossPct, 2) + ",";
+   json += "\"day_status\":\"" + dayStatus + "\",";
+   json += "\"peak_loss\":" + DoubleToString(peakLoss, 2) + ",";
+   json += "\"peak_loss_limit\":" + DoubleToString(peakLossLimit, 2) + ",";
+   json += "\"peak_loss_pct\":" + DoubleToString(peakLossPct, 2) + ",";
+   json += "\"peak_status\":\"" + peakStatus + "\",";
+   json += "\"current_gain\":" + DoubleToString(currentGain, 2) + ",";
+   json += "\"target_profit_goal\":" + DoubleToString(targetProfitGoal, 2) + ",";
+   json += "\"max_daily_limit_pct\":" + DoubleToString(maxDailyPct, 1) + ",";
+   json += "\"max_total_limit_pct\":" + DoubleToString(maxTotalPct, 1) + ",";
+   json += "\"target_goal_pct\":" + DoubleToString(targetGoalPct, 1) + ",";
+   json += "\"lockout_active\":" + (dayLossPct >= maxDailyPct ? "true" : "false") + ",";
+   json += "\"autotrading_active\":" + (isPaused ? "false" : "true") + ",";
+   json += "\"weekend_shield\":\"Friday 21:00 GMT (Active)\"";
+   json += "}";
+   return json;
+}
+
+string Zmq_HandleGetReport()
+{
+   datetime now = TimeCurrent();
+   datetime fromTime = now - 86400;
+   
+   int totalTrades = 0;
+   int winCount = 0;
+   int lossCount = 0;
+   double grossProfit = 0.0;
+   double grossLoss = 0.0;
+   double maxWin = 0.0;
+   double maxLoss = 0.0;
+   string bestSymbol = "-";
+   string worstSymbol = "-";
+   
+   int historyTotal = OrdersHistoryTotal();
+   for(int i = 0; i < historyTotal; i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY)) continue;
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL) continue;
+      
+      datetime cTime = OrderCloseTime();
+      if(cTime < fromTime || cTime > now) continue;
+      
+      totalTrades++;
+      double net = OrderProfit() + OrderSwap() + OrderCommission();
+      if(net >= 0.0)
+      {
+         winCount++;
+         grossProfit += net;
+         if(net > maxWin)
+         {
+            maxWin = net;
+            bestSymbol = OrderSymbol();
+         }
+      }
+      else
+      {
+         lossCount++;
+         grossLoss += MathAbs(net);
+         if(net < maxLoss)
+         {
+            maxLoss = net;
+            worstSymbol = OrderSymbol();
+         }
+      }
+   }
+   
+   double netTotal = grossProfit - grossLoss;
+   double winRate = (totalTrades > 0) ? ((double)winCount / (double)totalTrades * 100.0) : 0.0;
+   double profitFactor = (grossLoss > 0.0) ? (grossProfit / grossLoss) : (grossProfit > 0 ? 99.9 : 0.0);
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_REPORT\",";
+   json += "\"period\":\"Last 24 Hours\",";
+   json += "\"account\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"company\":\"" + Zmq_JsonEscape(AccountCompany()) + "\",";
+   json += "\"currency\":\"" + Zmq_JsonEscape(AccountCurrency()) + "\",";
+   json += "\"total_trades\":" + IntegerToString(totalTrades) + ",";
+   json += "\"win_count\":" + IntegerToString(winCount) + ",";
+   json += "\"loss_count\":" + IntegerToString(lossCount) + ",";
+   json += "\"win_rate\":" + DoubleToString(winRate, 1) + ",";
+   json += "\"gross_profit\":" + DoubleToString(grossProfit, 2) + ",";
+   json += "\"gross_loss\":" + DoubleToString(grossLoss, 2) + ",";
+   json += "\"profit_factor\":" + DoubleToString(profitFactor, 2) + ",";
+   json += "\"net_pl\":" + DoubleToString(netTotal, 2) + ",";
+   json += "\"best_symbol\":\"" + Zmq_JsonEscape(bestSymbol) + "\",";
+   json += "\"best_profit\":" + DoubleToString(maxWin, 2) + ",";
+   json += "\"worst_symbol\":\"" + Zmq_JsonEscape(worstSymbol) + "\",";
+   json += "\"worst_loss\":" + DoubleToString(maxLoss, 2) + ",";
+   json += "\"ending_balance\":" + DoubleToString(AccountBalance(), 2) + ",";
+   json += "\"ending_equity\":" + DoubleToString(AccountEquity(), 2);
+   json += "}";
+   return json;
+}
+
+string Zmq_HandleApplyColors()
+{
+   int syncedCount = 0;
+   long currChart = ChartFirst();
+   while(currChart >= 0)
+   {
+      ChartSetInteger(currChart, CHART_COLOR_BACKGROUND, clrBlack);
+      ChartSetInteger(currChart, CHART_COLOR_FOREGROUND, clrWhiteSmoke);
+      ChartSetInteger(currChart, CHART_COLOR_GRID, C'25,28,36');
+      ChartSetInteger(currChart, CHART_COLOR_CHART_UP, C'38,166,154');
+      ChartSetInteger(currChart, CHART_COLOR_CHART_DOWN, C'239,83,80');
+      ChartSetInteger(currChart, CHART_COLOR_CANDLE_BULL, C'38,166,154');
+      ChartSetInteger(currChart, CHART_COLOR_CANDLE_BEAR, C'239,83,80');
+      ChartSetInteger(currChart, CHART_COLOR_CHART_LINE, clrSilver);
+      ChartSetInteger(currChart, CHART_MODE, CHART_CANDLES);
+      ChartSetInteger(currChart, CHART_SHOW_GRID, false);
+      ChartRedraw(currChart);
+      syncedCount++;
+      currChart = ChartNext(currChart);
+   }
+   
+   return "{\"status\":\"ok\",\"action\":\"APPLY_COLORS\",\"synced_count\":" + IntegerToString(syncedCount) + "}";
+}
+
+string Zmq_HandleScreenshot(const string reqJson)
+{
+   string targetSymbol = Zmq_ExtractJsonString(reqJson, "symbol");
+   string tfParam = Zmq_ExtractJsonString(reqJson, "timeframe");
+   int width = (int)Zmq_ExtractJsonNumber(reqJson, "width", 1280);
+   int height = (int)Zmq_ExtractJsonNumber(reqJson, "height", 720);
+   if(width <= 0) width = 1280;
+   if(height <= 0) height = 720;
+   
+   StringTrimLeft(targetSymbol);
+   StringTrimRight(targetSymbol);
+   StringToUpper(targetSymbol);
+   
+   if(targetSymbol == "" || targetSymbol == "CURRENT")
+      targetSymbol = Symbol();
+      
+   string matchedSymbol = targetSymbol;
+   for(int k = 0; k < OrdersTotal(); k++)
+   {
+      if(OrderSelect(k, SELECT_BY_POS, MODE_TRADES))
+      {
+         if(Zmq_SymbolsMatch(OrderSymbol(), targetSymbol))
+         {
+            matchedSymbol = OrderSymbol();
+            break;
+         }
+      }
+   }
+   
+   ENUM_TIMEFRAMES tf = Zmq_StringToTimeframe(tfParam);
+   string tfStr = EnumToString(tf);
+   string cleanTfStr = tfStr;
+   StringReplace(cleanTfStr, "PERIOD_", "");
+   
+   string filename = "snap_" + matchedSymbol + "_" + cleanTfStr + ".png";
+   
+   long targetChartId = -1;
+   bool tempChartOpened = false;
+   
+   if(matchedSymbol == Symbol() && tf == (ENUM_TIMEFRAMES)Period())
+   {
+      targetChartId = 0;
+   }
+   else
+   {
+      long cid = ChartFirst();
+      while(cid >= 0)
+      {
+         if(ChartSymbol(cid) == matchedSymbol && ChartPeriod(cid) == tf)
+         {
+            targetChartId = cid;
+            break;
+         }
+         cid = ChartNext(cid);
+      }
+      
+      if(targetChartId < 0)
+      {
+         targetChartId = ChartOpen(matchedSymbol, tf);
+         if(targetChartId > 0)
+         {
+            tempChartOpened = true;
+            ChartRedraw(targetChartId);
+            Sleep(80);
+         }
+      }
+   }
+   
+   if(targetChartId < 0)
+      targetChartId = 0;
+      
+   ChartRedraw(targetChartId);
+   bool shotOk = ChartScreenShot(targetChartId, filename, width, height, ALIGN_RIGHT);
+   
+   if(tempChartOpened)
+   {
+      ChartClose(targetChartId);
+   }
+   
+   if(!shotOk)
+   {
+      return "{\"status\":\"error\",\"message\":\"ChartScreenShot failed. Code: " + IntegerToString(GetLastError()) + "\"}";
+   }
+   
+   double bid = MarketInfo(matchedSymbol, MODE_BID);
+   double ask = MarketInfo(matchedSymbol, MODE_ASK);
+   if(bid == 0.0) bid = Bid;
+   if(ask == 0.0) ask = Ask;
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"SCREENSHOT\",";
+   json += "\"filename\":\"" + filename + "\",";
+   json += "\"symbol\":\"" + matchedSymbol + "\",";
+   json += "\"timeframe\":\"" + cleanTfStr + "\",";
+   json += "\"bid\":" + DoubleToString(bid, 5) + ",";
+   json += "\"ask\":" + DoubleToString(ask, 5) + ",";
+   json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"";
+   json += "}";
+   return json;
+}
+
+string Zmq_HandleGetBoost()
+{
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_BOOST\",";
+   json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
+   json += "\"system\":\"SmartAutoTradeEA Institutional Pro v3.0\",";
+   json += "\"engine_hz\":4,";
+   json += "\"active_orders\":" + IntegerToString(OrdersTotal()) + ",";
+   
+   double totalLots = 0.0;
+   double totalProfit = 0.0;
+   for(int i = 0; i < OrdersTotal(); i++)
+   {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+      {
+         totalLots += OrderLots();
+         totalProfit += OrderProfit() + OrderSwap() + OrderCommission();
+      }
+   }
+   json += "\"total_lots\":" + DoubleToString(totalLots, 2) + ",";
+   json += "\"floating_pl\":" + DoubleToString(totalProfit, 2) + ",";
+   json += "\"balance\":" + DoubleToString(AccountBalance(), 2) + ",";
+   json += "\"equity\":" + DoubleToString(AccountEquity(), 2) + ",";
+   json += "\"free_margin\":" + DoubleToString(AccountFreeMargin(), 2) + ",";
+   
+   double spreadGBP = MarketInfo("GBPUSD", MODE_SPREAD);
+   double spreadEUR = MarketInfo("EURUSD", MODE_SPREAD);
+   double spreadGOLD = MarketInfo("XAUUSD", MODE_SPREAD);
+   json += "\"spread_gbpusd\":" + DoubleToString(spreadGBP, 1) + ",";
+   json += "\"spread_eurusd\":" + DoubleToString(spreadEUR, 1) + ",";
+   json += "\"spread_xauusd\":" + DoubleToString(spreadGOLD, 1) + ",";
+   
+   bool isPaused = false;
+   if(GlobalVariableCheck("AutoTrading_Paused"))
+      isPaused = (GlobalVariableGet("AutoTrading_Paused") > 0.5);
+   json += "\"autotrading_active\":" + (isPaused ? "false" : "true");
+   json += "}";
+   return json;
+}
+
 //+------------------------------------------------------------------+
 //| Request Dispatcher                                               |
 //+------------------------------------------------------------------+
@@ -422,9 +814,9 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleGetPositions();
    if(action == "GET_HISTORY" || action == "HISTORY")
       return Zmq_HandleGetHistory(reqStr);
-   if(action == "CLOSE_ALL")
+   if(action == "CLOSE_ALL" || action == "PANIC")
       return Zmq_HandleCloseAll();
-   if(action == "CLOSE_SYMBOL")
+   if(action == "CLOSE_SYMBOL" || action == "CLOSE")
       return Zmq_HandleCloseSymbol(reqStr);
    if(action == "MODIFY_SL")
       return Zmq_HandleModifySL(reqStr);
@@ -436,6 +828,16 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleResumeBot();
    if(action == "PING")
       return Zmq_HandlePing();
+   if(action == "GET_PROP" || action == "PROP")
+      return Zmq_HandleGetProp();
+   if(action == "GET_REPORT" || action == "REPORT")
+      return Zmq_HandleGetReport();
+   if(action == "APPLY_COLORS" || action == "COLORS")
+      return Zmq_HandleApplyColors();
+   if(action == "SCREENSHOT" || action == "GET_SCREENSHOT")
+      return Zmq_HandleScreenshot(reqStr);
+   if(action == "GET_BOOST" || action == "BOOST")
+      return Zmq_HandleGetBoost();
       
    return "{\"status\":\"error\",\"message\":\"Unknown action: " + Zmq_JsonEscape(action) + "\"}";
 }
