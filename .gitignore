@@ -1,5 +1,7 @@
-﻿# Secrets & Environment Variables (NEVER COMMIT)
+# Secrets & Environment Variables (NEVER COMMIT)
 .env
+.env.*
+!.env.example
 
 # Runtime Logs
 logs/
@@ -8,8 +10,19 @@ logs/
 # Runtime Data & State
 data/
 *.flag
+accounts.json
+active_account.json
+*.off
+*.Off
 
-# Python Cache
+# Temporary & Binary Artifacts
+*.bak
+*.tmp
+*.csv
+*.session
+*.session-journal
+
+# Python Cache & Virtual Environments
 __pycache__/
 *.py[cod]
 *.class
@@ -17,9 +30,9 @@ __pycache__/
 env/
 venv/
 
-# Backup & Temp Files
-*.bak
-*.tmp
-
-# System Generated
+# System & IDE Generated
 .system_generated/
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

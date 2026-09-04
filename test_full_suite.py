@@ -159,8 +159,9 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         from unittest.mock import patch
 
         async def run_handlers():
-            user = User(id=123456789, is_bot=False, first_name="Owner")
-            chat = Chat(id=123456789, type="private")
+            test_chat_id = ALLOWED_CHAT_IDS[0] if ALLOWED_CHAT_IDS else 123456789
+            user = User(id=test_chat_id, is_bot=False, first_name="Owner")
+            chat = Chat(id=test_chat_id, type="private")
             message = MagicMock()
             message.from_user = user
             message.chat = chat
@@ -236,8 +237,9 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         from unittest.mock import patch
 
         async def run():
-            user = User(id=123456789, is_bot=False, first_name="Owner")
-            chat = Chat(id=123456789, type="private")
+            test_chat_id = ALLOWED_CHAT_IDS[0] if ALLOWED_CHAT_IDS else 123456789
+            user = User(id=test_chat_id, is_bot=False, first_name="Owner")
+            chat = Chat(id=test_chat_id, type="private")
             message = MagicMock()
             message.from_user = user
             message.chat = chat
@@ -275,8 +277,9 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         from unittest.mock import patch
 
         async def run_callbacks():
-            user = User(id=123456789, is_bot=False, first_name="Owner")
-            chat = Chat(id=123456789, type="private")
+            test_chat_id = ALLOWED_CHAT_IDS[0] if ALLOWED_CHAT_IDS else 123456789
+            user = User(id=test_chat_id, is_bot=False, first_name="Owner")
+            chat = Chat(id=test_chat_id, type="private")
             query = MagicMock(spec=CallbackQuery)
             query.from_user = user
             query.message = MagicMock()
@@ -345,8 +348,9 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         from unittest.mock import patch
 
         async def run_ea_callbacks():
-            user = User(id=123456789, is_bot=False, first_name="Owner")
-            chat = Chat(id=123456789, type="private")
+            test_chat_id = ALLOWED_CHAT_IDS[0] if ALLOWED_CHAT_IDS else 123456789
+            user = User(id=test_chat_id, is_bot=False, first_name="Owner")
+            chat = Chat(id=test_chat_id, type="private")
             query = MagicMock(spec=CallbackQuery)
             query.from_user = user
             query.message = MagicMock()

@@ -1,3 +1,5 @@
+Set FSO = CreateObject("Scripting.FileSystemObject")
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.CurrentDirectory = "C:\mt4-telegram-bridge"
+scriptDir = FSO.GetParentFolderName(WScript.ScriptFullName)
+WshShell.CurrentDirectory = scriptDir
 WshShell.Run "pythonw.exe bot.py", 0, False

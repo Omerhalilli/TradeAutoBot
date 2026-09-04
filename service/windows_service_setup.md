@@ -1,4 +1,4 @@
-﻿# 24/7 Windows Service & Daemon Deployment Guide
+# 24/7 Windows Service & Daemon Deployment Guide
 
 This guide describes how to run the MT4 Telegram Bot continuously in the background on Windows with automatic restart on failure.
 
