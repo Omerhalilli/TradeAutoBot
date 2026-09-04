@@ -3032,7 +3032,7 @@ void RenderHUDDashboard()
    }
    else
    {
-      autoTradeStatus = "ACTIVE 🟢";
+      autoTradeStatus = "ACTIVE [RUNNING]";
       autoTradeClr = clrLime;
    }
    
