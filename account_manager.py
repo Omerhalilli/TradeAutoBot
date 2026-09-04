@@ -123,6 +123,42 @@ class AccountManager:
             return acc
         return None
 
+    def sync_with_live_terminal(self, acc_data: Dict[str, Any]) -> AccountProfile:
+        """
+        Dynamically synchronizes the active account profile with live MT4 terminal state.
+        Detects whether MT4 is running DEMO or REAL, updates live account number,
+        broker server name, and automatically selects the matching profile.
+        """
+        if not acc_data or acc_data.get("status") != "ok":
+            return self.get_active_account()
+
+        live_num = str(acc_data.get("account_number", "")).strip()
+        trade_mode = str(acc_data.get("trade_mode", "")).upper()
+        server = str(acc_data.get("server", "")).strip()
+
+        is_real = (trade_mode == "REAL" or "REAL" in server.upper())
+        target_id = "2" if is_real else "1"
+
+        # Update account profile details
+        for idx, acc in enumerate(self.accounts):
+            if acc.id == target_id:
+                updated = False
+                if live_num and live_num not in ["0", "Demo Account", "Real Live"] and acc.account_number != live_num:
+                    acc.account_number = live_num
+                    updated = True
+                if server and acc.server != server:
+                    acc.server = server
+                    updated = True
+                if updated:
+                    self._save_accounts()
+                break
+
+        # Automatically switch active account if it differs
+        if self.active_id != target_id:
+            self.set_active_account(target_id)
+
+        return self.get_active_account()
+
     def add_or_update_account(self, id_str: str, number: str, name: str, profile: str, server: str, zmq_url: str) -> AccountProfile:
         for idx, acc in enumerate(self.accounts):
             if acc.id == id_str:

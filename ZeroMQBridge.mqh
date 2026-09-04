@@ -117,7 +117,17 @@ string Zmq_HandleGetAccount()
    json += "\"currency\":\"" + Zmq_JsonEscape(AccountCurrency()) + "\",";
    json += "\"company\":\"" + Zmq_JsonEscape(AccountCompany()) + "\",";
    json += "\"server\":\"" + Zmq_JsonEscape(AccountServer()) + "\",";
-   json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"";
+   json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
+   
+   bool tradeAllowed = IsTradeAllowed();
+   bool expertEnabled = IsExpertEnabled();
+   bool autotradeActive = true;
+   if(GlobalVariableCheck("AutoTrading_Paused"))
+      autotradeActive = (GlobalVariableGet("AutoTrading_Paused") < 0.5);
+
+   json += "\"is_trade_allowed\":" + (tradeAllowed ? "true" : "false") + ",";
+   json += "\"is_expert_enabled\":" + (expertEnabled ? "true" : "false") + ",";
+   json += "\"autotrade_active\":" + (autotradeActive ? "true" : "false");
    json += "}";
    return json;
 }
@@ -747,35 +757,118 @@ string Zmq_HandlePing()
    return "{\"status\":\"ok\",\"action\":\"PING\",\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"}";
 }
 
+string Zmq_HandleResetSafeguards()
+{
+   double curEquity = AccountEquity();
+   int accNum = AccountNumber();
+   string peakKey = StringFormat("Prop_Peak_Eq_%d", accNum);
+   string startKey = StringFormat("Prop_Start_Eq_%d", accNum);
+   string dayKey = StringFormat("Prop_Day_%d", accNum);
+   
+   GlobalVariableSet(dayKey, TimeDay(TimeCurrent()));
+   GlobalVariableSet(startKey, curEquity);
+   GlobalVariableSet(peakKey, curEquity);
+   GlobalVariableSet("Prop_Starting_Day_Equity", curEquity);
+   GlobalVariableSet("Prop_Peak_Equity", curEquity);
+   GlobalVariableSet("AutoTrading_Paused", 0.0);
+   
+   g_DayAnchorDate = TimeCurrent();
+   g_StartingDayEquity = curEquity;
+   g_StartingDayBalance = AccountBalance();
+   g_PropPeakEquity = curEquity;
+   g_DailyLossCircuitTripped = false;
+   g_DailyTargetCircuitTripped = false;
+   g_PropLockoutActive = false;
+   g_AutoTradingRuntimeActive = true;
+   
+   PrintFormat("[SAFEGUARDS RESET] Account #%d risk anchors reset to live equity $%.2f", accNum, curEquity);
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"RESET_SAFEGUARDS\",";
+   json += "\"account\":\"" + IntegerToString(accNum) + "\",";
+   json += "\"equity\":" + DoubleToString(curEquity, 2) + ",";
+   json += "\"message\":\"All performance anchors and drawdowns have been recalibrated to live equity.\"";
+   json += "}";
+   return json;
+}
+
 string Zmq_HandleGetProp()
 {
    double curEquity = AccountEquity();
    double curBalance = AccountBalance();
+   int accNum = AccountNumber();
    
-   double peakEq = curEquity;
-   if(GlobalVariableCheck("Prop_Peak_Equity"))
+   // Key global variables by AccountNumber() to isolate accounts
+   string peakKey = StringFormat("Prop_Peak_Eq_%d", accNum);
+   string startKey = StringFormat("Prop_Start_Eq_%d", accNum);
+   string dayKey = StringFormat("Prop_Day_%d", accNum);
+   
+   int today = TimeDay(TimeCurrent());
+   
+   // Check if day changed for this account
+   if(!GlobalVariableCheck(dayKey) || (int)GlobalVariableGet(dayKey) != today)
    {
-      peakEq = GlobalVariableGet("Prop_Peak_Equity");
-      if(curEquity > peakEq)
+      GlobalVariableSet(dayKey, today);
+      GlobalVariableSet(startKey, curEquity);
+   }
+   
+   double startEquity = curEquity;
+   if(GlobalVariableCheck(startKey))
+   {
+      startEquity = GlobalVariableGet(startKey);
+      // Sanity check: If starting equity is drastically larger (> 300%) or <= 0, recalibrate
+      if(startEquity <= 0.0 || (startEquity > curEquity * 3.0 && curEquity > 0.0))
       {
-         peakEq = curEquity;
-         GlobalVariableSet("Prop_Peak_Equity", peakEq);
+         startEquity = curEquity;
+         GlobalVariableSet(startKey, startEquity);
       }
    }
    else
    {
-      GlobalVariableSet("Prop_Peak_Equity", curEquity);
+      startEquity = curEquity;
+      GlobalVariableSet(startKey, startEquity);
    }
    
-   double startEquity = curBalance;
-   if(GlobalVariableCheck("Prop_Starting_Day_Equity"))
+   double peakEq = curEquity;
+   if(GlobalVariableCheck(peakKey))
    {
-      startEquity = GlobalVariableGet("Prop_Starting_Day_Equity");
+      peakEq = GlobalVariableGet(peakKey);
+      // Sanity check: If peak equity is drastically larger (> 300%) or <= 0, recalibrate
+      if(peakEq <= 0.0 || (peakEq > curEquity * 3.0 && curEquity > 0.0) || curEquity > peakEq)
+      {
+         peakEq = curEquity;
+         GlobalVariableSet(peakKey, peakEq);
+      }
    }
    else
    {
-      startEquity = curEquity;
-      GlobalVariableSet("Prop_Starting_Day_Equity", startEquity);
+      peakEq = curEquity;
+      GlobalVariableSet(peakKey, peakEq);
+   }
+   
+   // Clean up legacy unscoped global variables if they don't match live equity scale
+   if(GlobalVariableCheck("Prop_Starting_Day_Equity"))
+   {
+      double oldStart = GlobalVariableGet("Prop_Starting_Day_Equity");
+      if(oldStart > curEquity * 3.0 || oldStart <= 0.0)
+         GlobalVariableSet("Prop_Starting_Day_Equity", curEquity);
+   }
+   if(GlobalVariableCheck("Prop_Peak_Equity"))
+   {
+      double oldPeak = GlobalVariableGet("Prop_Peak_Equity");
+      if(oldPeak > curEquity * 3.0 || oldPeak <= 0.0)
+         GlobalVariableSet("Prop_Peak_Equity", curEquity);
+   }
+   
+   // Synchronize EA internal variables if they were stuck on old demo equity
+   if(g_StartingDayEquity <= 0.0 || (g_StartingDayEquity > curEquity * 3.0 && curEquity > 0.0))
+   {
+      g_StartingDayEquity = curEquity;
+      g_StartingDayBalance = curBalance;
+      g_PropPeakEquity = curEquity;
+      g_DailyLossCircuitTripped = false;
+      g_PropLockoutActive = false;
    }
    
    double maxDailyPct = 4.5;
@@ -803,7 +896,7 @@ string Zmq_HandleGetProp()
    string json = "{";
    json += "\"status\":\"ok\",";
    json += "\"action\":\"GET_PROP\",";
-   json += "\"account\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"account\":\"" + IntegerToString(accNum) + "\",";
    json += "\"company\":\"" + Zmq_JsonEscape(AccountCompany()) + "\",";
    json += "\"currency\":\"" + Zmq_JsonEscape(AccountCurrency()) + "\",";
    json += "\"equity\":" + DoubleToString(curEquity, 2) + ",";
@@ -821,7 +914,7 @@ string Zmq_HandleGetProp()
    json += "\"max_daily_limit_pct\":" + DoubleToString(maxDailyPct, 1) + ",";
    json += "\"max_total_limit_pct\":" + DoubleToString(maxTotalPct, 1) + ",";
    json += "\"target_goal_pct\":" + DoubleToString(targetGoalPct, 1) + ",";
-   json += "\"lockout_active\":" + (dayLossPct >= maxDailyPct ? "true" : "false") + ",";
+   json += "\"lockout_active\":" + ((dayLossPct >= maxDailyPct || g_PropLockoutActive) ? "true" : "false") + ",";
    json += "\"autotrading_active\":" + (isPaused ? "false" : "true") + ",";
    json += "\"weekend_shield\":\"Friday 21:00 GMT (Active)\"";
    json += "}";
@@ -1129,6 +1222,8 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleScreenshot(reqStr);
    if(action == "GET_BOOST" || action == "BOOST")
       return Zmq_HandleGetBoost();
+   if(action == "RESET_SAFEGUARDS" || action == "RESET_PROP" || action == "RESET")
+      return Zmq_HandleResetSafeguards();
       
    return "{\"status\":\"error\",\"message\":\"Unknown action: " + Zmq_JsonEscape(action) + "\"}";
 }

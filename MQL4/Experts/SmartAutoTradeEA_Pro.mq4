@@ -464,6 +464,11 @@ double   g_StartingDayBalance   = 0.0;
 bool     g_DailyLossCircuitTripped = false;
 bool     g_DailyTargetCircuitTripped = false;
 
+// Prop-Firm Risk Guardian State
+double   g_PropPeakEquity              = 0.0;
+bool     g_PropLockoutActive           = false;
+datetime g_PropLockoutDate             = 0;
+
 #include <ZeroMQBridge.mqh>
 
 
@@ -503,10 +508,6 @@ double                    g_DailyPivot_S2       = 0.0;
 double                    g_DailyPivot_R3       = 0.0;
 double                    g_DailyPivot_S3       = 0.0;
 
-// Prop-Firm Risk Guardian State
-double   g_PropPeakEquity              = 0.0;
-bool     g_PropLockoutActive           = false;
-datetime g_PropLockoutDate             = 0;
 datetime g_lastNewsCalendarReadTime    = 0;
 bool     g_isNewsShieldVetoActive      = false;
 int      g_PartiallyClosedTickets[];
@@ -3002,12 +3003,53 @@ void RenderHUDDashboard()
          if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber) myOrders++;
       }
    }
-   string autoTradeStatus = (!IsTradeAllowed()) ? "TERMINAL LOCKED" : (g_AutoTradingRuntimeActive ? "ACTIVE" : "PAUSED");
-   color autoTradeClr    = (!IsTradeAllowed()) ? clrRed : (g_AutoTradingRuntimeActive ? clrLime : clrOrange);
+   string autoTradeStatus = "";
+   color autoTradeClr = clrRed;
+   string lockReasonNotice = "";
+   
+   if(!IsExpertEnabled())
+   {
+      autoTradeStatus = "LOCKED (AutoTrading Button OFF)";
+      autoTradeClr = clrRed;
+      lockReasonNotice = "ACTION: Click MT4 'AutoTrading' button in top toolbar (make green)";
+   }
+   else if(!IsTradeAllowed())
+   {
+      autoTradeStatus = "LOCKED (Allow Live Trading Unchecked)";
+      autoTradeClr = clrRed;
+      lockReasonNotice = "ACTION: Press F7 -> Common tab -> Check 'Allow live trading'";
+   }
+   else if(g_PropLockoutActive || g_DailyLossCircuitTripped)
+   {
+      autoTradeStatus = "LOCKED (Daily Drawdown Tripped)";
+      autoTradeClr = clrRed;
+      lockReasonNotice = "PROTECTION: Risk limit reached. Safe until reset/rollover";
+   }
+   else if(!g_AutoTradingRuntimeActive)
+   {
+      autoTradeStatus = "PAUSED";
+      autoTradeClr = clrOrange;
+   }
+   else
+   {
+      autoTradeStatus = "ACTIVE 🟢";
+      autoTradeClr = clrLime;
+   }
+   
    string posStr = StringFormat("Open Positions: %d / %d | Bot: %s",
                                 myOrders, MaxOpenPositionsPerSymbol, autoTradeStatus);
    RenderHUDLabel("09_Positions", posStr, textX, y, autoTradeClr, 8, true);
    y += rowHeight;
+   
+   if(lockReasonNotice != "")
+   {
+      RenderHUDLabel("09_ActionNotice", lockReasonNotice, textX, y, clrYellow, 8, true);
+      y += rowHeight;
+   }
+   else
+   {
+      ObjectDelete(ChartID(), PREFIX_GUI + "09_ActionNotice");
+   }
 
 
    // ── PERF: Heavy indicator calculations throttled to every 5 seconds ─────────
@@ -6304,11 +6346,19 @@ int OnInit()
       g_DayAnchorDate             = TimeCurrent();
       g_StartingDayEquity         = AccountEquity();
       g_StartingDayBalance        = AccountBalance();
+      g_PropPeakEquity            = AccountEquity();
       g_DailyLossCircuitTripped   = false;
       g_DailyTargetCircuitTripped = false;
+      g_PropLockoutActive         = false;
       g_ConsecutiveLossesCount    = 0;
       g_ConsecutiveLossCooldownTime = 0;
       g_LastLossCooldownResetTime   = TimeCurrent();
+      
+      int currentAcc = AccountNumber();
+      GlobalVariableSet(StringFormat("Prop_Peak_Eq_%d", currentAcc), AccountEquity());
+      GlobalVariableSet(StringFormat("Prop_Start_Eq_%d", currentAcc), AccountEquity());
+      GlobalVariableSet("Prop_Peak_Equity", AccountEquity());
+      GlobalVariableSet("Prop_Starting_Day_Equity", AccountEquity());
    }
 
    // === STEP 8: START SYSTEM TIMER (1-second GUI/telemetry updates) ===
@@ -6369,6 +6419,58 @@ void OnTimer()
 {
    ZeroMQ_Poll();
 
+   // --- Dynamic Account Switch & Safeguard Sanity Recalibration ---
+   static int s_lastEAAccountNumber = 0;
+   int currentAccNum = AccountNumber();
+   double currentEquity = AccountEquity();
+   double currentBalance = AccountBalance();
+   
+   if(s_lastEAAccountNumber == 0)
+   {
+      s_lastEAAccountNumber = currentAccNum;
+   }
+   else if(s_lastEAAccountNumber != currentAccNum)
+   {
+      PrintFormat("[ACCOUNT SWITCH DETECTED] Switched from account #%d to #%d. Recalibrating all performance anchors.",
+                  s_lastEAAccountNumber, currentAccNum);
+      s_lastEAAccountNumber = currentAccNum;
+      g_DayAnchorDate             = TimeCurrent();
+      g_StartingDayEquity         = currentEquity;
+      g_StartingDayBalance        = currentBalance;
+      g_PropPeakEquity            = currentEquity;
+      g_DailyLossCircuitTripped   = false;
+      g_DailyTargetCircuitTripped = false;
+      g_PropLockoutActive         = false;
+      g_ConsecutiveLossesCount    = 0;
+      g_ConsecutiveLossCooldownTime = 0;
+      g_AutoTradingRuntimeActive  = true;
+      GlobalVariableSet("AutoTrading_Paused", 0.0);
+      GlobalVariableSet(StringFormat("Prop_Peak_Eq_%d", currentAccNum), currentEquity);
+      GlobalVariableSet(StringFormat("Prop_Start_Eq_%d", currentAccNum), currentEquity);
+      GlobalVariableSet("Prop_Peak_Equity", currentEquity);
+      GlobalVariableSet("Prop_Starting_Day_Equity", currentEquity);
+   }
+   
+   // Sanity auto-recovery: If starting equity is drastically larger than current equity (> 300% larger) or <= 0,
+   // it means the EA retained anchor values from a previous large demo account ($10k) on a real account ($91.91).
+   if(g_StartingDayEquity <= 0.0 || (g_StartingDayEquity > currentEquity * 3.0 && currentEquity > 0.0))
+   {
+      PrintFormat("[ANCHOR SANITY RECOVERY] Recalibrating mismatched starting equity $%.2f to live equity $%.2f",
+                  g_StartingDayEquity, currentEquity);
+      g_DayAnchorDate             = TimeCurrent();
+      g_StartingDayEquity         = currentEquity;
+      g_StartingDayBalance        = currentBalance;
+      g_PropPeakEquity            = currentEquity;
+      g_DailyLossCircuitTripped   = false;
+      g_DailyTargetCircuitTripped = false;
+      g_PropLockoutActive         = false;
+      g_AutoTradingRuntimeActive  = true;
+      GlobalVariableSet(StringFormat("Prop_Peak_Eq_%d", currentAccNum), currentEquity);
+      GlobalVariableSet(StringFormat("Prop_Start_Eq_%d", currentAccNum), currentEquity);
+      GlobalVariableSet("Prop_Peak_Equity", currentEquity);
+      GlobalVariableSet("Prop_Starting_Day_Equity", currentEquity);
+   }
+
    // Synchronize remote pause state from ZeroMQ Bridge or Telegram
    if(GlobalVariableCheck("AutoTrading_Paused"))
    {
@@ -6413,7 +6515,7 @@ void OnTimer()
    // Evaluate daily equity circuit thresholds
    if(EnforceAccountProtection && g_StartingDayEquity > 0.0)
    {
-      double currentEquity = AccountEquity();
+      currentEquity = AccountEquity();
       double drawdownPct = ((g_StartingDayEquity - currentEquity) / g_StartingDayEquity) * 100.0;
       double profitPct   = ((currentEquity - g_StartingDayEquity) / g_StartingDayEquity) * 100.0;
 

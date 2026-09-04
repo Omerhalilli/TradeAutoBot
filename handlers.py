@@ -230,6 +230,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @restricted
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        acc_data = zmq_client.get_account()
+        if acc_data and acc_data.get("status") == "ok":
+            account_manager.sync_with_live_terminal(acc_data)
+    except Exception:
+        pass
     active_acc = account_manager.get_active_account()
     mode_badge = "🔴 REAL (LIVE)" if "REAL" in active_acc.name.upper() else "🟡 DEMO"
     
@@ -272,7 +278,7 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await send_or_edit(update, context, card, reply_markup=kb)
         return
 
-    active_acc = account_manager.get_active_account()
+    active_acc = account_manager.sync_with_live_terminal(data)
     bal = float(data.get("balance", 0.0))
     eq = float(data.get("equity", 0.0))
     margin = float(data.get("margin", 0.0))
@@ -304,6 +310,25 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         margin_health = "🚨 CRITICAL MARGIN CALL"
         m_level_str = f"{m_level:,.1f}%"
 
+    trade_allowed = data.get("is_trade_allowed", True)
+    expert_enabled = data.get("is_expert_enabled", True)
+
+    lock_warning = ""
+    if not expert_enabled:
+        lock_warning = (
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🚨 <b>AUTOTRADING IS LOCKED (OFF):</b>\n"
+            "• MT4 AutoTrading toolbar button is currently OFF (Red).\n"
+            "👉 <i>Fix: Click the 'AutoTrading' button in MT4 top toolbar to turn it green.</i>\n"
+        )
+    elif not trade_allowed:
+        lock_warning = (
+            "\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🚨 <b>LIVE TRADING IS NOT PERMITTED:</b>\n"
+            "• EA does not have live trading permission on this chart.\n"
+            "👉 <i>Fix: Press F7 on chart ➜ 'Common' tab ➜ Check 'Allow live trading'.</i>\n"
+        )
+
     msg = (
         "╔══════════════════════════════════╗\n"
         "   🏛️ <b>INVEST-AZ INSTITUTIONAL TERMINAL</b>\n"
@@ -321,6 +346,7 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"📈 <b>Margin Level:</b> <code>{m_level_str}</code> ({margin_health})\n"
         f"⚙️ <b>Leverage:</b>     <code>1:{leverage}</code>\n"
         f"🕒 <b>Server Time:</b>  <code>{server_time}</code>"
+        f"{lock_warning}"
     )
     keyboard = get_nav_keyboard("status")
     await send_or_edit(update, context, msg, reply_markup=keyboard)
@@ -1564,6 +1590,12 @@ def inspect_account_trades(account: AccountProfile) -> Tuple[str, InlineKeyboard
 
 @restricted
 async def cmd_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        acc_data = zmq_client.get_account()
+        if acc_data and acc_data.get("status") == "ok":
+            account_manager.sync_with_live_terminal(acc_data)
+    except Exception:
+        pass
     active = account_manager.get_active_account()
     msg = (
         "👥 <b>INVEST-AZ MULTI-ACCOUNT CONTROL & TRADE INSPECTION</b>\n"
