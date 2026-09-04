@@ -746,14 +746,24 @@ async def cmd_breakeven(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     ticket_num = 0
     lock_pips = 1
 
-    if len(args) >= 1:
+    if len(args) == 1:
         arg0 = args[0].strip()
         if arg0.isdigit():
+            val = int(arg0)
+            if val <= 100:  # User entered pips (e.g. /be 2 or /be 5)
+                lock_pips = max(0, val)
+                ticket_num = 0
+            else:  # User entered ticket number (e.g. /be 1234567)
+                ticket_num = val
+        elif arg0.upper() not in ["ALL", "*"]:
+            target_sym = clean_symbol(arg0)
+    elif len(args) >= 2:
+        arg0 = args[0].strip()
+        if arg0.isdigit() and int(arg0) > 100:
             ticket_num = int(arg0)
         elif arg0.upper() not in ["ALL", "*"]:
             target_sym = clean_symbol(arg0)
 
-    if len(args) >= 2:
         try:
             lock_pips = max(0, int(float(args[1])))
         except ValueError:
@@ -787,7 +797,7 @@ async def cmd_breakeven(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"• <b>Target:</b> <code>{target_label}</code>\n"
             f"• <b>Orders Evaluated:</b> <code>{skipped}</code>\n"
             f"• <b>Stop Losses Updated:</b> <code>0</code>\n\n"
-            f"💡 <i>Break-Even protects profit and only triggers when a trade is already in positive floating gain. Current trades have not exceeded entry + {lock_pips} pip buffer yet.</i>"
+            f"💡 <i>Break-Even protects profit and only triggers when a trade is in positive floating gain. Current trades have not exceeded entry + {lock_pips} pip buffer (or broker StopLevel distance) yet.</i>"
         )
     else:
         status_badge = "🟢 RISK ELIMINATED" if skipped == 0 else "🟡 PARTIALLY APPLIED"
@@ -818,23 +828,28 @@ async def cmd_trailing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     ticket_num = 0
     trail_pips = 20
 
-    if len(args) >= 1:
+    if len(args) == 1:
         arg0 = args[0].strip()
         if arg0.isdigit():
+            val = int(arg0)
+            if val <= 500:  # User entered pips (e.g. /trailing 25)
+                trail_pips = max(5, val)
+                ticket_num = 0
+            else:  # User entered ticket number (e.g. /trailing 1234567)
+                ticket_num = val
+        elif arg0.upper() not in ["ALL", "*"]:
+            target_sym = clean_symbol(arg0)
+    elif len(args) >= 2:
+        arg0 = args[0].strip()
+        if arg0.isdigit() and int(arg0) > 500:
             ticket_num = int(arg0)
         elif arg0.upper() not in ["ALL", "*"]:
             target_sym = clean_symbol(arg0)
 
-    if len(args) >= 2:
         try:
             trail_pips = max(5, int(float(args[1])))
         except ValueError:
             trail_pips = 20
-    elif len(args) == 1 and args[0].isdigit() and int(args[0]) > 1000000:
-        pass
-    elif len(args) == 1 and args[0].isdigit() and int(args[0]) <= 500:
-        trail_pips = max(5, int(args[0]))
-        ticket_num = 0
 
     data = zmq_client.set_trailing(symbol=target_sym, ticket=ticket_num, trail_pips=trail_pips)
     if data.get("status") != "ok":

@@ -309,6 +309,8 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
                  patch.object(zmq_client, "get_report", return_value=mock_rep), \
                  patch.object(zmq_client, "get_boost", return_value=mock_boost), \
                  patch.object(zmq_client, "ping_latency_ms", return_value=1.0), \
+                 patch.object(zmq_client, "set_breakeven", return_value={"status": "ok", "modified_count": 0, "skipped_count": 0, "lock_pips": 1.0}), \
+                 patch.object(zmq_client, "set_trailing", return_value={"status": "ok", "modified_count": 0, "skipped_count": 0, "trail_pips": 20.0}), \
                  patch.object(zmq_client, "get_history", return_value={"status": "ok", "trades": [], "total_net_pl": 0.0, "count": 0}):
 
                 # 1. Navigation callbacks

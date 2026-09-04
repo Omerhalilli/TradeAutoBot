@@ -541,11 +541,26 @@ string Zmq_HandleSetBreakEven(const string reqJson)
       double openPrice = OrderOpenPrice();
       double curSL = OrderStopLoss();
       
+      double stopLevel = MarketInfo(sym, MODE_STOPLEVEL) * MarketInfo(sym, MODE_POINT);
+      if(stopLevel <= 0.0) stopLevel = MarketInfo(sym, MODE_POINT) * 5.0;
+
       if(type == OP_BUY)
       {
          double curBid = MarketInfo(sym, MODE_BID);
+         if(curBid <= openPrice)
+         {
+            skipped++;
+            continue;
+         }
+         
          double targetSL = NormalizeDouble(openPrice + (lockPips * pipPoint), digits);
-         if(curBid > openPrice && (curSL < targetSL || curSL == 0.0))
+         // If targetSL violates StopLevel distance from current market Bid, fallback to entry price
+         if(curBid - targetSL < stopLevel)
+         {
+            targetSL = NormalizeDouble(openPrice, digits);
+         }
+         
+         if(curBid - targetSL >= stopLevel && (curSL < targetSL || curSL == 0.0))
          {
             if(OrderModify(OrderTicket(), openPrice, targetSL, OrderTakeProfit(), 0, clrLimeGreen))
                modified++;
@@ -560,8 +575,20 @@ string Zmq_HandleSetBreakEven(const string reqJson)
       else if(type == OP_SELL)
       {
          double curAsk = MarketInfo(sym, MODE_ASK);
+         if(curAsk >= openPrice)
+         {
+            skipped++;
+            continue;
+         }
+         
          double targetSL = NormalizeDouble(openPrice - (lockPips * pipPoint), digits);
-         if(curAsk < openPrice && (curSL > targetSL || curSL == 0.0))
+         // If targetSL violates StopLevel distance from current market Ask, fallback to entry price
+         if(targetSL - curAsk < stopLevel)
+         {
+            targetSL = NormalizeDouble(openPrice, digits);
+         }
+         
+         if(targetSL - curAsk >= stopLevel && (curSL > targetSL || curSL == 0.0))
          {
             if(OrderModify(OrderTicket(), openPrice, targetSL, OrderTakeProfit(), 0, clrLimeGreen))
                modified++;
