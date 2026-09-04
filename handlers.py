@@ -72,6 +72,106 @@ def clean_symbol(symbol: str) -> str:
     }
     return aliases.get(s, s)
 
+async def send_or_edit(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    reply_markup: InlineKeyboardMarkup = None,
+    parse_mode: str = ParseMode.HTML
+) -> None:
+    """Helper to cleanly edit inline callback query messages or reply to messages without crashing."""
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
+            return
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                return
+            logger.debug(f"send_or_edit edit_message_text error: {e}")
+    if update.message:
+        await update.message.reply_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    elif update.effective_chat and context and context.bot:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+
+def get_offline_card(section_name: str = "status") -> Tuple[str, InlineKeyboardMarkup]:
+    """Builds a consistent, elegant institutional offline bridge card."""
+    active_acc = account_manager.get_active_account()
+    msg = (
+        "╔══════════════════════════════════╗\n"
+        "   ⚠️ <b>MT4 ZERO-MQ BRIDGE OFFLINE</b>\n"
+        "╚══════════════════════════════════╝\n"
+        f"<b>Target Account:</b> <code>#{active_acc.id} • {active_acc.name}</code>\n"
+        f"<b>Server Endpoint:</b> <code>{active_acc.zmq_url}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔴 <b>DIAGNOSTIC STATUS:</b>\n"
+        "• MetaTrader 4 terminal unreachable or EA unattached.\n"
+        "• ZeroMQ REP socket did not respond within 3000ms.\n\n"
+        "👉 <b>Resolution Checklist:</b>\n"
+        "1. Verify MetaTrader 4 is launched and logged in.\n"
+        "2. Ensure <code>SmartAutoTradeEA_Pro</code> is attached to an active chart.\n"
+        "3. Enable <i>'Allow DLL imports'</i> and <i>'Allow WebRequest'</i>.\n"
+        "4. Click <b>🔄 Retry Connection</b> below once verified."
+    )
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 Retry Connection", callback_data=f"nav_refresh:{section_name}"),
+            InlineKeyboardButton("👥 Switch Account", callback_data="switch_acc:panel")
+        ],
+        [
+            InlineKeyboardButton("⚡ Turbo Boost", callback_data="nav_boost"),
+            InlineKeyboardButton("📅 Economic News", callback_data="news_filter:today")
+        ]
+    ])
+    return msg, kb
+
+def get_history_keyboard(active_filter: str = "all") -> InlineKeyboardMarkup:
+    """Interactive filter keyboard for /history."""
+    b_all = "🔟 Last 10" if active_filter != "10" else "🔟 • 10 •"
+    b_today = "📅 Today" if active_filter != "today" else "📅 • Today •"
+    b_week = "📆 This Week" if active_filter not in ["week", "lastweek"] else "📆 • Week •"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(b_all, callback_data="hist_filter:10"),
+            InlineKeyboardButton(b_today, callback_data="hist_filter:today"),
+            InlineKeyboardButton(b_week, callback_data="hist_filter:week"),
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"hist_filter:{active_filter}"),
+            InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_news_keyboard(active_scope: str = "today") -> InlineKeyboardMarkup:
+    """Interactive filter keyboard for /news."""
+    b_today = "📅 Today" if active_scope != "today" else "📅 • Today •"
+    b_week = "📆 This Week" if active_scope not in ["week", "thisweek"] else "📆 • Week •"
+    keyboard = [
+        [
+            InlineKeyboardButton(b_today, callback_data="news_filter:today"),
+            InlineKeyboardButton(b_week, callback_data="news_filter:week")
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh News", callback_data=f"news_filter:{active_scope}"),
+            InlineKeyboardButton("📊 Status", callback_data="nav_status")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 def get_nav_keyboard(active_section: str = "status") -> InlineKeyboardMarkup:
     """Institutional unified navigation keyboard with section highlighting."""
     b_status = "📊 Status" if active_section != "status" else "📊 • Status •"
@@ -92,8 +192,13 @@ def get_nav_keyboard(active_section: str = "status") -> InlineKeyboardMarkup:
             InlineKeyboardButton(b_boost, callback_data="nav_boost")
         ],
         [
-            InlineKeyboardButton("👥 Switch Account", callback_data="switch_acc:panel"),
+            InlineKeyboardButton("🛡️ BE All", callback_data="nav_be_all"),
+            InlineKeyboardButton("📜 History", callback_data="hist_filter:10"),
             InlineKeyboardButton("🔄 Refresh", callback_data=f"nav_refresh:{active_section}")
+        ],
+        [
+            InlineKeyboardButton("👥 Switch Account", callback_data="switch_acc:panel"),
+            InlineKeyboardButton("🚨 Emergency Panic", callback_data="nav_panic")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -141,6 +246,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /positions — Active open orders with live P/L & tickets\n"
         "• /history — Closed trade deals, statistics & cumulative net P/L\n"
         "  └ <code>/history today</code> | <code>/history week</code> | <code>/history 20</code>\n"
+        "• /be <code>[SYM|TICKET] [PIPS]</code> — Move SL to Break-Even (default +1 pip lock)\n"
+        "• /trailing <code>[SYM|TICKET] [PIPS]</code> — Dynamic Trailing Stop (default 20 pips)\n"
         "• /close <code>[SYMBOL|TICKET]</code> — Liquidate positions for symbol or ticket\n"
         "• /modify_sl <code>[SYM|TICKET] [PRICE]</code> — Modify Stop Loss (0 to remove)\n"
         "• /modify_tp <code>[SYM|TICKET] [PRICE]</code> — Modify Take Profit (0 to remove)\n"
@@ -157,25 +264,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "💡 <i>Tip: Use the inline buttons below for rapid one-touch terminal navigation.</i>"
     )
-    if update.callback_query:
-        try:
-            await update.callback_query.edit_message_text(help_text, reply_markup=get_nav_keyboard("help"), parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
-    elif update.message:
-        await update.message.reply_text(help_text, reply_markup=get_nav_keyboard("help"), parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, help_text, reply_markup=get_nav_keyboard("help"))
 
 @restricted
 async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = zmq_client.get_account()
     if data.get("status") != "ok":
-        await update.message.reply_text(
-            f"⚠️ <b>MetaTrader 4 Bridge Offline</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Reason: <i>{data.get('message', 'Terminal unreachable on ZeroMQ socket.')}</i>\n\n"
-            f"👉 Please verify MT4 is running with SmartAutoTradeEA_Pro attached.",
-            parse_mode=ParseMode.HTML
-        )
+        card, kb = get_offline_card("status")
+        await send_or_edit(update, context, card, reply_markup=kb)
         return
 
     active_acc = account_manager.get_active_account()
@@ -229,23 +325,14 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"🕒 <b>Server Time:</b>  <code>{server_time}</code>"
     )
     keyboard = get_nav_keyboard("status")
-    if update.callback_query:
-        try:
-            await update.callback_query.edit_message_text(msg, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
-    elif update.message:
-        await update.message.reply_text(msg, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg, reply_markup=keyboard)
 
 @restricted
 async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = zmq_client.get_positions()
     if data.get("status") != "ok":
-        err_text = f"⚠️ <b>MT4 Bridge Error:</b> <i>{data.get('message', 'Failed to retrieve positions')}</i>"
-        if update.callback_query:
-            await update.callback_query.edit_message_text(err_text, parse_mode=ParseMode.HTML)
-        elif update.message:
-            await update.message.reply_text(err_text, parse_mode=ParseMode.HTML)
+        card, kb = get_offline_card("positions")
+        await send_or_edit(update, context, card, reply_markup=kb)
         return
 
     active_acc = account_manager.get_active_account()
@@ -259,10 +346,7 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "<i>There are currently no active market orders running on this account.</i>"
         )
-        if update.callback_query:
-            await update.callback_query.edit_message_text(empty_msg, reply_markup=get_nav_keyboard("positions"), parse_mode=ParseMode.HTML)
-        elif update.message:
-            await update.message.reply_text(empty_msg, reply_markup=get_nav_keyboard("positions"), parse_mode=ParseMode.HTML)
+        await send_or_edit(update, context, empty_msg, reply_markup=get_nav_keyboard("positions"))
         return
 
     total_pl = sum(float(p.get("profit", 0.0)) for p in positions)
@@ -278,6 +362,17 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     chunk_size = 8
     total_pages = (count + chunk_size - 1) // chunk_size
+
+    pos_action_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🛡️ BE All Orders", callback_data="nav_be_all"),
+            InlineKeyboardButton("📸 Active Screenshot", callback_data="shotsym:CURRENT")
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh", callback_data="nav_refresh:positions"),
+            InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+        ]
+    ])
 
     for page_idx in range(total_pages):
         page_positions = positions[page_idx * chunk_size : (page_idx + 1) * chunk_size]
@@ -310,15 +405,12 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             msg += f"💰 <b>Total Portfolio P/L:</b> <b>{sign_pl}${total_pl:,.2f}</b> ({pl_badge})"
 
-        keyboard = get_nav_keyboard("positions") if page_idx == total_pages - 1 else None
+        cur_kb = pos_action_kb if page_idx == total_pages - 1 else None
         
-        if update.callback_query and page_idx == 0:
-            try:
-                await update.callback_query.edit_message_text(msg, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-            except Exception:
-                await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        if page_idx == 0 and update.callback_query:
+            await send_or_edit(update, context, msg, reply_markup=cur_kb)
         else:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=cur_kb, parse_mode=ParseMode.HTML)
 
 @restricted
 async def cmd_boost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -327,61 +419,93 @@ async def cmd_boost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     boost_data = zmq_client.get_boost()
     active_acc = account_manager.get_active_account()
 
-    if boost_data.get("status") != "ok":
-        acc_data = zmq_client.get_account()
-        pos_data = zmq_client.get_positions()
-        
-        bal = float(acc_data.get("balance", 0.0))
-        eq = float(acc_data.get("equity", 0.0))
-        orders_count = pos_data.get("count", 0)
-        float_pl = eq - bal
-        server_time = acc_data.get("server_time", "-")
-        autotrade_active = True
-        spread_gbp = 10.0
-        spread_eur = 10.0
-        spread_gold = 25.0
-    else:
-        bal = float(boost_data.get("balance", 0.0))
-        eq = float(boost_data.get("equity", 0.0))
-        orders_count = int(boost_data.get("active_orders", 0))
-        float_pl = float(boost_data.get("floating_pl", 0.0))
-        server_time = boost_data.get("server_time", "-")
-        autotrade_active = boost_data.get("autotrading_active", True)
-        spread_gbp = float(boost_data.get("spread_gbpusd", 10.0))
-        spread_eur = float(boost_data.get("spread_eurusd", 10.0))
-        spread_gold = float(boost_data.get("spread_xauusd", 25.0))
+    is_online = (boost_data.get("status") == "ok") or (latency > 0)
 
-    lat_badge = "🟢 ULTRA-FAST" if latency < 15.0 else ("🟡 ACCEPTABLE" if latency < 50.0 else "🔴 HIGH LATENCY")
+    if not is_online:
+        msg = (
+            "╔══════════════════════════════════╗\n"
+            "   ⚡ <b>INSTITUTIONAL TURBO BOOST PANEL</b>\n"
+            "╚══════════════════════════════════╝\n"
+            f"👤 <b>Account #{active_acc.id}:</b> <code>{active_acc.name}</code> ({active_acc.account_number})\n"
+            f"🌐 <b>Bridge Status:</b> 🔴 <b>OFFLINE / UNREACHABLE</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🚀 <b>ENGINE PERFORMANCE & TELEMETRY:</b>\n"
+            "• <b>Roundtrip Latency:</b> <code>TIMEOUT (>3000 ms)</code> — 🔴 OFFLINE\n"
+            "• <b>ZeroMQ Event Loop:</b> <code>Standby / Reconnecting</code>\n"
+            "• <b>AutoTrading Engine:</b> 🔴 DISCONNECTED\n"
+            "• <b>Active Exposure:</b> <i>Unavailable while offline</i>\n"
+            "──────────────────────────\n"
+            "📊 <b>MAJOR SPREADS TELEMETRY:</b>\n"
+            "• 🇬🇧 <b>GBPUSD:</b> <i>Offline</i>\n"
+            "• 🇪🇺 <b>EURUSD:</b> <i>Offline</i>\n"
+            "• 🪙 <b>XAUUSD:</b> <i>Offline</i>\n"
+            "──────────────────────────\n"
+            "💡 <i>Verify MT4 is running with SmartAutoTradeEA_Pro attached to an active chart.</i>"
+        )
+        boost_keyboard = [
+            [
+                InlineKeyboardButton("🔄 Re-Run Boost Diagnostics", callback_data="nav_boost"),
+                InlineKeyboardButton("👥 Switch Account", callback_data="switch_acc:panel")
+            ],
+            [
+                InlineKeyboardButton("📊 Account Status", callback_data="nav_status"),
+                InlineKeyboardButton("📅 Economic News", callback_data="news_filter:today")
+            ]
+        ]
+        await send_or_edit(update, context, msg, reply_markup=InlineKeyboardMarkup(boost_keyboard))
+        return
+
+    # Online path
+    bal = float(boost_data.get("balance", 0.0))
+    eq = float(boost_data.get("equity", 0.0))
+    orders_count = int(boost_data.get("active_orders", 0))
+    float_pl = float(boost_data.get("floating_pl", 0.0))
+    server_time = boost_data.get("server_time", "-")
+    autotrade_active = boost_data.get("autotrading_active", True)
+    spread_gbp = float(boost_data.get("spread_gbpusd", 10.0))
+    spread_eur = float(boost_data.get("spread_eurusd", 10.0))
+    spread_gold = float(boost_data.get("spread_xauusd", 25.0))
+
+    if latency < 15.0:
+        lat_badge = "🟢 ULTRA-FAST (Direct Fiber)"
+    elif latency < 50.0:
+        lat_badge = "🟡 ACCEPTABLE (VPS)"
+    else:
+        lat_badge = "🔴 HIGH LATENCY (Sub-optimal)"
+
     auto_badge = "ACTIVE & SCANNING 🟢" if autotrade_active else "PAUSED ⏸️"
     pl_sign = "+" if float_pl >= 0 else ""
+    gbp_status = "🟢 Tight" if spread_gbp <= 12.0 else ("🟡 Normal" if spread_gbp <= 20.0 else "🔴 Wide")
+    eur_status = "🟢 Tight" if spread_eur <= 12.0 else ("🟡 Normal" if spread_eur <= 20.0 else "🔴 Wide")
+    gold_status = "🟢 Tight" if spread_gold <= 30.0 else ("🟡 Normal" if spread_gold <= 50.0 else "🔴 Wide")
 
     msg = (
         "╔══════════════════════════════════╗\n"
         "   ⚡ <b>INSTITUTIONAL TURBO BOOST PANEL</b>\n"
         "╚══════════════════════════════════╝\n"
         f"👤 <b>Account #{active_acc.id}:</b> <code>{active_acc.name}</code> ({active_acc.account_number})\n"
-        f"🌐 <b>Bridge Status:</b> ONLINE | <b>Server Time:</b> <code>{server_time}</code>\n"
+        f"🌐 <b>Bridge Status:</b> 🟢 <b>ACTIVE & STREAMING</b> | <b>Time:</b> <code>{server_time}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "🚀 <b>ENGINE PERFORMANCE & TELEMETRY:</b>\n"
         f"• <b>Roundtrip Latency:</b> <code>{latency:.2f} ms</code> — {lat_badge}\n"
-        f"• <b>ZeroMQ Event Loop:</b> <code>250 ms (4 Hz)</code> high-frequency cycle\n"
+        f"• <b>ZeroMQ Event Loop:</b> <code>250 ms (4 Hz)</code> High-Frequency\n"
         f"• <b>AutoTrading Engine:</b> {auto_badge}\n"
-        f"• <b>Active Exposure:</b> <code>{orders_count} orders</code> | Float P/L: <b>{pl_sign}${float_pl:,.2f}</b>\n"
+        f"• <b>Open Exposure:</b>     <code>{orders_count} orders</code> | Float: <b>{pl_sign}${float_pl:,.2f}</b>\n"
         "──────────────────────────\n"
-        "📊 <b>LIVE MAJOR SPREADS CHECK:</b>\n"
-        f"• 🇬🇧 <b>GBPUSD:</b> <code>{spread_gbp:.1f} pts</code> (Tight)\n"
-        f"• 🇪🇺 <b>EURUSD:</b> <code>{spread_eur:.1f} pts</code> (Tight)\n"
-        f"• 🪙 <b>XAUUSD:</b> <code>{spread_gold:.1f} pts</code> (Standard)\n"
+        "📊 <b>LIVE MAJOR SPREADS TELEMETRY:</b>\n"
+        f"• 🇬🇧 <b>GBPUSD:</b> <code>{spread_gbp:.1f} pts</code> ({gbp_status})\n"
+        f"• 🇪🇺 <b>EURUSD:</b> <code>{spread_eur:.1f} pts</code> ({eur_status})\n"
+        f"• 🪙 <b>XAUUSD:</b> <code>{spread_gold:.1f} pts</code> ({gold_status})\n"
         "──────────────────────────\n"
         "💎 <b>CAPITAL HEALTH:</b>\n"
-        f"• Balance: <code>${bal:,.2f}</code> | Equity: <code>${eq:,.2f}</code>\n"
+        f"• <b>Balance:</b> <code>${bal:,.2f}</code> | <b>Equity:</b> <code>${eq:,.2f}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚡ <b>QUICK TURBO ACTIONS:</b>"
+        "⚡ <b>RAPID TURBO CONTROLS:</b>"
     )
 
     boost_keyboard = [
         [
-            InlineKeyboardButton("📸 Instant Chart Snapshot", callback_data="shotsym:CURRENT"),
+            InlineKeyboardButton("📸 Instant Snapshot", callback_data="shotsym:CURRENT"),
             InlineKeyboardButton("🎨 Sync GBPUSD Colors", callback_data="boost_colors")
         ],
         [
@@ -389,68 +513,45 @@ async def cmd_boost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             InlineKeyboardButton("💼 Open Positions", callback_data="nav_pos")
         ],
         [
+            InlineKeyboardButton("🛡️ BE All Orders", callback_data="nav_be_all"),
+            InlineKeyboardButton("📜 Closed History", callback_data="hist_filter:10")
+        ],
+        [
             InlineKeyboardButton("🔄 Re-Run Boost Diagnostics", callback_data="nav_boost"),
             InlineKeyboardButton("📊 Back to Status", callback_data="nav_status")
         ]
     ]
-
-    if update.callback_query:
-        try:
-            await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(boost_keyboard), parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
-    elif update.message:
-        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(boost_keyboard), parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg, reply_markup=InlineKeyboardMarkup(boost_keyboard))
 
 @restricted
 async def cmd_prop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = zmq_client.get_prop()
     if data.get("status") != "ok":
-        acc_data = zmq_client.get_account()
-        eq = float(acc_data.get("equity", 10000.0))
-        bal = float(acc_data.get("balance", 10000.0))
-        acc = acc_data.get("account_number", "-")
-        comp = acc_data.get("company", "Invest-AZ")
-        curr = acc_data.get("currency", "USD")
-        peak_eq = max(eq, bal)
-        day_loss = max(0.0, bal - eq)
-        day_limit = bal * 0.045
-        day_pct = (day_loss / bal * 100.0) if bal > 0 else 0.0
-        day_st = "Safe" if day_pct < 3.0 else "Caution"
-        peak_loss = max(0.0, peak_eq - eq)
-        peak_limit = peak_eq * 0.08
-        peak_pct = (peak_loss / peak_eq * 100.0) if peak_eq > 0 else 0.0
-        peak_st = "Safe" if peak_pct < 5.0 else "Caution"
-        gain = max(0.0, eq - bal)
-        target_goal = bal * 0.08
-        max_d_pct = 4.5
-        max_t_pct = 8.0
-        target_goal_pct = 8.0
-        lockout = False
-        autotrade = True
-        shield = "Friday 21:00 GMT (Active) 🛡️"
-    else:
-        acc = data.get("account", "-")
-        comp = data.get("company", "Invest-AZ")
-        curr = data.get("currency", "USD")
-        eq = float(data.get("equity", 0.0))
-        peak_eq = float(data.get("peak_equity", eq))
-        day_loss = float(data.get("day_loss", 0.0))
-        day_limit = float(data.get("day_loss_limit", eq * 0.045))
-        day_pct = float(data.get("day_loss_pct", 0.0))
-        day_st = data.get("day_status", "Safe")
-        peak_loss = float(data.get("peak_loss", 0.0))
-        peak_limit = float(data.get("peak_loss_limit", peak_eq * 0.08))
-        peak_pct = float(data.get("peak_loss_pct", 0.0))
-        peak_st = data.get("peak_status", "Safe")
-        gain = float(data.get("current_gain", 0.0))
-        target_goal = float(data.get("target_profit_goal", eq * 0.08))
-        max_d_pct = float(data.get("max_daily_limit_pct", 4.5))
-        max_t_pct = float(data.get("max_total_limit_pct", 8.0))
-        target_goal_pct = float(data.get("target_goal_pct", 8.0))
-        lockout = bool(data.get("lockout_active", False))
-        autotrade = bool(data.get("autotrading_active", True))
-        shield = data.get("weekend_shield", "Friday 21:00 GMT (Active) 🛡️")
+        card, kb = get_offline_card("prop")
+        await send_or_edit(update, context, card, reply_markup=kb)
+        return
+
+    acc = data.get("account", "-")
+    comp = data.get("company", "Invest-AZ")
+    curr = data.get("currency", "USD")
+    eq = float(data.get("equity", 0.0))
+    peak_eq = float(data.get("peak_equity", eq))
+    day_loss = float(data.get("day_loss", 0.0))
+    day_limit = float(data.get("day_loss_limit", eq * 0.045))
+    day_pct = float(data.get("day_loss_pct", 0.0))
+    day_st = data.get("day_status", "Safe")
+    peak_loss = float(data.get("peak_loss", 0.0))
+    peak_limit = float(data.get("peak_loss_limit", peak_eq * 0.08))
+    peak_pct = float(data.get("peak_loss_pct", 0.0))
+    peak_st = data.get("peak_status", "Safe")
+    gain = float(data.get("current_gain", 0.0))
+    target_goal = float(data.get("target_profit_goal", eq * 0.08))
+    max_d_pct = float(data.get("max_daily_limit_pct", 4.5))
+    max_t_pct = float(data.get("max_total_limit_pct", 8.0))
+    target_goal_pct = float(data.get("target_goal_pct", 8.0))
+    lockout = bool(data.get("lockout_active", False))
+    autotrade = bool(data.get("autotrading_active", True))
+    shield = data.get("weekend_shield", "Friday 21:00 GMT (Active) 🛡️")
 
     day_badge = "🟢 Safe" if day_st == "Safe" else ("🟡 Caution" if day_st == "Caution" else "🚨 BREACHED")
     peak_badge = "🟢 Safe" if peak_st == "Safe" else ("🟡 Caution" if peak_st == "Caution" else "🚨 BREACHED")
@@ -479,56 +580,34 @@ async def cmd_prop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• <b>Weekend Shield:</b> <code>{shield}</code>"
     )
     keyboard = get_nav_keyboard("prop")
-    if update.callback_query:
-        try:
-            await update.callback_query.edit_message_text(msg, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
-    elif update.message:
-        await update.message.reply_text(msg, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg, reply_markup=keyboard)
 
 @restricted
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = zmq_client.get_report()
     if data.get("status") != "ok":
-        acc_data = zmq_client.get_account()
-        bal = float(acc_data.get("balance", 0.0))
-        eq = float(acc_data.get("equity", 0.0))
-        acc = acc_data.get("account_number", "-")
-        comp = acc_data.get("company", "Invest-AZ")
-        curr = acc_data.get("currency", "USD")
-        period = "Last 24 Hours"
-        total_trades = 0
-        win_count = 0
-        loss_count = 0
-        win_rate = 0.0
-        gross_p = 0.0
-        gross_l = 0.0
-        pf = 0.0
-        net = 0.0
-        best_sym = "-"
-        best_p = 0.0
-        worst_sym = "-"
-        worst_l = 0.0
-    else:
-        period = data.get("period", "Last 24 Hours")
-        acc = data.get("account", "-")
-        comp = data.get("company", "Invest-AZ")
-        curr = data.get("currency", "USD")
-        total_trades = int(data.get("total_trades", 0))
-        win_count = int(data.get("win_count", 0))
-        loss_count = int(data.get("loss_count", 0))
-        win_rate = float(data.get("win_rate", 0.0))
-        gross_p = float(data.get("gross_profit", 0.0))
-        gross_l = float(data.get("gross_loss", 0.0))
-        pf = float(data.get("profit_factor", 0.0))
-        net = float(data.get("net_pl", 0.0))
-        best_sym = data.get("best_symbol", "-")
-        best_p = float(data.get("best_profit", 0.0))
-        worst_sym = data.get("worst_symbol", "-")
-        worst_l = float(data.get("worst_loss", 0.0))
-        bal = float(data.get("ending_balance", 0.0))
-        eq = float(data.get("ending_equity", 0.0))
+        card, kb = get_offline_card("report")
+        await send_or_edit(update, context, card, reply_markup=kb)
+        return
+
+    period = data.get("period", "Last 24 Hours")
+    acc = data.get("account", "-")
+    comp = data.get("company", "Invest-AZ")
+    curr = data.get("currency", "USD")
+    total_trades = int(data.get("total_trades", 0))
+    win_count = int(data.get("win_count", 0))
+    loss_count = int(data.get("loss_count", 0))
+    win_rate = float(data.get("win_rate", 0.0))
+    gross_p = float(data.get("gross_profit", 0.0))
+    gross_l = float(data.get("gross_loss", 0.0))
+    pf = float(data.get("profit_factor", 0.0))
+    net = float(data.get("net_pl", 0.0))
+    best_sym = data.get("best_symbol", "-")
+    best_p = float(data.get("best_profit", 0.0))
+    worst_sym = data.get("worst_symbol", "-")
+    worst_l = float(data.get("worst_loss", 0.0))
+    bal = float(data.get("ending_balance", 0.0))
+    eq = float(data.get("ending_equity", 0.0))
 
     pl_sign = "🟢 +" if net >= 0 else "🔴 -"
     pf_badge = " ⭐ Institutional Grade" if pf >= 1.5 else ""
@@ -559,13 +638,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"• <b>Ending Equity:</b>  <code>${eq:,.2f} {curr}</code>"
     )
     keyboard = get_nav_keyboard("report")
-    if update.callback_query:
-        try:
-            await update.callback_query.edit_message_text(msg, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
-    elif update.message:
-        await update.message.reply_text(msg, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg, reply_markup=keyboard)
 
 @restricted
 async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -584,38 +657,44 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         elif arg0.isdigit():
             limit = min(100, max(1, int(arg0)))
         else:
-            await update.message.reply_text(
+            await send_or_edit(
+                update,
+                context,
                 "ℹ️ <b>History Filter Usage:</b>\n"
                 "• <code>/history</code> — Last 10 closed deals\n"
                 "• <code>/history today</code> — Deals closed today\n"
                 "• <code>/history week</code> — Deals closed this week\n"
                 "• <code>/history 25</code> — Last N closed deals",
-                parse_mode=ParseMode.HTML
+                reply_markup=get_history_keyboard(filter_type)
             )
             return
 
     data = zmq_client.get_history(limit=limit, filter_type=filter_type)
     if data.get("status") != "ok":
-        await update.message.reply_text(f"⚠️ <b>MT4 Bridge Error:</b> <i>{data.get('message', 'Could not retrieve history')}</i>", parse_mode=ParseMode.HTML)
+        card, kb = get_offline_card("history")
+        await send_or_edit(update, context, card, reply_markup=kb)
         return
 
     trades = data.get("trades", [])
     total_net = float(data.get("total_net_pl", 0.0))
     count = data.get("count", 0)
 
+    filter_label = "TODAY" if filter_type == "today" else ("THIS WEEK" if filter_type == "lastweek" else f"LAST {limit}")
+
     if count == 0:
-        await update.message.reply_text(
-            f"📜 <b>TRADE HISTORY AUDIT ({filter_type.upper()}):</b>\n"
-            f"<i>No closed trade transactions recorded for this period.</i>",
-            parse_mode=ParseMode.HTML
+        empty_msg = (
+            f"📜 <b>TRADE HISTORY AUDIT ({filter_label}):</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>No closed trade transactions recorded for this period.</i>"
         )
+        await send_or_edit(update, context, empty_msg, reply_markup=get_history_keyboard(filter_type))
         return
 
     tot_icon = "🟢" if total_net >= 0 else "🔴"
     tot_sign = "+" if total_net >= 0 else ""
 
     header = (
-        f"📜 <b>CLOSED TRADE HISTORY AUDIT ({filter_type.upper()} • {count} Deals)</b>\n"
+        f"📜 <b>CLOSED TRADE HISTORY AUDIT ({filter_label} • {count} Deals)</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
 
@@ -649,26 +728,185 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if page_idx == total_pages - 1:
             msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             msg += f"{tot_icon} <b>Cumulative Net Profit:</b> <b>{tot_sign}${total_net:,.2f}</b>"
+            if page_idx == 0 and update.callback_query:
+                await send_or_edit(update, context, msg, reply_markup=get_history_keyboard(filter_type))
+            else:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, reply_markup=get_history_keyboard(filter_type), parse_mode=ParseMode.HTML)
+        else:
+            if page_idx == 0 and update.callback_query:
+                await send_or_edit(update, context, msg)
+            else:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode=ParseMode.HTML)
 
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode=ParseMode.HTML)
+@restricted
+async def cmd_breakeven(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Move Stop Loss to Break-Even for open profitable orders (+1 pip locked)."""
+    args = context.args or []
+    target_sym = ""
+    ticket_num = 0
+    lock_pips = 1
+
+    if len(args) >= 1:
+        arg0 = args[0].strip()
+        if arg0.isdigit():
+            ticket_num = int(arg0)
+        elif arg0.upper() not in ["ALL", "*"]:
+            target_sym = clean_symbol(arg0)
+
+    if len(args) >= 2:
+        try:
+            lock_pips = max(0, int(float(args[1])))
+        except ValueError:
+            lock_pips = 1
+
+    data = zmq_client.set_breakeven(symbol=target_sym, ticket=ticket_num, lock_pips=lock_pips)
+    if data.get("status") != "ok":
+        err_msg = (
+            f"❌ <b>Break-Even Execution Failed:</b>\n"
+            f"<i>{data.get('message', 'Terminal unreachable on ZeroMQ socket.')}</i>"
+        )
+        await send_or_edit(update, context, err_msg)
+        return
+
+    modified = data.get("modified_count", 0)
+    skipped = data.get("skipped_count", 0)
+    target_label = f"Ticket #{ticket_num}" if ticket_num > 0 else (target_sym if target_sym else "ALL OPEN POSITIONS")
+
+    if modified == 0 and skipped == 0:
+        msg = (
+            "ℹ️ <b>NO ELIGIBLE ORDERS FOUND:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Target:</b> <code>{target_label}</code>\n"
+            "• No open market orders matched the target query.\n"
+            "• Open a position first or check active orders with /positions."
+        )
+    elif modified == 0 and skipped > 0:
+        msg = (
+            "⚠️ <b>BREAK-EVEN CRITERIA NOT MET:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Target:</b> <code>{target_label}</code>\n"
+            f"• <b>Orders Evaluated:</b> <code>{skipped}</code>\n"
+            f"• <b>Stop Losses Updated:</b> <code>0</code>\n\n"
+            f"💡 <i>Break-Even protects profit and only triggers when a trade is already in positive floating gain. Current trades have not exceeded entry + {lock_pips} pip buffer yet.</i>"
+        )
+    else:
+        status_badge = "🟢 RISK ELIMINATED" if skipped == 0 else "🟡 PARTIALLY APPLIED"
+        msg = (
+            "🛡️ <b>BREAK-EVEN PROTECTION SYNCHRONIZED</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Target:</b> <code>{target_label}</code>\n"
+            f"• <b>Status:</b> <b>{status_badge}</b>\n"
+            f"• <b>Orders Protected:</b> <b>{modified}</b>\n"
+            f"• <b>Skipped (Not in Profit):</b> <code>{skipped}</code>\n"
+            f"• <b>Profit Locked:</b> <b>+{lock_pips} pip(s)</b> above entry\n\n"
+            "🔒 <i>Positions are now risk-free. If price reverses, capital is preserved.</i>"
+        )
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💼 View Positions", callback_data="nav_pos"),
+            InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+        ]
+    ])
+    await send_or_edit(update, context, msg, reply_markup=kb)
+
+@restricted
+async def cmd_trailing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Activate or adjust dynamic Trailing Stop on open profitable positions."""
+    args = context.args or []
+    target_sym = ""
+    ticket_num = 0
+    trail_pips = 20
+
+    if len(args) >= 1:
+        arg0 = args[0].strip()
+        if arg0.isdigit():
+            ticket_num = int(arg0)
+        elif arg0.upper() not in ["ALL", "*"]:
+            target_sym = clean_symbol(arg0)
+
+    if len(args) >= 2:
+        try:
+            trail_pips = max(5, int(float(args[1])))
+        except ValueError:
+            trail_pips = 20
+    elif len(args) == 1 and args[0].isdigit() and int(args[0]) > 1000000:
+        pass
+    elif len(args) == 1 and args[0].isdigit() and int(args[0]) <= 500:
+        trail_pips = max(5, int(args[0]))
+        ticket_num = 0
+
+    data = zmq_client.set_trailing(symbol=target_sym, ticket=ticket_num, trail_pips=trail_pips)
+    if data.get("status") != "ok":
+        err_msg = (
+            f"❌ <b>Trailing Stop Execution Failed:</b>\n"
+            f"<i>{data.get('message', 'Terminal unreachable on ZeroMQ socket.')}</i>"
+        )
+        await send_or_edit(update, context, err_msg)
+        return
+
+    modified = data.get("modified_count", 0)
+    skipped = data.get("skipped_count", 0)
+    target_label = f"Ticket #{ticket_num}" if ticket_num > 0 else (target_sym if target_sym else "ALL OPEN POSITIONS")
+
+    if modified == 0 and skipped == 0:
+        msg = (
+            "ℹ️ <b>NO ELIGIBLE ORDERS FOUND:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Target:</b> <code>{target_label}</code>\n"
+            "• No open market orders matched the target query."
+        )
+    elif modified == 0 and skipped > 0:
+        msg = (
+            "⚠️ <b>TRAILING STOP CRITERIA NOT MET:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Target:</b> <code>{target_label}</code>\n"
+            f"• <b>Orders Evaluated:</b> <code>{skipped}</code>\n"
+            f"• <b>Stop Losses Stepped:</b> <code>0</code>\n\n"
+            f"💡 <i>Trailing Stop steps SL forward only after profit exceeds the {trail_pips} pip threshold. Existing SL levels are already at optimal protection.</i>"
+        )
+    else:
+        msg = (
+            "⚡ <b>TRAILING STOP SYNCHRONIZED</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Target:</b> <code>{target_label}</code>\n"
+            f"• <b>Orders Updated:</b> <b>{modified}</b>\n"
+            f"• <b>Trailing Distance:</b> <code>{trail_pips} pips</code>\n"
+            f"• <b>Skipped:</b> <code>{skipped}</code>\n\n"
+            "📈 <i>Stop Loss will step forward as market price advances in your favor.</i>"
+        )
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💼 View Positions", callback_data="nav_pos"),
+            InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+        ]
+    ])
+    await send_or_edit(update, context, msg, reply_markup=kb)
 
 @restricted
 async def cmd_close_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args or []
     if not args:
-        await update.message.reply_text(
+        guide_msg = (
             "ℹ️ <b>Close Order Usage:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "• <code>/close SYMBOL</code> — Close all trades for symbol (e.g. <code>/close GBPUSD</code>, <code>/close GOLD</code>)\n"
             "• <code>/close TICKET</code> — Close specific ticket (e.g. <code>/close 35183711</code>)\n"
-            "• <code>/panic</code> — Liquidate entire book immediately",
-            parse_mode=ParseMode.HTML
+            "• <code>/panic</code> or <code>/close all</code> — Liquidate entire book immediately"
         )
+        await send_or_edit(update, context, guide_msg)
+        return
+
+    arg0 = args[0].strip().upper()
+    if arg0 in ["ALL", "*"]:
+        await cmd_closeall(update, context)
         return
 
     target = clean_symbol(args[0])
     data = zmq_client.close_symbol(target)
     if data.get("status") != "ok":
-        await update.message.reply_text(f"❌ <b>Execution Error:</b> {data.get('message')}", parse_mode=ParseMode.HTML)
+        await send_or_edit(update, context, f"❌ <b>Execution Error:</b> {data.get('message')}")
         return
 
     closed = data.get("closed_count", 0)
@@ -677,40 +915,57 @@ async def cmd_close_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     r_sign = "+" if realized >= 0 else ""
 
     if closed == 0 and failed == 0:
-        await update.message.reply_text(
-            f"ℹ️ <b>No Open Trades Found:</b> No active market orders match target <code>{target}</code>.",
-            parse_mode=ParseMode.HTML
+        await send_or_edit(
+            update,
+            context,
+            f"ℹ️ <b>No Open Trades Found:</b> No active market orders match target <code>{target}</code>."
         )
         return
 
+    if closed > 0 and failed == 0:
+        badge = "🎯 <b>LIQUIDATION COMPLETED</b>"
+    elif closed > 0 and failed > 0:
+        badge = "⚠️ <b>PARTIALLY LIQUIDATED</b>"
+    else:
+        badge = "❌ <b>LIQUIDATION FAILED</b>"
+
     msg = (
-        f"🎯 <b>MARKET LIQUIDATION EXECUTED</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{badge}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Target:</b> <code>{target}</code>\n"
         f"• <b>Orders Closed:</b> <b>{closed}</b>\n"
         f"• <b>Orders Failed:</b> <b>{failed}</b>\n"
         f"• <b>Realized P/L:</b>  <b>{r_sign}${realized:,.2f}</b>"
     )
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💼 View Positions", callback_data="nav_pos"),
+            InlineKeyboardButton("📊 Status Panel", callback_data="nav_status")
+        ]
+    ])
+    await send_or_edit(update, context, msg, reply_markup=kb)
 
 @restricted
 async def cmd_modify_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args or []
     if len(args) < 2:
-        await update.message.reply_text(
+        guide_msg = (
             "ℹ️ <b>Modify Stop Loss Usage:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "• <code>/modify_sl SYMBOL PRICE</code> — e.g. <code>/modify_sl GBPUSD 1.3520</code>\n"
             "• <code>/modify_sl TICKET PRICE</code> — e.g. <code>/modify_sl 35183711 1.3520</code>\n"
-            "• <code>/modify_sl GBPUSD 0</code> — Remove Stop Loss",
-            parse_mode=ParseMode.HTML
+            "• <code>/modify_sl GBPUSD 0</code> — Remove Stop Loss"
         )
+        await send_or_edit(update, context, guide_msg)
         return
 
     target = clean_symbol(args[0])
     try:
         sl_price = float(args[1])
+        if sl_price < 0.0:
+            raise ValueError("Negative price")
     except ValueError:
-        await update.message.reply_text("❌ <b>Invalid Price:</b> Stop Loss price must be a valid numeric value.", parse_mode=ParseMode.HTML)
+        await send_or_edit(update, context, "❌ <b>Invalid Price:</b> Stop Loss price must be a valid non-negative number.")
         return
 
     if target.isdigit():
@@ -719,10 +974,18 @@ async def cmd_modify_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         data = zmq_client.modify_sl(symbol=target, sl=sl_price)
 
     if data.get("status") != "ok":
-        await update.message.reply_text(f"❌ <b>Error Modifying SL:</b> {data.get('message')}", parse_mode=ParseMode.HTML)
+        await send_or_edit(update, context, f"❌ <b>Error Modifying SL:</b> {data.get('message')}")
         return
 
     count = data.get("modified_count", 0)
+    if count == 0:
+        await send_or_edit(
+            update,
+            context,
+            f"ℹ️ <b>No Orders Updated:</b> No open trades matching target <code>{target}</code> were found."
+        )
+        return
+
     sl_action = "Removed (0.0)" if sl_price == 0.0 else f"<code>{sl_price}</code>"
     msg = (
         "✅ <b>STOP LOSS SYNCHRONIZED</b>\n"
@@ -731,26 +994,29 @@ async def cmd_modify_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"• <b>New SL Level:</b> {sl_action}\n"
         f"• <b>Orders Updated:</b> <b>{count}</b>"
     )
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg)
 
 @restricted
 async def cmd_modify_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args or []
     if len(args) < 2:
-        await update.message.reply_text(
+        guide_msg = (
             "ℹ️ <b>Modify Take Profit Usage:</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "• <code>/modify_tp SYMBOL PRICE</code> — e.g. <code>/modify_tp GBPUSD 1.3650</code>\n"
             "• <code>/modify_tp TICKET PRICE</code> — e.g. <code>/modify_tp 35183711 1.3650</code>\n"
-            "• <code>/modify_tp GBPUSD 0</code> — Remove Take Profit",
-            parse_mode=ParseMode.HTML
+            "• <code>/modify_tp GBPUSD 0</code> — Remove Take Profit"
         )
+        await send_or_edit(update, context, guide_msg)
         return
 
     target = clean_symbol(args[0])
     try:
         tp_price = float(args[1])
+        if tp_price < 0.0:
+            raise ValueError("Negative price")
     except ValueError:
-        await update.message.reply_text("❌ <b>Invalid Price:</b> Take Profit price must be a valid numeric value.", parse_mode=ParseMode.HTML)
+        await send_or_edit(update, context, "❌ <b>Invalid Price:</b> Take Profit price must be a valid non-negative number.")
         return
 
     if target.isdigit():
@@ -759,10 +1025,18 @@ async def cmd_modify_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         data = zmq_client.modify_tp(symbol=target, tp=tp_price)
 
     if data.get("status") != "ok":
-        await update.message.reply_text(f"❌ <b>Error Modifying TP:</b> {data.get('message')}", parse_mode=ParseMode.HTML)
+        await send_or_edit(update, context, f"❌ <b>Error Modifying TP:</b> {data.get('message')}")
         return
 
     count = data.get("modified_count", 0)
+    if count == 0:
+        await send_or_edit(
+            update,
+            context,
+            f"ℹ️ <b>No Orders Updated:</b> No open trades matching target <code>{target}</code> were found."
+        )
+        return
+
     tp_action = "Removed (0.0)" if tp_price == 0.0 else f"<code>{tp_price}</code>"
     msg = (
         "✅ <b>TAKE PROFIT SYNCHRONIZED</b>\n"
@@ -771,7 +1045,7 @@ async def cmd_modify_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"• <b>New TP Level:</b> {tp_action}\n"
         f"• <b>Orders Updated:</b> <b>{count}</b>"
     )
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg)
 
 @restricted
 async def cmd_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -786,7 +1060,9 @@ async def cmd_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
+    await send_or_edit(
+        update,
+        context,
         "⚠️ <b>EMERGENCY KILL-SWITCH CONFIRMATION</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Are you sure you want to market-liquidate <b>ALL {count} open positions</b> immediately?\n"
@@ -837,7 +1113,7 @@ async def cmd_pause_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• Global Variable <code>AutoTrading_Paused</code> set to <b>1.0</b>\n"
         f"• AutoTrading EAs will immediately freeze all new order placement.{conn_note}"
     )
-    await update.message.reply_text(msg, reply_markup=get_nav_keyboard("status"), parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("status"))
 
 @restricted
 async def cmd_resume_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -852,13 +1128,13 @@ async def cmd_resume_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "• Global Variable <code>AutoTrading_Paused</code> set to <b>0.0</b>\n"
         f"• AutoTrading EAs have resumed full scanning and order execution.{conn_note}"
     )
-    await update.message.reply_text(msg, reply_markup=get_nav_keyboard("status"), parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("status"))
 
 @restricted
 async def cmd_colors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = zmq_client.apply_colors()
     if data.get("status") != "ok":
-        await update.message.reply_text(f"⚠️ <b>MT4 Error:</b> {data.get('message', 'Failed to apply colors')}", parse_mode=ParseMode.HTML)
+        await send_or_edit(update, context, f"⚠️ <b>MT4 Error:</b> {data.get('message', 'Failed to apply colors')}")
         return
 
     count = data.get("synced_count", 0)
@@ -871,21 +1147,34 @@ async def cmd_colors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "• <b>Background:</b> Solid Dark Terminal Slate\n"
         "• <b>Result:</b> All charts updated in real time! ✅"
     )
-    await update.message.reply_text(msg, reply_markup=get_nav_keyboard("status"), parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("status"))
 
 @restricted
 async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = context.args or []
+    scope = "today"
     if args and args[0].lower() in ["week", "thisweek"]:
         events = news_service.get_week_events()
         title = "This Week's High-Impact Economic Calendar"
+        scope = "week"
     else:
         events = news_service.get_today_events()
         title = "Today's High-Impact Economic Calendar"
+        scope = "today"
 
     messages = news_service.format_news_messages(events, title)
-    for msg in messages:
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    kb = get_news_keyboard(scope)
+    for i, msg in enumerate(messages):
+        cur_kb = kb if i == len(messages) - 1 else None
+        if i == 0:
+            await send_or_edit(update, context, msg, reply_markup=cur_kb)
+        else:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=msg,
+                reply_markup=cur_kb,
+                parse_mode=ParseMode.HTML
+            )
 
 # ==============================================================================
 # Interactive Screenshot Panel
@@ -946,7 +1235,7 @@ async def cmd_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "Select the currency pair or financial asset you wish to render:"
     )
-    await update.message.reply_text(msg, reply_markup=get_symbol_keyboard(), parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard())
 
 async def cb_screenshot_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1283,34 +1572,142 @@ async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await cmd_report(update, context)
     elif data in ["nav_boost", "nav_refresh:boost"]:
         await cmd_boost(update, context)
+    elif data == "nav_be_all":
+        await cmd_breakeven(update, context)
     elif data == "nav_shot":
         msg = (
             "📸 <b>INSTITUTIONAL CHART SNAPSHOT WIZARD</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "Select the currency pair or financial asset you wish to render:"
         )
-        if update.callback_query:
-            try:
-                await update.callback_query.edit_message_text(msg, reply_markup=get_symbol_keyboard(), parse_mode=ParseMode.HTML)
-            except Exception:
-                await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=get_symbol_keyboard(), parse_mode=ParseMode.HTML)
+        await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard())
     elif data == "boost_colors":
         res = zmq_client.apply_colors()
         count = res.get("synced_count", 0)
         await query.answer(f"🎨 Synchronized {count} charts to GBPUSD scheme!", show_alert=True)
     elif data == "nav_panic":
-        keyboard = [
-            [
-                InlineKeyboardButton("🚨 CONFIRM EMERGENCY LIQUIDATE ALL", callback_data="confirm_close_all"),
-                InlineKeyboardButton("❌ Cancel", callback_data="cancel_close_all")
-            ]
-        ]
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="⚠️ <b>CONFIRMATION REQUIRED</b>\n\nAre you sure you want to close <b>ALL active market positions</b> immediately?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=ParseMode.HTML
+        await cmd_closeall(update, context)
+
+@restricted
+async def cb_history_filter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles 1-tap history filtering (Last 10, Today, Week)."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    filter_val = data.split(":", 1)[1] if ":" in data else "10"
+    context.args = [filter_val]
+    await cmd_history(update, context)
+
+@restricted
+async def cb_news_filter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles 1-tap economic calendar filtering (Today, Week)."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    scope_val = data.split(":", 1)[1] if ":" in data else "today"
+    context.args = [scope_val]
+    await cmd_news(update, context)
+
+@restricted
+async def cb_ea_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles 1-tap trade liquidation from EA notification buttons (e.g. /close_12345)."""
+    query = update.callback_query
+    data = query.data or ""
+    ticket_str = data.lstrip("/").split("_", 1)[1] if "_" in data else ""
+    if not ticket_str.isdigit():
+        await query.answer("❌ Invalid ticket parameter", show_alert=True)
+        return
+
+    await query.answer(f"Liquidating order #{ticket_str}...", show_alert=False)
+    res = zmq_client.close_symbol(ticket_str)
+    if res.get("status") == "ok" and res.get("closed_count", 0) > 0:
+        r_pl = float(res.get("realized_pl", 0.0))
+        sign = "+" if r_pl >= 0 else ""
+        await query.answer(f"✅ Order #{ticket_str} Liquidated ({sign}${r_pl:,.2f})", show_alert=True)
+        msg = (
+            "🏁 <b>POSITION LIQUIDATED BY REMOTE COMMAND</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Ticket:</b> <code>#{ticket_str}</code>\n"
+            f"• <b>Realized P/L:</b> <b>{sign}${r_pl:,.2f}</b>\n"
+            "• <i>Market exposure closed successfully.</i>"
         )
+        await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("status"))
+    else:
+        err = res.get("message", "Order already closed or MT4 offline")
+        await query.answer(f"❌ Failed: {err}", show_alert=True)
+
+@restricted
+async def cb_ea_half(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles 50% partial close from EA notification buttons (e.g. /half_12345)."""
+    query = update.callback_query
+    data = query.data or ""
+    ticket_str = data.lstrip("/").split("_", 1)[1] if "_" in data else ""
+    if not ticket_str.isdigit():
+        await query.answer("❌ Invalid ticket parameter", show_alert=True)
+        return
+
+    await query.answer("Executing 50% partial close...", show_alert=False)
+    res = zmq_client.close_half(int(ticket_str))
+    if res.get("status") == "ok":
+        closed_lots = float(res.get("closed_lots", 0.0))
+        rem_lots = float(res.get("remaining_lots", 0.0))
+        r_pl = float(res.get("realized_pl", 0.0))
+        sign = "+" if r_pl >= 0 else ""
+        await query.answer(f"✂️ Closed {closed_lots:.2f}L on #{ticket_str} ({sign}${r_pl:,.2f})", show_alert=True)
+        msg = (
+            "✂️ <b>50% PARTIAL CLOSE COMPLETED</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Ticket:</b> <code>#{ticket_str}</code>\n"
+            f"• <b>Closed Volume:</b> <code>{closed_lots:.2f} lots</code>\n"
+            f"• <b>Remaining Volume:</b> <code>{rem_lots:.2f} lots</code>\n"
+            f"• <b>Realized P/L:</b> <b>{sign}${r_pl:,.2f}</b>"
+        )
+        await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("positions"))
+    else:
+        err = res.get("message", "MT4 offline or position unavailable")
+        await query.answer(f"❌ Partial close failed: {err}", show_alert=True)
+
+@restricted
+async def cb_ea_be(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles 1-tap Break-Even from EA notification buttons (e.g. /be_12345)."""
+    query = update.callback_query
+    data = query.data or ""
+    ticket_str = data.lstrip("/").split("_", 1)[1] if "_" in data else ""
+    if not ticket_str.isdigit():
+        await query.answer("❌ Invalid ticket parameter", show_alert=True)
+        return
+
+    await query.answer("Locking Break-Even...", show_alert=False)
+    res = zmq_client.set_breakeven(ticket=int(ticket_str), lock_pips=1)
+    if res.get("status") == "ok" and res.get("modified_count", 0) > 0:
+        await query.answer(f"🛡️ Break-Even active for #{ticket_str} (+1 pip locked)!", show_alert=True)
+        msg = (
+            "🛡️ <b>BREAK-EVEN SYNCHRONIZED</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Ticket:</b> <code>#{ticket_str}</code>\n"
+            "• <b>Status:</b> <b>Risk-Free (Profit Protected)</b>\n"
+            "• <b>Locked Buffer:</b> +1 pip above entry"
+        )
+        await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("positions"))
+    elif res.get("skipped_count", 0) > 0:
+        await query.answer(f"⚠️ Position #{ticket_str} is not in profit yet (+1 pip threshold).", show_alert=True)
+    else:
+        err = res.get("message", "Order not found or already closed")
+        await query.answer(f"❌ Failed: {err}", show_alert=True)
+
+@restricted
+async def cb_ea_shot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles 1-tap chart snapshot from EA notification buttons (e.g. /shot_GBPUSD_H1)."""
+    query = update.callback_query
+    data = query.data or ""
+    parts = data.lstrip("/").split("_")
+    sym = parts[1] if len(parts) > 1 else "CURRENT"
+    tf = parts[2] if len(parts) > 2 else "H1"
+    await query.answer(f"Capturing {sym} ({tf})...", show_alert=False)
+    chat_id = update.effective_chat.id
+    success = await execute_screenshot_delivery(chat_id, context, sym, tf)
+    if not success:
+        await send_or_edit(update, context, f"⚠️ Failed to capture chart for {sym} ({tf}).")
 
 # Command Aliases
 cmd_switch = cmd_accounts
@@ -1318,3 +1715,6 @@ cmd_panic = cmd_closeall
 cmd_status = cmd_account
 cmd_pause = cmd_pause_bot
 cmd_resume = cmd_resume_bot
+cmd_be = cmd_breakeven
+cmd_trail = cmd_trailing
+cmd_calendar = cmd_news

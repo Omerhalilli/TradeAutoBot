@@ -135,11 +135,20 @@ class MT4ZmqClient:
     def close_symbol(self, symbol: str) -> Dict[str, Any]:
         return self.send_command("CLOSE_SYMBOL", symbol=symbol)
 
+    def close_half(self, ticket: int) -> Dict[str, Any]:
+        return self.send_command("CLOSE_HALF", ticket=ticket)
+
     def modify_sl(self, symbol: str = "", ticket: int = 0, sl: float = 0.0) -> Dict[str, Any]:
         return self.send_command("MODIFY_SL", symbol=symbol, ticket=ticket, sl=sl)
 
     def modify_tp(self, symbol: str = "", ticket: int = 0, tp: float = 0.0) -> Dict[str, Any]:
         return self.send_command("MODIFY_TP", symbol=symbol, ticket=ticket, tp=tp)
+
+    def set_breakeven(self, symbol: str = "", ticket: int = 0, lock_pips: int = 1) -> Dict[str, Any]:
+        return self.send_command("SET_BREAKEVEN", symbol=symbol, ticket=ticket, lock_pips=lock_pips)
+
+    def set_trailing(self, symbol: str = "", ticket: int = 0, trail_pips: int = 20) -> Dict[str, Any]:
+        return self.send_command("SET_TRAILING", symbol=symbol, ticket=ticket, trail_pips=trail_pips)
 
     def pause_bot(self) -> Dict[str, Any]:
         return self.send_command("PAUSE_BOT")

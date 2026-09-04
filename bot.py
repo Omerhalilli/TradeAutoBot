@@ -46,6 +46,8 @@ async def post_init(application) -> None:
             BotCommand("accounts", "👥 Switch Accounts & Inspect BUY/SELL"),
             BotCommand("status", "📊 Account Balance, Equity & Health"),
             BotCommand("positions", "💼 View & Manage Active Trades"),
+            BotCommand("be", "🛡️ Move SL to Break-Even (+1 pip lock)"),
+            BotCommand("trailing", "⚡ Dynamic Trailing Stop (e.g. 20 pips)"),
             BotCommand("history", "📜 Closed Trades History & Net P/L"),
             BotCommand("screenshot", "📸 Interactive Chart Screenshot"),
             BotCommand("prop", "🛡️ Prop-Firm Risk Guardian Scorecard"),
@@ -113,6 +115,8 @@ def create_application():
     app.add_handler(CommandHandler(["accounts", "switch"], handlers.cmd_accounts))
     app.add_handler(CommandHandler(["status", "account"], handlers.cmd_account))
     app.add_handler(CommandHandler("positions", handlers.cmd_positions))
+    app.add_handler(CommandHandler(["be", "breakeven"], handlers.cmd_breakeven))
+    app.add_handler(CommandHandler(["trailing", "trail"], handlers.cmd_trailing))
     app.add_handler(CommandHandler(["prop", "risk"], handlers.cmd_prop))
     app.add_handler(CommandHandler("report", handlers.cmd_report))
     app.add_handler(CommandHandler(["screenshot", "screenphoto", "chart"], handlers.cmd_screenshot))
@@ -129,9 +133,15 @@ def create_application():
     # Callback Query Handlers
     app.add_handler(CallbackQueryHandler(handlers.cb_switch_account, pattern=r"^switch_acc:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^(nav_|boost_colors)"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_history_filter, pattern=r"^hist_filter:"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_news_filter, pattern=r"^news_filter:"))
     app.add_handler(CallbackQueryHandler(handlers.callback_closeall, pattern=r"^(confirm_close_all|cancel_close_all)$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_screenshot_symbol, pattern=r"^shotsym:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_screenshot_tf, pattern=r"^shottf:"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_ea_close, pattern=r"^/?close_\d+$"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_ea_half, pattern=r"^/?half_\d+$"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_ea_be, pattern=r"^/?be_\d+$"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_ea_shot, pattern=r"^/?shot_[A-Za-z0-9]+_[A-Za-z0-9]+$"))
 
     # Error Handler
     app.add_error_handler(error_handler)

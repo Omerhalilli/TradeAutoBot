@@ -269,7 +269,6 @@ string Zmq_HandleCloseAll()
 //+------------------------------------------------------------------+
 bool Zmq_SymbolsMatch(string orderSym, string targetSym)
 {
-   if(targetSym == "" || targetSym == "*") return true;
    string s1 = orderSym;
    string s2 = targetSym;
    StringToUpper(s1);
@@ -279,14 +278,42 @@ bool Zmq_SymbolsMatch(string orderSym, string targetSym)
    StringTrimLeft(s2);
    StringTrimRight(s2);
    
+   if(s2 == "" || s2 == "*" || s2 == "ALL") return true;
    if(s1 == s2) return true;
-   // User passed GBPUSD, broker has GBPUSDm or GBPUSD.ecn
-   if(StringFind(s1, s2) == 0) return true;
-   // User passed GBPUSDm, broker has GBPUSD
-   if(StringFind(s2, s1) == 0) return true;
-   // Substring check
+
+   // Normalize financial aliases
+   if(s2 == "GOLD") s2 = "XAUUSD";
+   if(s2 == "SILVER") s2 = "XAGUSD";
+   if(s2 == "OIL" || s2 == "CRUDE" || s2 == "WTI") s2 = "USOIL";
+   if(s2 == "BRENT") s2 = "UKOIL";
+   if(s2 == "BITCOIN" || s2 == "CRYPTO") s2 = "BTCUSD";
+
+   if(s1 == "GOLD") s1 = "XAUUSD";
+   if(s1 == "SILVER") s1 = "XAGUSD";
+   if(s1 == "OIL" || s1 == "CRUDE" || s1 == "WTI") s1 = "USOIL";
+   if(s1 == "BRENT") s1 = "UKOIL";
+   if(s1 == "BITCOIN" || s1 == "CRYPTO") s1 = "BTCUSD";
+
+   if(s1 == s2) return true;
+   // User passed GBPUSD, broker has GBPUSDm, GBPUSD.ecn, pro.GBPUSD
    if(StringFind(s1, s2) >= 0) return true;
+   // User passed GBPUSDm, broker has GBPUSD
+   if(StringFind(s2, s1) >= 0) return true;
    return false;
+}
+
+double Zmq_GetPipPoint(string sym)
+{
+   double pt = MarketInfo(sym, MODE_POINT);
+   int dig = (int)MarketInfo(sym, MODE_DIGITS);
+   if(pt <= 0.0)
+   {
+      if(dig == 3 || dig == 5) return 0.0001;
+      return 0.01;
+   }
+   if(dig == 3 || dig == 5)
+      return pt * 10.0;
+   return pt;
 }
 
 ENUM_TIMEFRAMES Zmq_StringToTimeframe(string tfStr)
@@ -429,6 +456,227 @@ string Zmq_HandleModifyTP(const string reqJson)
    }
    
    return "{\"status\":\"ok\",\"action\":\"MODIFY_TP\",\"modified_count\":" + IntegerToString(modified) + ",\"new_tp\":" + DoubleToString(newTP, 5) + "}";
+}
+
+string Zmq_HandleCloseHalf(const string reqJson)
+{
+   int ticket = (int)Zmq_ExtractJsonNumber(reqJson, "ticket", 0);
+   string sym = Zmq_ExtractJsonString(reqJson, "symbol");
+   if(ticket == 0 && StringToInteger(sym) > 0)
+      ticket = (int)StringToInteger(sym);
+      
+   if(ticket <= 0)
+      return "{\"status\":\"error\",\"message\":\"Missing or invalid ticket parameter\"}";
+      
+   if(!OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      return "{\"status\":\"error\",\"message\":\"Order #" + IntegerToString(ticket) + " not found or already closed\"}";
+      
+   int type = OrderType();
+   if(type != OP_BUY && type != OP_SELL)
+      return "{\"status\":\"error\",\"message\":\"Not an active market order\"}";
+      
+   string orderSym = OrderSymbol();
+   double totalLots = OrderLots();
+   double minLot = MarketInfo(orderSym, MODE_MINLOT);
+   double lotStep = MarketInfo(orderSym, MODE_LOTSTEP);
+   if(lotStep <= 0.0) lotStep = 0.01;
+   
+   double halfLots = MathFloor((totalLots / 2.0) / lotStep) * lotStep;
+   if(halfLots < minLot) halfLots = totalLots;
+   
+   RefreshRates();
+   double closePrice = (type == OP_BUY) ? MarketInfo(orderSym, MODE_BID) : MarketInfo(orderSym, MODE_ASK);
+   double plRatio = (totalLots > 0.0) ? (halfLots / totalLots) : 1.0;
+   double estPL = (OrderProfit() + OrderSwap() + OrderCommission()) * plRatio;
+   
+   bool ok = OrderClose(ticket, halfLots, closePrice, 5, clrOrange);
+   if(ok)
+   {
+      string json = "{";
+      json += "\"status\":\"ok\",";
+      json += "\"action\":\"CLOSE_HALF\",";
+      json += "\"ticket\":" + IntegerToString(ticket) + ",";
+      json += "\"closed_lots\":" + DoubleToString(halfLots, 2) + ",";
+      json += "\"remaining_lots\":" + DoubleToString(totalLots - halfLots, 2) + ",";
+      json += "\"realized_pl\":" + DoubleToString(estPL, 2);
+      json += "}";
+      return json;
+   }
+   else
+   {
+      return "{\"status\":\"error\",\"message\":\"OrderClose failed: Error " + IntegerToString(GetLastError()) + "\"}";
+   }
+}
+
+string Zmq_HandleSetBreakEven(const string reqJson)
+{
+   int ticket = (int)Zmq_ExtractJsonNumber(reqJson, "ticket", 0);
+   string symbol = Zmq_ExtractJsonString(reqJson, "symbol");
+   double lockPips = Zmq_ExtractJsonNumber(reqJson, "lock_pips", 1.0);
+   if(lockPips < 0.0) lockPips = 0.0;
+   
+   if(ticket == 0 && StringToInteger(symbol) > 0)
+   {
+      ticket = (int)StringToInteger(symbol);
+      symbol = "";
+   }
+   
+   int modified = 0;
+   int skipped = 0;
+   int total = OrdersTotal();
+   
+   for(int i = 0; i < total; i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(ticket > 0 && OrderTicket() != ticket) continue;
+      if(symbol != "" && !Zmq_SymbolsMatch(OrderSymbol(), symbol)) continue;
+      
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL) continue;
+      
+      string sym = OrderSymbol();
+      RefreshRates();
+      double pipPoint = Zmq_GetPipPoint(sym);
+      int digits = (int)MarketInfo(sym, MODE_DIGITS);
+      double openPrice = OrderOpenPrice();
+      double curSL = OrderStopLoss();
+      
+      if(type == OP_BUY)
+      {
+         double curBid = MarketInfo(sym, MODE_BID);
+         double targetSL = NormalizeDouble(openPrice + (lockPips * pipPoint), digits);
+         if(curBid > openPrice && (curSL < targetSL || curSL == 0.0))
+         {
+            if(OrderModify(OrderTicket(), openPrice, targetSL, OrderTakeProfit(), 0, clrLimeGreen))
+               modified++;
+            else
+               skipped++;
+         }
+         else
+         {
+            skipped++;
+         }
+      }
+      else if(type == OP_SELL)
+      {
+         double curAsk = MarketInfo(sym, MODE_ASK);
+         double targetSL = NormalizeDouble(openPrice - (lockPips * pipPoint), digits);
+         if(curAsk < openPrice && (curSL > targetSL || curSL == 0.0))
+         {
+            if(OrderModify(OrderTicket(), openPrice, targetSL, OrderTakeProfit(), 0, clrLimeGreen))
+               modified++;
+            else
+               skipped++;
+         }
+         else
+         {
+            skipped++;
+         }
+      }
+   }
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"SET_BREAKEVEN\",";
+   json += "\"modified_count\":" + IntegerToString(modified) + ",";
+   json += "\"skipped_count\":" + IntegerToString(skipped) + ",";
+   json += "\"lock_pips\":" + DoubleToString(lockPips, 1) + ",";
+   json += "\"target\":\"" + (ticket > 0 ? IntegerToString(ticket) : (symbol == "" ? "ALL" : symbol)) + "\"";
+   json += "}";
+   return json;
+}
+
+string Zmq_HandleSetTrailing(const string reqJson)
+{
+   int ticket = (int)Zmq_ExtractJsonNumber(reqJson, "ticket", 0);
+   string symbol = Zmq_ExtractJsonString(reqJson, "symbol");
+   double trailPips = Zmq_ExtractJsonNumber(reqJson, "trail_pips", 20.0);
+   if(trailPips < 5.0) trailPips = 5.0;
+   
+   if(ticket == 0 && StringToInteger(symbol) > 0)
+   {
+      ticket = (int)StringToInteger(symbol);
+      symbol = "";
+   }
+   
+   int modified = 0;
+   int skipped = 0;
+   int total = OrdersTotal();
+   
+   for(int i = 0; i < total; i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(ticket > 0 && OrderTicket() != ticket) continue;
+      if(symbol != "" && !Zmq_SymbolsMatch(OrderSymbol(), symbol)) continue;
+      
+      int type = OrderType();
+      if(type != OP_BUY && type != OP_SELL) continue;
+      
+      string sym = OrderSymbol();
+      RefreshRates();
+      double pipPoint = Zmq_GetPipPoint(sym);
+      int digits = (int)MarketInfo(sym, MODE_DIGITS);
+      double openPrice = OrderOpenPrice();
+      double curSL = OrderStopLoss();
+      double trailDist = trailPips * pipPoint;
+      
+      if(type == OP_BUY)
+      {
+         double curBid = MarketInfo(sym, MODE_BID);
+         if(curBid - openPrice > trailDist)
+         {
+            double newSL = NormalizeDouble(curBid - trailDist, digits);
+            if(newSL > curSL)
+            {
+               if(OrderModify(OrderTicket(), openPrice, newSL, OrderTakeProfit(), 0, clrDodgerBlue))
+                  modified++;
+               else
+                  skipped++;
+            }
+            else
+            {
+               skipped++;
+            }
+         }
+         else
+         {
+            skipped++;
+         }
+      }
+      else if(type == OP_SELL)
+      {
+         double curAsk = MarketInfo(sym, MODE_ASK);
+         if(openPrice - curAsk > trailDist)
+         {
+            double newSL = NormalizeDouble(curAsk + trailDist, digits);
+            if(newSL < curSL || curSL == 0.0)
+            {
+               if(OrderModify(OrderTicket(), openPrice, newSL, OrderTakeProfit(), 0, clrDodgerBlue))
+                  modified++;
+               else
+                  skipped++;
+            }
+            else
+            {
+               skipped++;
+            }
+         }
+         else
+         {
+            skipped++;
+         }
+      }
+   }
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"SET_TRAILING\",";
+   json += "\"modified_count\":" + IntegerToString(modified) + ",";
+   json += "\"skipped_count\":" + IntegerToString(skipped) + ",";
+   json += "\"trail_pips\":" + DoubleToString(trailPips, 1) + ",";
+   json += "\"target\":\"" + (ticket > 0 ? IntegerToString(ticket) : (symbol == "" ? "ALL" : symbol)) + "\"";
+   json += "}";
+   return json;
 }
 
 string Zmq_HandlePauseBot()
@@ -818,10 +1066,16 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleCloseAll();
    if(action == "CLOSE_SYMBOL" || action == "CLOSE")
       return Zmq_HandleCloseSymbol(reqStr);
+   if(action == "CLOSE_HALF" || action == "HALF" || action == "CLOSEHALF")
+      return Zmq_HandleCloseHalf(reqStr);
    if(action == "MODIFY_SL")
       return Zmq_HandleModifySL(reqStr);
    if(action == "MODIFY_TP")
       return Zmq_HandleModifyTP(reqStr);
+   if(action == "SET_BREAKEVEN" || action == "BREAKEVEN" || action == "BE")
+      return Zmq_HandleSetBreakEven(reqStr);
+   if(action == "SET_TRAILING" || action == "TRAILING" || action == "TRAIL")
+      return Zmq_HandleSetTrailing(reqStr);
    if(action == "PAUSE_BOT" || action == "PAUSE")
       return Zmq_HandlePauseBot();
    if(action == "RESUME_BOT" || action == "RESUME")
