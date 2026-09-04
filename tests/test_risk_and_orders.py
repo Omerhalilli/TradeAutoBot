@@ -123,6 +123,100 @@ class TestRiskAndOrders(unittest.TestCase):
 
         asyncio.run(run_order())
 
+    def test_scale_out_and_cost_average(self):
+        async def run_scale():
+            order = TradeOrder(
+                symbol="GBPUSD",
+                side=OrderSide.BUY,
+                lots=0.20,
+                price=1.3000,
+                sl=1.2950,
+                tp=1.3100
+            )
+            res = await self.order_mgr.submit_order(order)
+            self.assertTrue(res.get("success"))
+            ticket = order.ticket
+
+            # Test Scale Out
+            scale_res = await self.order_mgr.scale_out(ticket, lots=0.10)
+            self.assertTrue(scale_res["success"])
+            self.assertAlmostEqual(scale_res["remaining_lots"], 0.10, places=2)
+
+            # Test Cost Average
+            ca_res = await self.order_mgr.cost_average(ticket, additional_lots=0.10, price_step_pips=15.0)
+            self.assertTrue(ca_res.get("success"))
+
+        asyncio.run(run_scale())
+
+    def test_partial_take_profit_and_partial_sl(self):
+        async def run_partial():
+            from autotrade.orders.order_types import PartialTarget
+            order = TradeOrder(
+                ticket=99901,
+                symbol="EURUSD",
+                side=OrderSide.BUY,
+                lots=0.10,
+                price=1.0800,
+                sl=1.0760,
+                tp=1.0900,
+                partial_targets=[
+                    PartialTarget(target_price=1.0850, close_fraction=0.50)
+                ]
+            )
+            self.order_mgr.position_tracker.register_order(order)
+
+            # Price reaches TP target 1.0855
+            await self.order_mgr.position_tracker._evaluate_single_position(
+                ticket=99901,
+                symbol="EURUSD",
+                cmd="BUY",
+                open_price=1.0800,
+                current_price=1.0855,
+                current_sl=1.0760,
+                lots=0.10
+            )
+            self.assertTrue(order.partial_targets[0].is_executed)
+            self.assertAlmostEqual(order.lots, 0.05, places=2)
+
+            # Adverse drift 75% towards SL (1.0800 - 0.75 * 0.0040 = 1.0770)
+            await self.order_mgr.position_tracker._evaluate_single_position(
+                ticket=99901,
+                symbol="EURUSD",
+                cmd="BUY",
+                open_price=1.0800,
+                current_price=1.0768,
+                current_sl=1.0760,
+                lots=0.05
+            )
+            self.assertTrue(getattr(order, "partial_sl_executed", False))
+
+        asyncio.run(run_partial())
+
+    def test_correlation_limit_and_trade_count_halt(self):
+        account = {"balance": 100000.0, "equity": 100000.0, "margin_free": 90000.0}
+        
+        # Test correlation limit rejection (max 2 positions)
+        correlated_pos = [
+            {"symbol": "GBPUSD", "cmd": "BUY", "lots": 0.1},
+            {"symbol": "EURUSD", "cmd": "BUY", "lots": 0.1},
+            {"symbol": "AUDUSD", "cmd": "BUY", "lots": 0.1},
+        ]
+        res = self.risk.evaluate_order_risk(
+            symbol="NZDUSD", cmd="BUY", lots=0.1, price=0.6000,
+            sl=0.5950, tp=0.6100, account_info=account, open_positions=correlated_pos
+        )
+        self.assertFalse(res.passed)
+        self.assertIn("Correlation exposure limit exceeded", res.reason)
+
+        # Test daily trade limit halt
+        self.risk._daily_trades_count = self.risk.config.risk.daily_trade_limit
+        res_halt = self.risk.evaluate_order_risk(
+            symbol="EURUSD", cmd="BUY", lots=0.05, price=1.0800,
+            sl=1.0750, tp=1.0900, account_info=account, open_positions=[]
+        )
+        self.assertFalse(res_halt.passed)
+        self.assertTrue(self.risk._is_daily_halted)
+
 
 if __name__ == "__main__":
     unittest.main()

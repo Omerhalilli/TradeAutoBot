@@ -68,7 +68,44 @@ class TestMathModels(unittest.TestCase):
         pred = PredictiveModels.predict_price_direction(ohlcv)
         self.assertIn(pred["action"], ["BUY", "SELL", "HOLD"])
         self.assertTrue(0.0 <= pred["confidence"] <= 1.0)
+        self.assertIn("random_forest", pred["models"])
+        self.assertIn("gradient_boost", pred["models"])
+        self.assertIn("lstm", pred["models"])
+
+    def test_random_forest_classifier(self):
+        from autotrade.analytics.math_models import RandomForestPriceClassifier
+        X = np.random.randn(50, 4)
+        y = np.random.randint(0, 3, size=50)
+        rf = RandomForestPriceClassifier(n_estimators=5, max_depth=3)
+        rf.fit(X, y)
+        probs = rf.predict_proba(X[:5])
+        self.assertEqual(probs.shape, (5, 3))
+        self.assertTrue(np.allclose(probs.sum(axis=1), 1.0))
+        preds = rf.predict(X[:5])
+        self.assertEqual(len(preds), 5)
+
+    def test_gradient_boost_classifier(self):
+        from autotrade.analytics.math_models import GradientBoostedPriceClassifier
+        X = np.random.randn(50, 4)
+        y = np.random.randint(0, 3, size=50)
+        gb = GradientBoostedPriceClassifier(n_estimators=5, learning_rate=0.1, max_depth=2)
+        gb.fit(X, y)
+        probs = gb.predict_proba(X[:5])
+        self.assertEqual(probs.shape, (5, 3))
+        self.assertTrue(np.allclose(probs.sum(axis=1), 1.0))
+        preds = gb.predict(X[:5])
+        self.assertEqual(len(preds), 5)
+
+    def test_lstm_price_predictor(self):
+        from autotrade.analytics.math_models import LSTMPricePredictor
+        seq = np.random.randn(15, 6)
+        lstm = LSTMPricePredictor(input_dim=6, hidden_dim=12, output_dim=3)
+        res = lstm.predict(seq)
+        self.assertIn(res["prediction"], ["BUY", "SELL", "HOLD"])
+        self.assertEqual(len(res["probabilities"]), 3)
+        self.assertAlmostEqual(sum(res["probabilities"]), 1.0, places=4)
 
 
 if __name__ == "__main__":
     unittest.main()
+

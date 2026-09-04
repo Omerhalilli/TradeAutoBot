@@ -79,52 +79,88 @@ class HealingEngine:
     def heal_compilation_errors_sync(self, error_details: List[Dict[str, Any]]) -> RepairReport:
         """
         Synchronous healing loop. Attempts candidate patches and re-tests compilation.
+        Iterates repeatedly until no errors remain or max_attempts is reached.
         """
         report = RepairReport()
-        if not error_details:
-            report.resolved = True
-            return report
+        logger.info(f"Self-Healing Engine initiated for compilation anomalies (max {self.max_attempts} passes)...")
 
-        logger.info(f"Self-Healing Engine initiated for {len(error_details)} compilation anomalies...")
+        for iteration in range(self.max_attempts):
+            # Check current compilation status
+            check = self.compiler.compile_all_sync()
+            if check.success:
+                report.resolved = True
+                logger.info(f"✅ Self-Healing completed successfully at iteration {iteration + 1}. All code compiled cleanly.")
+                break
 
-        for err in error_details:
-            file_path = err.get("file_path", "")
-            lineno = err.get("line_number", 1)
-            msg = err.get("message", "")
-            err_type = err.get("error_type", "SyntaxError")
-            
-            if not os.path.exists(file_path):
-                continue
-                
-            report.attempted += 1
-            success = self._attempt_file_heal(file_path, lineno, msg, err_type)
-            
-            if success:
-                report.succeeded += 1
-                report.details.append({
-                    "file": file_path,
-                    "line": lineno,
-                    "status": "HEALED",
-                    "error": msg
-                })
-                logger.info(f"✅ Successfully healed {file_path}:{lineno}")
-                event_bus.publish(
-                    EventType.SELF_HEAL_RESOLVED,
-                    payload={"file": file_path, "line": lineno},
-                    priority=EventPriority.HIGH,
-                    source="HealingEngine"
-                )
-            else:
-                report.failed += 1
-                report.details.append({
-                    "file": file_path,
-                    "line": lineno,
-                    "status": "FAILED",
-                    "error": msg
-                })
-                logger.error(f"❌ Failed to heal {file_path}:{lineno}")
+            current_errors = [
+                {
+                    "file_path": e.file_path,
+                    "line_number": e.line_number,
+                    "message": e.message,
+                    "error_type": e.error_type
+                }
+                for e in check.error_details
+            ] if iteration > 0 else (error_details or [
+                {
+                    "file_path": e.file_path,
+                    "line_number": e.line_number,
+                    "message": e.message,
+                    "error_type": e.error_type
+                }
+                for e in check.error_details
+            ])
 
-        # Post-heal verification
+            if not current_errors:
+                report.resolved = True
+                break
+
+            any_healed_this_pass = False
+
+            for err in current_errors:
+                file_path = err.get("file_path", "")
+                lineno = err.get("line_number", 1)
+                msg = err.get("message", "")
+                err_type = err.get("error_type", "SyntaxError")
+
+                if not os.path.exists(file_path):
+                    continue
+
+                report.attempted += 1
+                success = self._attempt_file_heal(file_path, lineno, msg, err_type)
+
+                if success:
+                    any_healed_this_pass = True
+                    report.succeeded += 1
+                    report.details.append({
+                        "file": file_path,
+                        "line": lineno,
+                        "status": "HEALED",
+                        "error": msg,
+                        "pass": iteration + 1
+                    })
+                    logger.info(f"✅ Successfully healed {file_path}:{lineno} (pass {iteration + 1})")
+                    event_bus.publish(
+                        EventType.SELF_HEAL_RESOLVED,
+                        payload={"file": file_path, "line": lineno},
+                        priority=EventPriority.HIGH,
+                        source="HealingEngine"
+                    )
+                else:
+                    report.failed += 1
+                    report.details.append({
+                        "file": file_path,
+                        "line": lineno,
+                        "status": "FAILED",
+                        "error": msg,
+                        "pass": iteration + 1
+                    })
+                    logger.error(f"❌ Failed to heal {file_path}:{lineno}")
+
+            if not any_healed_this_pass:
+                # No progress could be made in this pass
+                break
+
+        # Final verification
         final_check = self.compiler.compile_all_sync()
         report.resolved = final_check.success
 
@@ -150,30 +186,36 @@ class HealingEngine:
             if lineno > len(lines) or lineno < 1:
                 return False
 
+            # Candidate pool: primary line candidates + preceding line candidates
+            # (as Python syntax errors are frequently reported on the token following the defect)
+            candidates: List[RepairCandidate] = []
+
             faulty_line = lines[lineno - 1]
-            candidates = self._generate_candidates(faulty_line, lines, lineno, error_msg, error_type)
+            candidates.extend(self._generate_candidates(faulty_line, lines, lineno, error_msg, error_type))
+
+            if lineno > 1:
+                prev_line = lines[lineno - 2]
+                candidates.extend(self._generate_candidates(prev_line, lines, lineno - 1, error_msg, error_type))
 
             for cand in candidates:
-                logger.debug(f"Testing repair strategy: {cand.repair_strategy} on {file_path}:{lineno}")
-                
-                # Apply proposed line
+                target_idx = cand.line_number - 1
+                if target_idx < 0 or target_idx >= len(lines):
+                    continue
+
                 test_lines = list(lines)
-                test_lines[lineno - 1] = cand.proposed_line
-                
+                test_lines[target_idx] = cand.proposed_line
+
                 with open(file_path, "w", encoding="utf-8") as f:
                     f.writelines(test_lines)
 
                 # Recompile test
                 if self._verify_isolated_compile(file_path):
-                    # Fixed! Remove backup
                     if os.path.exists(backup_path):
                         os.remove(backup_path)
                     return True
                 else:
-                    # Restore from backup for next candidate
                     shutil.copy2(backup_path, file_path)
 
-            # Reached here: candidates failed, restore original
             shutil.copy2(backup_path, file_path)
             if os.path.exists(backup_path):
                 os.remove(backup_path)

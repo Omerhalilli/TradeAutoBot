@@ -127,8 +127,11 @@ class OrderManager:
     async def close_position(self, ticket: int, lots: Optional[float] = None) -> Dict[str, Any]:
         """Closes position in whole or in part."""
         res = await self.router.close_position(ticket=ticket, lots=lots)
-        if res.get("status") == "ok":
-            self.position_tracker.unregister_order(ticket)
+        is_ok = res.get("status") == "ok" or res.get("success", False)
+        if is_ok:
+            tracked = self.position_tracker._active_orders.get(ticket)
+            if lots is None or not tracked or lots >= tracked.lots:
+                self.position_tracker.unregister_order(ticket)
         return res
 
     async def close_all_positions(self, reason: str = "Emergency Button") -> Dict[str, Any]:
@@ -156,3 +159,45 @@ class OrderManager:
             strategy_name=f"{order.strategy_name}-ScaleIn"
         )
         return await self.submit_order(scale_order)
+
+    async def scale_out(self, ticket: int, lots: float) -> Dict[str, Any]:
+        """
+        Partially scales out of a winning or risk-exposed position.
+        """
+        order = self.position_tracker._active_orders.get(ticket)
+        if not order:
+            return {"success": False, "reason": "Ticket not found in tracker"}
+
+        close_lots = min(lots, order.lots)
+        res = await self.close_position(ticket=ticket, lots=close_lots)
+        if res.get("status") == "ok":
+            order.lots = max(0.01, round(order.lots - close_lots, 2))
+            logger.info(f"Scaled out {close_lots:.2f} lots from ticket #{ticket}. Remaining: {order.lots:.2f}")
+            return {"success": True, "remaining_lots": order.lots, "closed_lots": close_lots}
+        return {"success": False, "reason": res.get("message", "Close failed")}
+
+    async def cost_average(self, ticket: int, additional_lots: float, price_step_pips: float = 20.0) -> Dict[str, Any]:
+        """
+        Executes a cost-averaging scale order at an advantageous price point.
+        """
+        order = self.position_tracker._active_orders.get(ticket)
+        if not order:
+            return {"success": False, "reason": "Ticket not found in tracker"}
+
+        from autotrade.analytics.precision import PrecisionMath
+        pip_size = float(PrecisionMath.get_pip_size(order.symbol))
+        offset = price_step_pips * pip_size
+        target_price = order.price - offset if order.side == OrderSide.BUY else order.price + offset
+
+        ca_order = TradeOrder(
+            symbol=order.symbol,
+            order_type=OrderType.LIMIT,
+            side=order.side,
+            lots=additional_lots,
+            price=PrecisionMath.round_price(order.symbol, target_price),
+            sl=order.sl,
+            tp=order.tp,
+            magic=order.magic,
+            strategy_name=f"{order.strategy_name}-CostAverage"
+        )
+        return await self.submit_order(ca_order)

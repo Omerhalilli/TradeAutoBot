@@ -59,6 +59,29 @@ class TestCharts(unittest.TestCase):
         self.assertTrue(os.path.exists(filepath))
         self.assertGreater(os.path.getsize(filepath), 1000)
 
+    def test_point_and_figure_chart_generation(self):
+        filepath = self.generator.generate_chart(
+            symbol="GBPUSD",
+            timeframe="H1",
+            ohlcv=self.ohlcv,
+            chart_type=ChartType.POINT_AND_FIGURE
+        )
+        self.assertTrue(os.path.exists(filepath))
+        self.assertGreater(os.path.getsize(filepath), 1000)
+
+    def test_equity_drawdown_chart_generation(self):
+        mock_trades = [
+            {"pnl": 150.0}, {"pnl": -50.0}, {"pnl": 200.0},
+            {"pnl": -120.0}, {"pnl": 350.0}, {"pnl": -80.0}
+        ]
+        filepath = self.generator.generate_equity_drawdown_chart(
+            initial_balance=100000.0,
+            trades_or_equities=mock_trades,
+            title="Institutional Test Performance"
+        )
+        self.assertTrue(os.path.exists(filepath))
+        self.assertGreater(os.path.getsize(filepath), 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -77,6 +77,13 @@ def build_telegram_app() -> Application:
     app.add_handler(CommandHandler(["chart", "screenshot", "screenphoto"], command_router.cmd_chart))
     app.add_handler(CommandHandler(["panic", "closeall"], command_router.cmd_panic))
     app.add_handler(CommandHandler(["strategies", "strat"], command_router.cmd_strategies))
+    app.add_handler(CommandHandler(["start_bot", "engine_start"], command_router.cmd_start_bot))
+    app.add_handler(CommandHandler(["stop_bot", "engine_stop"], command_router.cmd_stop_bot))
+    app.add_handler(CommandHandler(["restart_bot", "engine_restart"], command_router.cmd_restart_bot))
+    app.add_handler(CommandHandler(["optimize", "wfa"], command_router.cmd_optimize))
+    app.add_handler(CommandHandler(["set_risk", "risk_limits"], command_router.cmd_set_risk))
+    app.add_handler(CommandHandler(["chart_report", "pnl_chart"], command_router.cmd_chart_report))
+    app.add_handler(CommandHandler("verify", command_router.cmd_verify))
 
     # Existing Legacy Handlers for seamless backward compatibility
     app.add_handler(CommandHandler(["boost", "turbo"], handlers.cmd_boost))
@@ -96,7 +103,10 @@ def build_telegram_app() -> Application:
     app.add_handler(CommandHandler(["news", "calendar"], handlers.cmd_news))
 
     # Callback Query Handlers (Supporting both modern router and existing handlers)
-    app.add_handler(CallbackQueryHandler(command_router.handle_callback_query, pattern=r"^(nav_|shotsym:|shottf:|confirm_close_all|cancel_close_all)"))
+    app.add_handler(CallbackQueryHandler(
+        command_router.handle_callback_query,
+        pattern=r"^(nav_|shotsym:|shottf:|confirm_close_all|cancel_close_all|strat_toggle:|strat_run_opt|set_risk_pct:|set_dd_pct:)"
+    ))
     app.add_handler(CallbackQueryHandler(handlers.cb_switch_account, pattern=r"^switch_acc:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_reset_safeguards, pattern=r"^recalibrate_safeguards$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_history_filter, pattern=r"^hist_filter:"))
@@ -106,5 +116,5 @@ def build_telegram_app() -> Application:
     app.add_handler(CallbackQueryHandler(handlers.cb_ea_be, pattern=r"^/?be_\d+$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_ea_shot, pattern=r"^/?shot_[A-Za-z0-9]+_[A-Za-z0-9]+$"))
 
-    logger.info("Telegram Bot Application built with 35+ command and callback routers.")
+    logger.info("Telegram Bot Application built with 45+ command and callback routers.")
     return app

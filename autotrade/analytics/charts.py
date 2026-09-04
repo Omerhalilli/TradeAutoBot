@@ -10,6 +10,7 @@ from __future__ import annotations
 from enum import Enum
 import io
 import logging
+import math
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,6 +57,7 @@ class ChartGenerator:
         overlay_indicators: Optional[List[str]] = None,
         draw_sr_levels: bool = True,
         draw_channels: bool = True,
+        draw_patterns: bool = True,
         width: int = 12,
         height: int = 7,
         dpi: int = 150
@@ -128,6 +130,10 @@ class ChartGenerator:
         if draw_channels and len(closes) >= 30:
             self._draw_trend_channel(ax_main, x_indices, closes)
 
+        # 4.5. Detect and Draw Chart Patterns
+        if draw_patterns and len(closes) >= 15:
+            self._detect_and_draw_patterns(ax_main, opens, highs, lows, closes, x_indices)
+
         # 5. Volume Subplot
         colors_vol = np.where(closes >= opens, "#00E676", "#FF1744")
         ax_vol.bar(x_indices, vols, color=colors_vol, alpha=0.6, width=0.7)
@@ -198,13 +204,161 @@ class ChartGenerator:
             bottom = b_price - brick_size if direction == 1 else b_price
             ax.bar(i, brick_size, bottom=bottom, color=color, width=0.8)
 
-    def _plot_point_and_figure(self, ax, closes, box_size: Optional[float] = None):
-        """Draws Point & Figure X (Up) and O (Down) columns."""
-        if box_size is None:
+    def _plot_point_and_figure(
+        self,
+        ax,
+        closes: np.ndarray,
+        box_size: Optional[float] = None,
+        reversal_boxes: int = 3
+    ) -> None:
+        """
+        Draws institutional Point & Figure (P&F) chart with standard 3-box reversal.
+        Rising columns consist of green 'X' marks; declining columns consist of red 'O' marks.
+        """
+        if len(closes) == 0:
+            return
+        if box_size is None or box_size <= 0:
             box_size = float(np.std(closes) * 0.25) or 0.0010
-        ax.plot(np.arange(len(closes)), closes, color="#29B6F6", linewidth=1.2, linestyle="steps-mid")
-        for i in range(0, len(closes), max(1, len(closes) // 25)):
-            ax.text(i, closes[i], "X", color="#00E676", fontsize=7, ha="center")
+
+        # Build columns: list of (direction: 1 for X / -1 for O, [box_prices])
+        columns: List[Tuple[int, List[float]]] = []
+        cur_dir = 0
+        cur_boxes: List[float] = []
+
+        cur_box = math.floor(closes[0] / box_size) * box_size
+        cur_boxes.append(cur_box)
+
+        for p in closes[1:]:
+            if cur_dir == 0:
+                diff = p - cur_box
+                if diff >= box_size:
+                    cur_dir = 1
+                    while p >= cur_box + box_size:
+                        cur_box += box_size
+                        cur_boxes.append(cur_box)
+                elif diff <= -box_size:
+                    cur_dir = -1
+                    while p <= cur_box - box_size:
+                        cur_box -= box_size
+                        cur_boxes.append(cur_box)
+            elif cur_dir == 1:  # Up column of Xs
+                if p >= cur_box + box_size:
+                    while p >= cur_box + box_size:
+                        cur_box += box_size
+                        cur_boxes.append(cur_box)
+                elif p <= cur_box - (reversal_boxes * box_size):
+                    columns.append((1, list(cur_boxes)))
+                    cur_dir = -1
+                    cur_boxes = []
+                    cur_box = cur_box - box_size
+                    cur_boxes.append(cur_box)
+                    while p <= cur_box - box_size:
+                        cur_box -= box_size
+                        cur_boxes.append(cur_box)
+            elif cur_dir == -1:  # Down column of Os
+                if p <= cur_box - box_size:
+                    while p <= cur_box - box_size:
+                        cur_box -= box_size
+                        cur_boxes.append(cur_box)
+                elif p >= cur_box + (reversal_boxes * box_size):
+                    columns.append((-1, list(cur_boxes)))
+                    cur_dir = 1
+                    cur_boxes = []
+                    cur_box = cur_box + box_size
+                    cur_boxes.append(cur_box)
+                    while p >= cur_box + box_size:
+                        cur_box += box_size
+                        cur_boxes.append(cur_box)
+
+        if cur_boxes:
+            columns.append((cur_dir if cur_dir != 0 else 1, list(cur_boxes)))
+
+        # Plot columns on axis
+        for col_idx, (direction, boxes) in enumerate(columns):
+            color = "#00E676" if direction == 1 else "#FF1744"
+            marker = "X" if direction == 1 else "O"
+            for b in boxes:
+                ax.text(col_idx, b, marker, color=color, fontsize=8, fontweight="bold", ha="center", va="center")
+
+        if columns:
+            all_boxes = [b for _, boxes in columns for b in boxes]
+            ax.set_xlim(-1, max(1, len(columns)))
+            ax.set_ylim(min(all_boxes) - box_size, max(all_boxes) + box_size)
+
+    def _detect_and_draw_patterns(
+        self,
+        ax,
+        opens: np.ndarray,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        closes: np.ndarray,
+        x: np.ndarray
+    ) -> None:
+        """
+        Detects candlestick & structural patterns and annotates them directly on the chart.
+        Identifies: Bullish/Bearish Engulfing, Hammer, Shooting Star, Doji, Double Top/Bottom.
+        """
+        n = len(closes)
+        if n < 5:
+            return
+
+        # 1. Candlestick Patterns on recent bars
+        for i in range(max(1, n - 20), n):
+            c = closes[i]
+            o = opens[i]
+            h = highs[i]
+            l = lows[i]
+            prev_c = closes[i - 1]
+            prev_o = opens[i - 1]
+            body = abs(c - o)
+            candle_range = max(h - l, 1e-6)
+
+            # Doji
+            if body / candle_range < 0.10:
+                ax.annotate("Doji", (x[i], h), textcoords="offset points", xytext=(0, 6),
+                            ha="center", fontsize=7, color="#FFD600", alpha=0.85)
+
+            # Bullish Engulfing
+            elif prev_c < prev_o and c > o and c >= prev_o and o <= prev_c:
+                ax.annotate("Bullish\nEngulf", (x[i], l), textcoords="offset points", xytext=(0, -16),
+                            ha="center", fontsize=7, color="#00E676", fontweight="bold")
+
+            # Bearish Engulfing
+            elif prev_c > prev_o and c < o and c <= prev_o and o >= prev_c:
+                ax.annotate("Bearish\nEngulf", (x[i], h), textcoords="offset points", xytext=(0, 6),
+                            ha="center", fontsize=7, color="#FF1744", fontweight="bold")
+
+            # Hammer (Bullish Pinbar)
+            elif (c > o or abs(c - o) < 0.3 * candle_range) and (min(c, o) - l) >= 2.0 * body and (h - max(c, o)) <= 0.2 * candle_range:
+                ax.annotate("🔨 Hammer", (x[i], l), textcoords="offset points", xytext=(0, -14),
+                            ha="center", fontsize=7, color="#00E676")
+
+            # Shooting Star (Bearish Pinbar)
+            elif (h - max(c, o)) >= 2.0 * body and (min(c, o) - l) <= 0.2 * candle_range:
+                ax.annotate("☄️ Star", (x[i], h), textcoords="offset points", xytext=(0, 6),
+                            ha="center", fontsize=7, color="#FF1744")
+
+        # 2. Structural Patterns: Double Top / Double Bottom via ZigZag pivots
+        pivots = indicators.zigzag(highs, lows, deviation_pct=0.5)
+        high_pivs = [p for p in pivots if p[2] == "HIGH"]
+        low_pivs = [p for p in pivots if p[2] == "LOW"]
+
+        if len(high_pivs) >= 2:
+            p1, p2 = high_pivs[-2], high_pivs[-1]
+            # If two peaks are within 0.3% price difference
+            if abs(p1[1] - p2[1]) / max(p1[1], 1e-6) < 0.003 and abs(p2[0] - p1[0]) >= 5:
+                avg_p = (p1[1] + p2[1]) / 2.0
+                ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="#FF1744", linestyle="--", linewidth=1.2)
+                ax.text((p1[0] + p2[0]) / 2.0, avg_p * 1.001, "Double Top (M)", color="#FF1744",
+                        fontsize=8, fontweight="bold", ha="center")
+
+        if len(low_pivs) >= 2:
+            p1, p2 = low_pivs[-2], low_pivs[-1]
+            if abs(p1[1] - p2[1]) / max(p1[1], 1e-6) < 0.003 and abs(p2[0] - p1[0]) >= 5:
+                avg_p = (p1[1] + p2[1]) / 2.0
+                ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="#00E676", linestyle="--", linewidth=1.2)
+                ax.text((p1[0] + p2[0]) / 2.0, avg_p * 0.999, "Double Bottom (W)", color="#00E676",
+                        fontsize=8, fontweight="bold", ha="center")
 
     def _detect_support_resistance(self, highs, lows, closes, max_levels: int = 4) -> List[Tuple[float, str]]:
         """Identifies prominent horizontal support and resistance pivot clusters."""
@@ -234,6 +388,84 @@ class ChartGenerator:
         ax.plot(x, trend_line, color="#787B86", linestyle="--", linewidth=1.0, alpha=0.6)
         ax.plot(x, upper_channel, color="#29B6F6", linestyle=":", linewidth=0.9, alpha=0.7)
         ax.plot(x, lower_channel, color="#29B6F6", linestyle=":", linewidth=0.9, alpha=0.7)
+
+    def generate_equity_drawdown_chart(
+        self,
+        initial_balance: float,
+        trades_or_equities: List[Any],
+        title: str = "Institutional Trading Performance & Drawdown",
+        filename: Optional[str] = None
+    ) -> str:
+        """
+        Renders professional institutional performance chart:
+        Subplot 1: Cumulative Equity Growth Curve with Profit Fill.
+        Subplot 2: Underwater Drawdown % Chart with Peak Markers.
+        """
+        # Build equity series
+        if not trades_or_equities:
+            equities = [initial_balance]
+        elif isinstance(trades_or_equities[0], (int, float)):
+            equities = [initial_balance] + list(trades_or_equities)
+        else: # List of trade dictionaries with 'pnl' or 'profit'
+            equities = [initial_balance]
+            running = initial_balance
+            for t in trades_or_equities:
+                pnl = float(t.get("pnl", t.get("profit", 0.0)))
+                running += pnl
+                equities.append(running)
+
+        equities = np.array(equities, dtype=np.float64)
+        x = np.arange(len(equities))
+
+        # Calculate drawdown %
+        peaks = np.maximum.accumulate(equities)
+        drawdowns_pct = ((equities - peaks) / np.maximum(peaks, 1.0)) * 100.0
+
+        fig, (ax_eq, ax_dd) = plt.subplots(
+            2, 1, figsize=(11, 6), dpi=150,
+            gridspec_kw={"height_ratios": [3.0, 1.2]},
+            facecolor="#12151e"
+        )
+        ax_eq.set_facecolor("#171b26")
+        ax_dd.set_facecolor("#171b26")
+
+        # Top: Equity Curve
+        color_line = "#00E5FF" if equities[-1] >= initial_balance else "#FF5252"
+        ax_eq.plot(x, equities, color=color_line, linewidth=1.8, label="Portfolio Equity")
+        ax_eq.axhline(initial_balance, color="#787B86", linestyle="--", linewidth=0.9, alpha=0.7, label="Initial Capital")
+        ax_eq.fill_between(x, initial_balance, equities, where=(equities >= initial_balance),
+                          color="#00E676", alpha=0.15)
+        ax_eq.fill_between(x, initial_balance, equities, where=(equities < initial_balance),
+                          color="#FF1744", alpha=0.15)
+
+        net_profit = equities[-1] - initial_balance
+        pnl_str = f"+${net_profit:,.2f}" if net_profit >= 0 else f"-${abs(net_profit):,.2f}"
+        ax_eq.set_title(
+            f"[PERF] {title} | Net: {pnl_str} | Peak: ${np.max(equities):,.2f}",
+            color="#E0E3EB", fontsize=11, fontweight="bold", pad=10
+        )
+        ax_eq.grid(True, color="#2A2E39", linestyle="--", alpha=0.5)
+        ax_eq.tick_params(colors="#787B86", labelsize=8)
+        ax_eq.legend(loc="upper left", facecolor="#171b26", edgecolor="#2A2E39", labelcolor="#E0E3EB", fontsize=8)
+
+        # Bottom: Underwater Drawdown %
+        ax_dd.plot(x, drawdowns_pct, color="#FF1744", linewidth=1.2)
+        ax_dd.fill_between(x, 0, drawdowns_pct, color="#FF1744", alpha=0.25)
+        max_dd = float(np.min(drawdowns_pct))
+        ax_dd.set_ylabel("Drawdown %", color="#787B86", fontsize=8)
+        ax_dd.grid(True, color="#2A2E39", linestyle="--", alpha=0.5)
+        ax_dd.tick_params(colors="#787B86", labelsize=8)
+        ax_dd.set_ylim(min(-5.0, max_dd * 1.15), 1.0)
+
+        plt.tight_layout()
+        if not filename:
+            filename = f"equity_drawdown_{int(time.time())}.png"
+        filepath = os.path.join(self.output_dir, filename)
+        plt.savefig(filepath, facecolor=fig.get_facecolor(), edgecolor="none")
+        plt.close(fig)
+
+        logger.info(f"Generated equity drawdown chart saved to {filepath}")
+        return filepath
 
     def _generate_fallback_chart(self, symbol: str, timeframe: str) -> str:
         """Generates simple placeholder chart when data is still streaming in."""

@@ -126,3 +126,64 @@ class PositionTracker:
                 proposed_sl = PrecisionMath.round_price(symbol, current_price + trail_distance)
                 if (proposed_sl < open_price and (current_sl == 0.0 or proposed_sl < (current_sl - 2 * pip_size))):
                     await self.router.modify_sl_tp(ticket=ticket, sl=proposed_sl)
+
+        # 3. Multi-Tier Partial Take-Profit Check
+        tracked_order = self._active_orders.get(ticket)
+        if tracked_order and tracked_order.partial_targets:
+            for target in tracked_order.partial_targets:
+                if target.is_executed:
+                    continue
+                hit_tp = (current_price >= target.target_price) if is_buy else (current_price <= target.target_price)
+                if hit_tp:
+                    close_fraction = max(0.05, min(1.0, target.close_fraction))
+                    partial_lots = PrecisionMath.round_lot(lots * close_fraction)
+                    if partial_lots > 0:
+                        logger.info(
+                            f"🎯 Tiered Take-Profit hit on #{ticket} ({symbol}) at {current_price}. "
+                            f"Closing {partial_lots:.2f} lots ({close_fraction * 100:.0f}%)"
+                        )
+                        res = await self.router.close_position(ticket=ticket, lots=partial_lots)
+                        if res.get("status") == "ok":
+                            target.is_executed = True
+                            target.executed_time = time.time()
+                            tracked_order.lots = max(0.01, round(lots - partial_lots, 2))
+                            event_bus.publish(
+                                EventType.ORDER_PARTIAL_FILL,
+                                payload={
+                                    "ticket": ticket,
+                                    "symbol": symbol,
+                                    "closed_lots": partial_lots,
+                                    "remaining_lots": tracked_order.lots,
+                                    "price": current_price,
+                                    "target_price": target.target_price
+                                },
+                                priority=EventPriority.HIGH,
+                                source="PositionTracker"
+                            )
+
+        # 4. Partial Stop-Loss Check (protect capital if 75% adverse drift to SL)
+        if tracked_order and tracked_order.sl > 0:
+            sl_distance = abs(open_price - tracked_order.sl)
+            current_adverse = (open_price - current_price) if is_buy else (current_price - open_price)
+            if sl_distance > 0 and current_adverse >= 0.75 * sl_distance and not getattr(tracked_order, "partial_sl_executed", False):
+                cut_lots = PrecisionMath.round_lot(lots * 0.50)
+                if cut_lots > 0:
+                    logger.warning(
+                        f"⚠️ Partial Stop-Loss triggered on #{ticket} ({symbol}) at 75% adverse drift. Cutting {cut_lots:.2f} lots."
+                    )
+                    res = await self.router.close_position(ticket=ticket, lots=cut_lots)
+                    if res.get("status") == "ok":
+                        setattr(tracked_order, "partial_sl_executed", True)
+                        tracked_order.lots = max(0.01, round(lots - cut_lots, 2))
+                        event_bus.publish(
+                            EventType.ORDER_PARTIAL_FILL,
+                            payload={
+                                "ticket": ticket,
+                                "symbol": symbol,
+                                "type": "PARTIAL_SL",
+                                "closed_lots": cut_lots,
+                                "remaining_lots": tracked_order.lots
+                            },
+                            priority=EventPriority.HIGH,
+                            source="PositionTracker"
+                        )

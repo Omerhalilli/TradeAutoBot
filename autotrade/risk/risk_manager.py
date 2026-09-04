@@ -107,12 +107,31 @@ class RiskManager:
         if len(open_positions) >= self.config.risk.max_open_positions:
             result.passed = False
             result.reason = f"Maximum open positions ({self.config.risk.max_open_positions}) reached."
+            event_bus.publish(
+                EventType.TELEGRAM_NOTIFICATION,
+                payload={"message": f"⚠️ <b>Risk Alert:</b> Maximum open positions limit ({self.config.risk.max_open_positions}) reached.", "priority": "HIGH"},
+                priority=EventPriority.HIGH,
+                source="RiskManager"
+            )
             return result
 
         # Check 3: Daily Trade Count Limit
         if self._daily_trades_count >= self.config.risk.daily_trade_limit:
+            self._is_daily_halted = True
             result.passed = False
-            result.reason = f"Daily trade count limit ({self.config.risk.daily_trade_limit}) reached."
+            result.reason = f"Daily trade count limit ({self.config.risk.daily_trade_limit}) reached. Trading halted."
+            event_bus.publish(
+                EventType.DAILY_LOSS_LIMIT_REACHED,
+                payload={"reason": "Daily trade count limit reached", "trades": self._daily_trades_count},
+                priority=EventPriority.CRITICAL,
+                source="RiskManager"
+            )
+            event_bus.publish(
+                EventType.TELEGRAM_NOTIFICATION,
+                payload={"message": f"🚨 <b>TRADING HALTED:</b> Daily trade count limit ({self.config.risk.daily_trade_limit}) reached!", "priority": "CRITICAL"},
+                priority=EventPriority.CRITICAL,
+                source="RiskManager"
+            )
             return result
 
         # Check 4: Volume & Lot Exposure Limits
@@ -148,7 +167,9 @@ class RiskManager:
         quote_exp = curr_exposure.get(quote_curr, 0) - dir_factor
 
         if abs(base_exp) > self.config.risk.max_correlated_positions or abs(quote_exp) > self.config.risk.max_correlated_positions:
-            result.warnings.append(f"High correlated exposure on {base_curr}/{quote_curr} ({base_exp}/{quote_exp}).")
+            result.passed = False
+            result.reason = f"Correlation exposure limit exceeded on {base_curr}/{quote_curr} ({base_exp}/{quote_exp}). Limit: {self.config.risk.max_correlated_positions}."
+            return result
 
         # Check 7: Volatility / High-Impact News Lot Scaling
         final_lots = lots
@@ -160,7 +181,8 @@ class RiskManager:
             )
 
         result.adjusted_lots = final_lots
-        self._daily_trades_count += 1
+        if result.passed:
+            self._daily_trades_count += 1
         
         event_bus.publish(
             EventType.RISK_CHECK_PASSED if result.passed else EventType.RISK_CHECK_FAILED,

@@ -62,9 +62,25 @@ class ReportGenerator:
         metrics = self.metrics_engine.calculate_metrics_from_trades(trades)
         formatted_text = self._format_telegram_report(period_name, metrics, hours_back)
 
+        chart_path = None
+        try:
+            initial_balance = getattr(getattr(self.config, "risk", None), "initial_balance", 100000.0) or 100000.0
+            chart_path = self.charts.generate_equity_drawdown_chart(
+                initial_balance=initial_balance,
+                trades_or_equities=trades,
+                title=f"{period_name} Performance & Drawdown"
+            )
+        except Exception as e:
+            logger.error(f"Failed to generate equity chart for {period_name}: {e}")
+
         event_bus.publish(
             EventType.REPORT_GENERATED,
-            payload={"period": period_name, "metrics": metrics.to_dict(), "message": formatted_text},
+            payload={
+                "period": period_name,
+                "metrics": metrics.to_dict(),
+                "message": formatted_text,
+                "chart_path": chart_path
+            },
             priority=EventPriority.NORMAL,
             source="ReportGenerator"
         )
@@ -73,7 +89,8 @@ class ReportGenerator:
             "period": period_name,
             "metrics": metrics.to_dict(),
             "telegram_message": formatted_text,
-            "trades_count": len(trades)
+            "trades_count": len(trades),
+            "chart_path": chart_path
         }
 
     def _format_telegram_report(self, period: str, m: PortfolioMetrics, hours: int) -> str:
