@@ -6323,9 +6323,6 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
-   static int s_eaTimerCount = 0;
-   s_eaTimerCount++;
-   if(s_eaTimerCount % 5 == 0) ZmqDebugLog("EA OnTimer tick: " + IntegerToString(s_eaTimerCount));
    ZeroMQ_Poll();
 
    // Synchronize remote pause state from ZeroMQ Bridge or Telegram
@@ -6404,9 +6401,6 @@ void OnTimer()
 
 void OnTick()
 {
-   static int s_tickCount = 0;
-   s_tickCount++;
-   if(s_tickCount % 50 == 0) ZmqDebugLog("EA OnTick count: " + IntegerToString(s_tickCount));
    ZeroMQ_Poll();
    // 1. Manage existing positions on every tick
    ManageActiveTradeLifecycle();

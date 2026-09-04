@@ -1,14 +1,3 @@
-void ZmqDebugLog(string msg)
-{
-   Print("[ZMQ Bridge] " + msg);
-   int h = FileOpen("zmq_bridge_debug.txt", FILE_READ|FILE_WRITE|FILE_TXT);
-   if(h != INVALID_HANDLE)
-   {
-      FileSeek(h, 0, SEEK_END);
-      FileWriteString(h, TimeToStr(TimeCurrent(), TIME_SECONDS) + " " + msg + "\r\n");
-      FileClose(h);
-   }
-}
 //+------------------------------------------------------------------+
 //|                                              ZeroMQBridge.mqh    |
 //|                  MetaTrader 4 ZeroMQ Bridge & Remote Control     |
@@ -456,7 +445,6 @@ string Zmq_ProcessRequest(const string reqStr)
 //+------------------------------------------------------------------+
 void ZeroMQ_Init(string bindAddress = "tcp://*:5555")
 {
-   ZmqDebugLog("ZeroMQ_Init called with " + bindAddress + ". Context ref: " + IntegerToString((int)g_zmqContext.ref()));
    if(g_zmqContext.ref() == 0)
    {
       Print("[ZeroMQ ERROR] Context initialization failed");
@@ -476,17 +464,13 @@ void ZeroMQ_Init(string bindAddress = "tcp://*:5555")
    
    if(g_zmqSocket.bind(bindAddress))
    {
-            g_zmqReady = true; 
-      ZmqDebugLog("ZeroMQ_Init SUCCESS: bound to " + bindAddress);
-            EventKillTimer();
-      bool tOk =                   EventKillTimer();
+      g_zmqReady = true; 
+      EventKillTimer();
       EventSetMillisecondTimer(250);
-      ZmqDebugLog("EventSetMillisecondTimer(250) started");
       PrintFormat("[ZeroMQ Bridge ACTIVE] Listening on %s", bindAddress);
    }
    else
    {
-      ZmqDebugLog("Failed to bind: " + IntegerToString(zmq_errno()));
    }
 }
 
@@ -511,7 +495,6 @@ void ZeroMQ_Poll()
    if(bytesRecv > 0)
    {
       string reqStr = CharArrayToString(reqBuf, 0, bytesRecv, CP_UTF8);
-      ZmqDebugLog(">>> RECV: " + reqStr);
       
       string replyStr = Zmq_ProcessRequest(reqStr);
       
@@ -520,7 +503,6 @@ void ZeroMQ_Poll()
       int sendLen = StringLen(replyStr);
       
       int bytesSent = zmq_send(g_zmqSocket.ref(), replyBuf, sendLen, 0);
-      ZmqDebugLog("<<< SENT: " + IntegerToString(bytesSent) + " bytes");
    }
 }
 //+------------------------------------------------------------------+
