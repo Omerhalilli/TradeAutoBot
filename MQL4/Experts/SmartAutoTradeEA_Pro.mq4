@@ -544,10 +544,10 @@ bool     g_VSA_StoppingVolume          = false;
 bool     g_VSA_AbsorptionVolume        = false;
 bool     g_VSA_LowVolumePullback       = false;
 
-// â”€â”€ PERF: Slow-path throttle ticks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── PERF: Slow-path throttle ticks ───────────────────────────────────────────
 uint     g_LastMTFMatrixTick           = 0;   // MTF matrix update: every 10s
 uint     g_LastHeavyIndicatorTick      = 0;   // CCI/BB/VSA calc: every 5s
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────────────────────────────────────────────────────
 
 
 
@@ -3010,7 +3010,7 @@ void RenderHUDDashboard()
    y += rowHeight;
 
 
-   // â”€â”€ PERF: Heavy indicator calculations throttled to every 5 seconds â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   // ── PERF: Heavy indicator calculations throttled to every 5 seconds ─────────
    // CCI, Bollinger %B, VSA, KER and TTM Squeeze are expensive cross-period calls.
    // We cache results and only recalculate every 5s, not on every 2s HUD render.
    uint hudNow = GetTickCount();
@@ -3026,9 +3026,9 @@ void RenderHUDDashboard()
       AnalyzeVolumeSpreadEngine(_vsaBuy, _vsaSell);
       EvaluateTTMSqueezeMomentum(g_TTMSqueezeArmed, g_TTMSqueezeFiring);
    }
-   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   // ─────────────────────────────────────────────────────────────────────────
 
-   // Ultra Quant Metrics (KER & Squeeze) â€” use cached values
+   // Ultra Quant Metrics (KER & Squeeze) — use cached values
    string sqzStr = (g_TTMSqueezeArmed ? "ARMED (Compressing)" : (g_TTMSqueezeFiring ? "FIRING (Expansion)" : "None"));
    color sqzColor = (g_TTMSqueezeFiring ? clrLime : (g_TTMSqueezeArmed ? clrGold : clrLightGray));
    string quantStr = StringFormat("KER: %.2f | Squeeze: %s", g_CalculatedKER, sqzStr);
@@ -3048,7 +3048,7 @@ void RenderHUDDashboard()
    y += rowHeight;
 
 
-   // Extended Indicator Metrics â€” values already refreshed by 5s throttle above
+   // Extended Indicator Metrics — values already refreshed by 5s throttle above
    string extStr = StringFormat("CCI: %.1f | %%B: %.2f | VSA: %s",
                                 g_CalculatedCCI, g_CalculatedPercentB,
                                 (g_VSA_StoppingVolume ? "Stopping Vol" : (g_VSA_AbsorptionVolume ? "Absorption" : "Normal")));
@@ -3059,14 +3059,14 @@ void RenderHUDDashboard()
    RenderInteractiveButtons();
 
 
-   // â”€â”€ PERF: MTF Matrix throttled to every 10 seconds â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   // ── PERF: MTF Matrix throttled to every 10 seconds ───────────────────────
    // iMA/iRSI calls across 6 different timeframes are expensive; 10s is plenty.
    if(GetTickCount() - g_LastMTFMatrixTick >= 10000)
    {
       g_LastMTFMatrixTick = GetTickCount();
       RenderMultiTimeframeMatrix();
    }
-   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   // ─────────────────────────────────────────────────────────────────────────
 }
 
 
@@ -3461,7 +3461,7 @@ void Telegram_CmdPositions()
          if(type != OP_BUY && type != OP_SELL) continue;
          int t = OrderTicket();
          if(btnCount > 0) kbJson += ",";
-         kbJson += StringFormat("[{\"text\":\"❌ Close #%d\",\"callback_data\":\"/close_%d\"},{\"text\":\"✂️ 50%%\",\"callback_data\":\"/half_%d\"},{\"text\":\"🛡️ BE\",\"callback_data\":\"/be_%d\"}]", t, t, t, t);
+         kbJson += StringFormat("[{\"text\":\"❌ Close #%d\",\"callback_data\":\"/close_%d\"},{\"text\":\"✂️ Close 50%%\",\"callback_data\":\"/half_%d\"}],[{\"text\":\"💼 Active Positions\",\"callback_data\":\"nav_pos\"},{\"text\":\"📊 Status\",\"callback_data\":\"nav_status\"}]", t, t, t);
          btnCount++;
          if(btnCount >= 6) break;
       }
@@ -3801,7 +3801,7 @@ void Telegram_CheckPropFirmRules()
             Telegram_CmdCloseAll();
    string friMsg = "🛡️ <b>FRIDAY WEEKEND RISK SHIELD TRIGGERED</b>\n";
             friMsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-            friMsg += "â€¢ All active positions closed before weekend market close to eliminate gap risk.\n";
+            friMsg += "• All active positions closed before weekend market close to eliminate gap risk.\n";
       friMsg += "• Trading will resume Monday market open. 🛡️";
             Telegram_SendMessage(TelegramBotToken, TelegramChatID, friMsg, 3, 2);
          }
@@ -3940,7 +3940,7 @@ void Telegram_CmdHelp()
    msg += "• /report — Generate 24h performance summary\n";
    msg += "• /help — Show this command menu\n";
    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-   msg += "<i>💡 Single trade actions: /close_TICKET, /half_TICKET, /be_TICKET</i>";
+   msg += "<i>💡 Single trade actions: /close_TICKET, /half_TICKET</i>";
    Telegram_SendMessage(TelegramBotToken, TelegramChatID, msg, 2, 1);
 }
 
@@ -4062,7 +4062,7 @@ void Telegram_CmdScreenshotMenu()
    for(int j = 0; j < ArraySize(symbols); j++)
    {
       string isCurrent = (symbols[j] == Symbol()) ? " <i>(Active Chart)</i>" : "";
-      msg += "â€¢ /shot_" + symbols[j] + " â€” <b>" + symbols[j] + "</b>" + isCurrent + "\n";
+      msg += "• /shot_" + symbols[j] + " — <b>" + symbols[j] + "</b>" + isCurrent + "\n";
    }
    msg += "• /shot_current — ⚡ <b>Current Chart (" + Symbol() + ")</b>\n\n";
    msg += "<i>💡 Tap a symbol below to select your desired timeframe / time:</i>";
@@ -4102,14 +4102,14 @@ void Telegram_CmdTimeframeMenu(string symbol)
    string msg = "⏱️ <b>STEP 2/2: SELECT TIMEFRAME FOR " + sym + "</b>\n";
    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
    msg += "What time / timeframe resolution do you want to be in?\n\n";
-   msg += "â€¢ /shot_" + sym + "_M1 â€” 1 Minute\n";
-   msg += "â€¢ /shot_" + sym + "_M5 â€” 5 Minutes\n";
-   msg += "â€¢ /shot_" + sym + "_M15 â€” 15 Minutes\n";
-   msg += "â€¢ /shot_" + sym + "_M30 â€” 30 Minutes\n";
-   msg += "â€¢ /shot_" + sym + "_H1 â€” 1 Hour\n";
-   msg += "â€¢ /shot_" + sym + "_H4 â€” 4 Hours\n";
-   msg += "â€¢ /shot_" + sym + "_D1 â€” Daily\n";
-   msg += "â€¢ /shot_" + sym + "_current â€” Current Timeframe\n\n";
+   msg += "• /shot_" + sym + "_M1 — 1 Minute\n";
+   msg += "• /shot_" + sym + "_M5 — 5 Minutes\n";
+   msg += "• /shot_" + sym + "_M15 — 15 Minutes\n";
+   msg += "• /shot_" + sym + "_M30 — 30 Minutes\n";
+   msg += "• /shot_" + sym + "_H1 — 1 Hour\n";
+   msg += "• /shot_" + sym + "_H4 — 4 Hours\n";
+   msg += "• /shot_" + sym + "_D1 — Daily\n";
+   msg += "• /shot_" + sym + "_current — Current Timeframe\n\n";
    msg += "<i>💡 Tap an interactive timeframe button below to receive the chart photo:</i>";
    
    string kbJson = "{\"inline_keyboard\":[";
@@ -4247,30 +4247,30 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
    datetime lonTime = gmtTime + (1 * 3600);  // London BST (UTC+1)
    datetime tyoTime = gmtTime + (9 * 3600);  // Tokyo JST (UTC+9)
    
-   string caption = "📸 <b>LIVE CHART: " + sym + " (" + tfStr + ")</b>\n";
+   string caption = "📸 <b>LIVE CHART • " + sym + " (" + tfStr + ")</b>\n";
+   caption += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+   caption += "• <b>Market Quote:</b> <code>" + DoubleToString(curBid, digits) + " / " + DoubleToString(curAsk, digits) + "</code>\n";
+   caption += "• <b>Spread:</b> <code>" + IntegerToString(spread) + " pts</code>\n";
    caption += "──────────────────────────\n";
+   caption += "🌐 <b>TIMEZONE TELEMETRY:</b>\n";
+   caption += "• <b>Server:</b> " + TimeToStr(srvTime, TIME_MINUTES|TIME_SECONDS) + "  •  <b>UTC:</b> " + TimeToStr(gmtTime, TIME_MINUTES|TIME_SECONDS) + "\n";
+   caption += "• <b>NY:</b> " + TimeToStr(nyTime, TIME_MINUTES|TIME_SECONDS) + "  •  <b>LDN:</b> " + TimeToStr(lonTime, TIME_MINUTES|TIME_SECONDS) + "  •  <b>TYO:</b> " + TimeToStr(tyoTime, TIME_MINUTES|TIME_SECONDS) + "\n";
    caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "🌐 <b>MULTI-TIMEZONE TELEMETRY:</b>\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
-   caption += "──────────────────────────\n";
+   caption += "👤 <b>Account:</b> <code>" + IntegerToString(AccountNumber()) + "</code>";
    
-   if(!Telegram_SendPhoto(TelegramBotToken, TelegramChatID, filename, caption))
+   string kbShot = "{\"inline_keyboard\":[[{\"text\":\"💼 Active Positions\",\"callback_data\":\"nav_pos\"},{\"text\":\"📊 Account Status\",\"callback_data\":\"nav_status\"}]]}";
+   if(!Telegram_SendPhoto(TelegramBotToken, TelegramChatID, filename, caption, kbShot))
    {
       Telegram_SendMessage(TelegramBotToken, TelegramChatID, "❌ Failed to send chart photo for " + sym + ".", 2, 1);
    }
    
    if(tempChartOpened)
    {
+      for(int w = 0; w < 15; w++)
+      {
+         if(FileIsExist(filename)) break;
+         Sleep(50);
+      }
       ChartClose(targetChartId);
    }
 }
@@ -4329,21 +4329,21 @@ void Telegram_SendDailyReport()
    string currency = AccountCurrency();
    string rpt = "📈 <b>DAILY PERFORMANCE SUMMARY REPORT</b>\n";
    rpt += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-   rpt += "â€¢ <b>Period:</b> Last 24 Hours\n";
-   rpt += "â€¢ <b>Account:</b> " + IntegerToString(AccountNumber()) + " (" + AccountCompany() + ")\n";
-   rpt += "â€¢ <b>Closed Trades:</b> " + IntegerToString(totalTrades) + " (" + IntegerToString(winCount) + "W / " + IntegerToString(lossCount) + "L)\n";
-   rpt += "â€¢ <b>Win Rate:</b> " + DoubleToString(winRate, 1) + "%\n";
-   rpt += "â€¢ <b>Gross Profit:</b> +" + DoubleToString(grossProfit, 2) + " " + currency + "\n";
-   rpt += "â€¢ <b>Gross Loss:</b> -" + DoubleToString(grossLoss, 2) + " " + currency + "\n";
-   rpt += "â€¢ <b>Profit Factor:</b> " + DoubleToString(profitFactor, 2) + "\n";
+   rpt += "• <b>Period:</b> Last 24 Hours\n";
+   rpt += "• <b>Account:</b> " + IntegerToString(AccountNumber()) + " (" + AccountCompany() + ")\n";
+   rpt += "• <b>Closed Trades:</b> " + IntegerToString(totalTrades) + " (" + IntegerToString(winCount) + "W / " + IntegerToString(lossCount) + "L)\n";
+   rpt += "• <b>Win Rate:</b> " + DoubleToString(winRate, 1) + "%\n";
+   rpt += "• <b>Gross Profit:</b> +" + DoubleToString(grossProfit, 2) + " " + currency + "\n";
+   rpt += "• <b>Gross Loss:</b> -" + DoubleToString(grossLoss, 2) + " " + currency + "\n";
+   rpt += "• <b>Profit Factor:</b> " + DoubleToString(profitFactor, 2) + "\n";
    string netSign = (netTotal >= 0.0) ? "🟢 +" : "🔴 -";
-   rpt += "â€¢ <b>Net P/L:</b> <b>" + netSign + DoubleToString(MathAbs(netTotal), 2) + " " + currency + "</b>\n";
+   rpt += "• <b>Net P/L:</b> <b>" + netSign + DoubleToString(MathAbs(netTotal), 2) + " " + currency + "</b>\n";
    if(maxWin > 0.0)
-      rpt += "â€¢ <b>Best Trade:</b> " + bestSymbol + " (+" + DoubleToString(maxWin, 2) + " " + currency + ")\n";
+      rpt += "• <b>Best Trade:</b> " + bestSymbol + " (+" + DoubleToString(maxWin, 2) + " " + currency + ")\n";
    if(maxLoss < 0.0)
-      rpt += "â€¢ <b>Worst Trade:</b> " + worstSymbol + " (" + DoubleToString(maxLoss, 2) + " " + currency + ")\n";
-   rpt += "â€¢ <b>Ending Balance:</b> " + Telegram_FormatMoney(AccountBalance(), currency) + "\n";
-   rpt += "â€¢ <b>Ending Equity:</b> " + Telegram_FormatMoney(AccountEquity(), currency);
+      rpt += "• <b>Worst Trade:</b> " + worstSymbol + " (" + DoubleToString(maxLoss, 2) + " " + currency + ")\n";
+   rpt += "• <b>Ending Balance:</b> " + Telegram_FormatMoney(AccountBalance(), currency) + "\n";
+   rpt += "• <b>Ending Equity:</b> " + Telegram_FormatMoney(AccountEquity(), currency);
    
    Telegram_SendMessage(TelegramBotToken, TelegramChatID, rpt, 3, 2);
 }
@@ -4526,10 +4526,10 @@ void Telegram_PollCommands()
          int syncedCount = Telegram_ApplyGBPUSDColorSchemeToAllCharts();
          string syncMsg = "🎨 <b>CHART COLOR SCHEME SYNCHRONIZED</b>\n";
          syncMsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-         syncMsg += "â€¢ <b>Style:</b> GBPUSD Black & Green/Red Candlestick Scheme\n";
-         syncMsg += "â€¢ <b>Open Charts Synchronized:</b> " + IntegerToString(syncedCount) + " chart(s)\n";
-         syncMsg += "â€¢ <b>Default Template:</b> <code>templates/default.tpl</code> created!\n";
-         syncMsg += "â€¢ <b>Result:</b> All current and future charts will now open in this exact style! âœ…";
+         syncMsg += "• <b>Style:</b> GBPUSD Black & Green/Red Candlestick Scheme\n";
+         syncMsg += "• <b>Open Charts Synchronized:</b> " + IntegerToString(syncedCount) + " chart(s)\n";
+         syncMsg += "• <b>Default Template:</b> <code>templates/default.tpl</code> created!\n";
+         syncMsg += "• <b>Result:</b> All current and future charts will now open in this exact style! ✅";
          Telegram_SendMessage(TelegramBotToken, TelegramChatID, syncMsg, 2, 1);
       }
       else if(lowerCmd == "/status")            Telegram_CmdStatus();
@@ -4632,7 +4632,7 @@ void Telegram_CheckRiskGuardian()
 //+------------------------------------------------------------------+
 //| Capture & Send Chart Screenshot                                  |
 //+------------------------------------------------------------------+
-void Telegram_CaptureAndSendScreenshot(int ticket, string caption)
+void Telegram_CaptureAndSendScreenshot(int ticket, string caption, string replyMarkupJson = "")
 {
    if(!TelegramSendScreenshots) return;
    
@@ -4640,7 +4640,7 @@ void Telegram_CaptureAndSendScreenshot(int ticket, string caption)
    if(WindowScreenShot(shotName, 1024, 768))
    {
       Sleep(100);
-      Telegram_SendPhoto(TelegramBotToken, TelegramChatID, shotName, caption);
+      Telegram_SendPhoto(TelegramBotToken, TelegramChatID, shotName, caption, replyMarkupJson);
    }
 }
 
@@ -4689,13 +4689,13 @@ void Telegram_InitTradeTracker()
    // Send startup notification with command hints
    string startMsg = "🚀 <b>SmartAutoTradeEA Pro Online</b>\n";
    startMsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-   startMsg += "â€¢ <b>Symbol:</b> <code>" + Symbol() + "</code> (" + EnumToString((ENUM_TIMEFRAMES)Period()) + ")\n";
-   startMsg += "â€¢ <b>Account:</b> " + IntegerToString(AccountNumber()) + " (" + AccountCompany() + ")\n";
-   startMsg += "â€¢ <b>Server:</b> " + AccountServer() + "\n";
-   startMsg += "â€¢ <b>Magic:</b> " + IntegerToString(MagicNumber) + "\n";
-   startMsg += "â€¢ <b>Balance:</b> " + Telegram_FormatMoney(AccountBalance(), AccountCurrency()) + "\n";
-   startMsg += "â€¢ <b>AutoTrading:</b> " + (g_AutoTradingRuntimeActive ? "ACTIVE âœ…" : "SIGNAL-ONLY ⏸️") + "\n";
-   startMsg += "â€¢ <b>Remote Control:</b> Send /help for commands.";
+   startMsg += "• <b>Symbol:</b> <code>" + Symbol() + "</code> (" + EnumToString((ENUM_TIMEFRAMES)Period()) + ")\n";
+   startMsg += "• <b>Account:</b> " + IntegerToString(AccountNumber()) + " (" + AccountCompany() + ")\n";
+   startMsg += "• <b>Server:</b> " + AccountServer() + "\n";
+   startMsg += "• <b>Magic:</b> " + IntegerToString(MagicNumber) + "\n";
+   startMsg += "• <b>Balance:</b> " + Telegram_FormatMoney(AccountBalance(), AccountCurrency()) + "\n";
+   startMsg += "• <b>AutoTrading:</b> " + (g_AutoTradingRuntimeActive ? "ACTIVE ✅" : "SIGNAL-ONLY ⏸️") + "\n";
+   startMsg += "• <b>Remote Control:</b> Send /help for commands.";
    
    Telegram_SendMessage(TelegramBotToken, TelegramChatID, startMsg, 3, 2);
 }
@@ -4735,14 +4735,15 @@ void Telegram_ProcessTradeEvents()
                   double approxClose = (type == OP_BUY) ? Bid : Ask;
                   string pmsg = "✂️ <b>POSITION PARTIALLY CLOSED</b>\n";
                   pmsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-                  pmsg += "â€¢ <b>Symbol:</b> <code>" + Telegram_EscapeHtml(OrderSymbol()) + "</code>\n";
-                  pmsg += "â€¢ <b>Type:</b> <b>" + (type == OP_BUY ? "BUY" : "SELL") + "</b>\n";
-                  pmsg += "â€¢ <b>Closed Lots:</b> " + DoubleToString(closedLots, 2) + " (Remaining: " + DoubleToString(OrderLots(), 2) + ")\n";
-                  pmsg += "â€¢ <b>Open Price:</b> " + Telegram_FormatPrice(OrderOpenPrice(), digits) + "\n";
-                  pmsg += "â€¢ <b>Close Price:</b> " + Telegram_FormatPrice(approxClose, digits) + "\n";
-                  pmsg += "â€¢ <b>Ticket:</b> #" + IntegerToString(ticket) + "\n";
-                  pmsg += "â€¢ <b>Magic:</b> " + IntegerToString(OrderMagicNumber());
-                  Telegram_SendMessage(TelegramBotToken, TelegramChatID, pmsg, 3, 2);
+                  pmsg += "📊 <b>Asset:</b> <code>" + Telegram_EscapeHtml(OrderSymbol()) + "</code> (" + (type == OP_BUY ? "BUY ↗" : "SELL ↘") + ")   •   <b>Ticket:</b> <code>#" + IntegerToString(ticket) + "</code>\n";
+                  pmsg += "💼 <b>Closed:</b> <code>" + DoubleToString(closedLots, 2) + " Lots</code>   •   <b>Remaining:</b> <code>" + DoubleToString(OrderLots(), 2) + " Lots</code>\n";
+                  pmsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+                  pmsg += "💰 <b>Entry:</b> <code>" + Telegram_FormatPrice(OrderOpenPrice(), digits) + "</code> ➜ <b>Exit:</b> <code>" + Telegram_FormatPrice(approxClose, digits) + "</code>\n";
+                  pmsg += "⏰ <b>Time:</b> <code>" + TimeToStr(TimeCurrent(), TIME_SECONDS) + " Server</code>";
+
+                  string kbPart = StringFormat("{\"inline_keyboard\":[[{\"text\":\"❌ Close Remaining #%d\",\"callback_data\":\"/close_%d\"},{\"text\":\"💼 Active Positions\",\"callback_data\":\"nav_pos\"}]]}",
+                                               ticket, ticket);
+                  Telegram_SendMessage(TelegramBotToken, TelegramChatID, pmsg, 3, 2, kbPart);
                }
             }
             break;
@@ -4767,27 +4768,51 @@ void Telegram_ProcessTradeEvents()
          {
             int digits = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
             if(digits == 0) digits = Digits;
-            string emoji = (type == OP_BUY) ? "🟢 <b>BUY ORDER OPENED</b>" : "🔴 <b>SELL ORDER OPENED</b>";
-            string omsg = emoji + "\n";
-            omsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-            omsg += "• <b>Symbol:</b> <code>" + Telegram_EscapeHtml(OrderSymbol()) + "</code>\n";
-            omsg += "• <b>Type:</b> <b>" + (type == OP_BUY ? "BUY" : "SELL") + "</b>\n";
-            omsg += "• <b>Volume:</b> " + DoubleToString(OrderLots(), 2) + " Lots\n";
-            omsg += "• <b>Open Price:</b> " + Telegram_FormatPrice(OrderOpenPrice(), digits) + "\n";
-            omsg += "• <b>Stop Loss:</b> " + Telegram_FormatPrice(OrderStopLoss(), digits) + "\n";
-            omsg += "• <b>Take Profit:</b> " + Telegram_FormatPrice(OrderTakeProfit(), digits) + "\n";
-            omsg += "• <b>Open Time:</b> " + TimeToStr(OrderOpenTime(), TIME_DATE|TIME_SECONDS) + "\n";
-            omsg += "• <b>Ticket:</b> #" + IntegerToString(ticket) + "\n";
-            omsg += "• <b>Magic:</b> " + IntegerToString(OrderMagicNumber()) + "\n";
-            omsg += "• <b>Account:</b> " + IntegerToString(AccountNumber()) + " (" + AccountCompany() + ")";
+            double point = MarketInfo(OrderSymbol(), MODE_POINT);
+            if(point == 0.0) point = Point;
+            double pipVal = (digits == 3 || digits == 5) ? (point * 10.0) : point;
+            if(pipVal == 0.0) pipVal = 0.0001;
+
+            string headerBadge = (type == OP_BUY) ? "🟢 <b>POSITION OPENED • BUY ↗</b>" : "🔴 <b>POSITION OPENED • SELL ↘</b>";
             
-            string kbTrade = StringFormat("{\"inline_keyboard\":[[{\"text\":\"❌ Close #%d\",\"callback_data\":\"/close_%d\"},{\"text\":\"✂️ 50%%\",\"callback_data\":\"/half_%d\"}],[{\"text\":\"🛡️ Move SL to BE\",\"callback_data\":\"/be_%d\"},{\"text\":\"📸 View Chart\",\"callback_data\":\"/shot_%s_H1\"}]]}",
-                                          ticket, ticket, ticket, ticket, OrderSymbol());
+            string omsg = headerBadge + "\n";
+            omsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            omsg += "📊 <b>Asset:</b> <code>" + Telegram_EscapeHtml(OrderSymbol()) + "</code>   •   <b>Volume:</b> <code>" + DoubleToString(OrderLots(), 2) + " Lots</code>\n";
+            omsg += "💰 <b>Entry:</b> <code>" + Telegram_FormatPrice(OrderOpenPrice(), digits) + "</code>   •   <b>Ticket:</b> <code>#" + IntegerToString(ticket) + "</code>\n";
+            omsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            
+            if(OrderStopLoss() > 0.0)
+            {
+               double slPips = (type == OP_BUY) ? ((OrderOpenPrice() - OrderStopLoss()) / pipVal) : ((OrderStopLoss() - OrderOpenPrice()) / pipVal);
+               omsg += "🛡️ <b>Stop Loss:</b> <code>" + Telegram_FormatPrice(OrderStopLoss(), digits) + "</code> (-" + DoubleToString(MathAbs(slPips), 1) + " pips)\n";
+            }
+            else
+            {
+               omsg += "🛡️ <b>Stop Loss:</b> <i>Not Set (Unprotected)</i>\n";
+            }
+            
+            if(OrderTakeProfit() > 0.0)
+            {
+               double tpPips = (type == OP_BUY) ? ((OrderTakeProfit() - OrderOpenPrice()) / pipVal) : ((OrderOpenPrice() - OrderTakeProfit()) / pipVal);
+               omsg += "🎯 <b>Take Profit:</b> <code>" + Telegram_FormatPrice(OrderTakeProfit(), digits) + "</code> (+" + DoubleToString(MathAbs(tpPips), 1) + " pips)\n";
+            }
+            else
+            {
+               omsg += "🎯 <b>Take Profit:</b> <i>Not Set (Open Run)</i>\n";
+            }
+            
+            omsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            string sourceStr = (OrderMagicNumber() == 0) ? "Manual Execution" : ("EA Strategy (#" + IntegerToString(OrderMagicNumber()) + ")");
+            omsg += "👤 <b>Account:</b> <code>" + IntegerToString(AccountNumber()) + "</code>   •   <b>Source:</b> " + sourceStr + "\n";
+            omsg += "⏰ <b>Time:</b> <code>" + TimeToStr(OrderOpenTime(), TIME_SECONDS) + " Server</code>";
+            
+            string kbTrade = StringFormat("{\"inline_keyboard\":[[{\"text\":\"❌ Close #%d\",\"callback_data\":\"/close_%d\"},{\"text\":\"✂️ Close 50%%\",\"callback_data\":\"/half_%d\"}],[{\"text\":\"📸 View Chart\",\"callback_data\":\"/shot_%s_H1\"},{\"text\":\"💼 Active Positions\",\"callback_data\":\"nav_pos\"}]]}",
+                                          ticket, ticket, ticket, OrderSymbol());
             
             // Send screenshot if enabled, otherwise send text with interactive buttons
             if(TelegramSendScreenshots)
             {
-               Telegram_CaptureAndSendScreenshot(ticket, omsg);
+               Telegram_CaptureAndSendScreenshot(ticket, omsg, kbTrade);
             }
             else
             {
@@ -4813,28 +4838,47 @@ void Telegram_ProcessTradeEvents()
          {
             int digits = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
             if(digits == 0) digits = Digits;
+            double point = MarketInfo(OrderSymbol(), MODE_POINT);
+            if(point == 0.0) point = Point;
+            double pipVal = (digits == 3 || digits == 5) ? (point * 10.0) : point;
+            if(pipVal == 0.0) pipVal = 0.0001;
+
             double netProfit = OrderProfit() + OrderSwap() + OrderCommission();
-            string outcomeEmoji = (netProfit >= 0.0) ? "✅ <b>PROFIT</b>" : "❌ <b>LOSS</b>";
-            string cmsg = "🏁 <b>POSITION CLOSED</b> (" + outcomeEmoji + ")\n";
+            double pipsDiff = 0.0;
+            if(OrderType() == OP_BUY)
+               pipsDiff = (OrderClosePrice() - OrderOpenPrice()) / pipVal;
+            else if(OrderType() == OP_SELL)
+               pipsDiff = (OrderOpenPrice() - OrderClosePrice()) / pipVal;
+
+            string outcomeHeader;
+            string plBadge;
+            if(netProfit >= 0.0)
+            {
+               outcomeHeader = (OrderType() == OP_BUY) ? "✅ <b>POSITION CLOSED • PROFIT ↗</b>" : "✅ <b>POSITION CLOSED • PROFIT ↘</b>";
+               plBadge = "🟢";
+            }
+            else
+            {
+               outcomeHeader = (OrderType() == OP_BUY) ? "❌ <b>POSITION CLOSED • LOSS ↗</b>" : "❌ <b>POSITION CLOSED • LOSS ↘</b>";
+               plBadge = "🔴";
+            }
+
+            string cmsg = outcomeHeader + "\n";
             cmsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-            cmsg += "• <b>Symbol:</b> <code>" + Telegram_EscapeHtml(OrderSymbol()) + "</code>\n";
-            cmsg += "• <b>Type:</b> <b>" + (OrderType() == OP_BUY ? "BUY" : "SELL") + "</b>\n";
-            cmsg += "• <b>Volume:</b> " + DoubleToString(OrderLots(), 2) + " Lots\n";
-            cmsg += "• <b>Open Price:</b> " + Telegram_FormatPrice(OrderOpenPrice(), digits) + "\n";
-            cmsg += "• <b>Close Price:</b> " + Telegram_FormatPrice(OrderClosePrice(), digits) + "\n";
-            cmsg += "• <b>Stop Loss:</b> " + Telegram_FormatPrice(OrderStopLoss(), digits) + "\n";
-            cmsg += "• <b>Take Profit:</b> " + Telegram_FormatPrice(OrderTakeProfit(), digits) + "\n";
-            cmsg += "• <b>Close Time:</b> " + TimeToStr(OrderCloseTime(), TIME_DATE|TIME_SECONDS) + "\n";
-            cmsg += "• <b>Net Profit:</b> <b>" + Telegram_FormatMoney(netProfit, AccountCurrency()) + "</b>";
+            cmsg += "📊 <b>Asset:</b> <code>" + Telegram_EscapeHtml(OrderSymbol()) + "</code> (" + (OrderType() == OP_BUY ? "BUY" : "SELL") + ")   •   <b>Volume:</b> <code>" + DoubleToString(OrderLots(), 2) + " Lots</code>\n";
+            cmsg += "💰 <b>In:</b> <code>" + Telegram_FormatPrice(OrderOpenPrice(), digits) + "</code> ➜ <b>Out:</b> <code>" + Telegram_FormatPrice(OrderClosePrice(), digits) + "</code> (" + (pipsDiff >= 0 ? "+" : "") + DoubleToString(pipsDiff, 1) + " pips)\n";
+            cmsg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            cmsg += "💵 <b>Net Result:</b> <b>" + Telegram_FormatMoney(netProfit, AccountCurrency()) + "</b> " + plBadge;
             if(OrderSwap() != 0.0 || OrderCommission() != 0.0)
             {
-               cmsg += " (Swap: " + DoubleToString(OrderSwap(), 2) + ", Comm: " + DoubleToString(OrderCommission(), 2) + ")";
+               cmsg += " <i>(Swap: " + DoubleToString(OrderSwap(), 2) + ", Comm: " + DoubleToString(OrderCommission(), 2) + ")</i>";
             }
             cmsg += "\n";
-            cmsg += "• <b>Ticket:</b> #" + IntegerToString(ticket) + "\n";
-            cmsg += "• <b>Magic:</b> " + IntegerToString(OrderMagicNumber()) + "\n";
-            cmsg += "• <b>Balance:</b> " + Telegram_FormatMoney(AccountBalance(), AccountCurrency());
-            Telegram_SendMessage(TelegramBotToken, TelegramChatID, cmsg, 3, 2);
+            cmsg += "🎫 <b>Ticket:</b> <code>#" + IntegerToString(ticket) + "</code>   •   <b>Balance:</b> <code>" + Telegram_FormatMoney(AccountBalance(), AccountCurrency()) + "</code>\n";
+            cmsg += "⏰ <b>Closed:</b> <code>" + TimeToStr(OrderCloseTime(), TIME_SECONDS) + " Server</code>";
+
+            string kbClosed = "{\"inline_keyboard\":[[{\"text\":\"💼 Active Positions\",\"callback_data\":\"nav_pos\"},{\"text\":\"📜 Trade History\",\"callback_data\":\"nav_history\"}],[{\"text\":\"📊 Account Status\",\"callback_data\":\"nav_status\"}]]}";
+            Telegram_SendMessage(TelegramBotToken, TelegramChatID, cmsg, 3, 2, kbClosed);
          }
       }
       

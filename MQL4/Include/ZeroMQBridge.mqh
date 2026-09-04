@@ -1006,6 +1006,12 @@ string Zmq_HandleScreenshot(const string reqJson)
    
    if(tempChartOpened)
    {
+      // Allow MT4 graphics engine to render and flush PNG to disk before closing temporary chart
+      for(int w = 0; w < 15; w++)
+      {
+         if(FileIsExist(filename)) break;
+         Sleep(50);
+      }
       ChartClose(targetChartId);
    }
    

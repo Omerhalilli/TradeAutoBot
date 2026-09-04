@@ -315,7 +315,7 @@ int Telegram_ParseUpdates(const string json, TelegramUpdateMessage &updates[])
 //+------------------------------------------------------------------+
 //| Send Photo via Telegram sendPhoto multipart/form-data            |
 //+------------------------------------------------------------------+
-bool Telegram_SendPhoto(const string botToken, const string chatId, const string filename, const string captionHtml)
+bool Telegram_SendPhoto(const string botToken, const string chatId, const string filename, const string captionHtml, const string replyMarkupJson = "")
 {
    int fileHandle = INVALID_HANDLE;
    int fileSize = 0;
@@ -363,10 +363,18 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
                   captionHtml + "\r\n" +
                   "--" + boundary + "\r\n" +
                   "Content-Disposition: form-data; name=\"parse_mode\"\r\n\r\n" +
-                  "HTML\r\n" +
-                  "--" + boundary + "\r\n" +
-                  "Content-Disposition: form-data; name=\"photo\"; filename=\"" + filename + "\"\r\n" +
-                  "Content-Type: image/png\r\n\r\n";
+                  "HTML\r\n";
+
+   if(StringLen(replyMarkupJson) > 0)
+   {
+      part1 += "--" + boundary + "\r\n" +
+               "Content-Disposition: form-data; name=\"reply_markup\"\r\n\r\n" +
+               replyMarkupJson + "\r\n";
+   }
+
+   part1 += "--" + boundary + "\r\n" +
+            "Content-Disposition: form-data; name=\"photo\"; filename=\"" + filename + "\"\r\n" +
+            "Content-Type: image/png\r\n\r\n";
                   
    string part2 = "\r\n--" + boundary + "--\r\n";
    

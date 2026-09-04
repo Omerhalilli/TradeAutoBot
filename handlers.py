@@ -1239,8 +1239,22 @@ async def cmd_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     args = context.args or []
     if args:
         sym = clean_symbol(args[0])
-        tf = args[1].upper() if len(args) > 1 else ""
-        await execute_screenshot_delivery(update.effective_chat.id, context, sym, tf)
+        tf = args[1].upper() if len(args) > 1 else "H1"
+        status_msg = await update.effective_message.reply_text(
+            f"⏳ <i>Capturing chart for <b>{sym}</b> ({tf})...</i>",
+            parse_mode=ParseMode.HTML
+        )
+        ok = await execute_screenshot_delivery(update.effective_chat.id, context, sym, tf)
+        if ok:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        else:
+            await status_msg.edit_text(
+                f"⚠️ <b>Capture Failed:</b> MT4 bridge unreachable or chart window unavailable for <code>{sym}</code> ({tf}).",
+                parse_mode=ParseMode.HTML
+            )
         return
 
     msg = (
@@ -1320,17 +1334,43 @@ async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAUL
     mt4_files_dir = os.path.expandvars(r"%APPDATA%\MetaQuotes\Terminal\80152BA938C72BA373B1EA4889AEE06F\MQL4\Files")
     shot_path = os.path.join(mt4_files_dir, shot_filename)
 
-    if not os.path.exists(shot_path):
+    # Wait up to 2.5 seconds for MT4 graphics engine to flush image file to disk
+    file_ready = False
+    for _ in range(25):
+        if os.path.exists(shot_path) and os.path.getsize(shot_path) > 500:
+            file_ready = True
+            break
+        await asyncio.sleep(0.1)
+
+    if not file_ready:
+        logger.warning(f"Screenshot file {shot_path} not ready after wait.")
         return False
 
     caption = (
-        f"📊 <b>Chart Telemetry: {sym} ({tf})</b>\n"
+        f"📸 <b>INSTITUTIONAL CHART TELEMETRY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>Bid / Ask:</b> <code>{bid} / {ask}</code>\n"
+        f"• <b>Asset:</b> <code>{sym}</code>  •  <b>Timeframe:</b> <code>{tf}</code>\n"
+        f"• <b>Market Quote:</b> <code>{bid} / {ask}</code>\n"
         f"• <b>Server Time:</b> <code>{server_time}</code>"
     )
+    kb_shot = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("💼 Active Positions", callback_data="nav_pos"),
+            InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+        ],
+        [
+            InlineKeyboardButton("🔄 Retake Screenshot", callback_data=f"shottf:{sym}:{tf}"),
+            InlineKeyboardButton("📸 All Symbols", callback_data="shotsym:BACK")
+        ]
+    ])
     with open(shot_path, "rb") as photo_file:
-        await context.bot.send_photo(chat_id=chat_id, photo=photo_file, caption=caption, parse_mode=ParseMode.HTML)
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=photo_file,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb_shot
+        )
     return True
 
 # ==============================================================================
