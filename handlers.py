@@ -13,6 +13,7 @@ from telegram.ext import ContextTypes
 from config import ALLOWED_CHAT_IDS
 from zmq_client import zmq_client
 from news_service import news_service
+from account_manager import account_manager, AccountProfile
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @restricted
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    active_acc = account_manager.get_active_account()
     help_text = (
         "🤖 <b>MT4 Institutional Command Center & Bot Menu</b>\n"
+        f"👤 <i>Target Account: #{active_acc.id} {active_acc.name} ({active_acc.profile_name})</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👥 <b>MULTI-ACCOUNT SWITCHING</b>\n"
+        "• /accounts or /switch — Switch between accounts & inspect BUY/SELL functions\n\n"
         "📊 <b>ACCOUNT & STATUS</b>\n"
         "• /status or /account — Balance, Equity, Margin & Health\n"
         "• /positions — Active open market orders\n"
@@ -77,6 +82,7 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(data.get("message", "Error communicating with MT4."), parse_mode=ParseMode.HTML)
         return
 
+    active_acc = account_manager.get_active_account()
     bal = data.get("balance", 0.0)
     eq = data.get("equity", 0.0)
     margin = data.get("margin", 0.0)
@@ -91,7 +97,8 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     msg = (
         f"🏛️ <b>MT4 Account Overview</b>\n"
-        f"<i>Broker: {company}</i>\n"
+        f"👤 <b>Account #{active_acc.id}:</b> <code>{active_acc.account_number}</code> ({active_acc.name})\n"
+        f"📂 <b>Profile:</b> <code>{active_acc.profile_name}</code> | <i>Broker: {company}</i>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Balance:</b> <code>${bal:,.2f} {curr}</code>\n"
         f"💎 <b>Equity:</b> <code>${eq:,.2f} {curr}</code>\n"
@@ -112,14 +119,25 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(data.get("message", "Error communicating with MT4."), parse_mode=ParseMode.HTML)
         return
 
+    active_acc = account_manager.get_active_account()
     positions = data.get("positions", [])
     count = data.get("count", 0)
 
     if count == 0:
-        await update.message.reply_text("💼 <b>Open Positions:</b> None\n<i>There are currently no active market orders.</i>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            f"💼 <b>Open Positions:</b> None\n"
+            f"👤 <b>Account #{active_acc.id}:</b> <code>{active_acc.account_number}</code> ({active_acc.name})\n"
+            f"📂 <b>Profile:</b> <code>{active_acc.profile_name}</code>\n"
+            f"<i>There are currently no active market orders.</i>",
+            parse_mode=ParseMode.HTML
+        )
         return
 
-    msg = f"💼 <b>Active Open Positions ({count})</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg = (
+        f"💼 <b>Active Open Positions ({count})</b>\n"
+        f"👤 <b>Account #{active_acc.id}:</b> <code>{active_acc.account_number}</code> ({active_acc.name} — <code>{active_acc.profile_name}</code>)\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
     total_pl = 0.0
 
     for pos in positions:
@@ -696,7 +714,232 @@ async def cmd_resume_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
+# ==============================================================================
+# Multi-Account Profile Switcher & BUY/SELL Function Inspection
+# ==============================================================================
+
+def get_accounts_keyboard() -> InlineKeyboardMarkup:
+    """Renders inline keyboard showing all accounts with active indicator."""
+    accounts = account_manager.get_all_accounts()
+    active = account_manager.get_active_account()
+    keyboard = []
+    for acc in accounts:
+        is_active = (str(acc.id) == str(active.id))
+        icon = "🟢" if is_active else "⚪"
+        active_tag = " [ACTIVE]" if is_active else ""
+        btn_text = f"{icon} Account #{acc.id}: {acc.name} ({acc.profile_name}){active_tag}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"switch_acc:{acc.id}")])
+    keyboard.append([InlineKeyboardButton("🔄 Refresh List", callback_data="switch_acc:refresh")])
+    return InlineKeyboardMarkup(keyboard)
+
+def inspect_account_trades(account: AccountProfile) -> tuple:
+    """
+    Performs deep inspection of the account:
+    Checks if the account has any active BUY or SELL functions/orders,
+    computes exposure, volume, and floating profit, and formats a complete report.
+    """
+    # Ensure zmq_client is on this account's endpoint
+    zmq_client.switch_endpoint(account.zmq_url)
+    acc_data = zmq_client.get_account()
+
+    is_online = (acc_data.get("status") == "ok")
+
+    if not is_online:
+        msg = (
+            f"👥 <b>ACCOUNT #{account.id}: {account.name.upper()}</b> [SWITCHED]\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔢 <b>Account Number:</b> <code>{account.account_number}</code>\n"
+            f"📂 <b>MT4 Profile:</b> <code>{account.profile_name}</code>\n"
+            f"🌐 <b>Broker Server:</b> <code>{account.server}</code>\n"
+            f"🔌 <b>ZeroMQ Endpoint:</b> <code>{account.zmq_url}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠️ <b>CONNECTION STATUS: OFFLINE / UNREACHABLE</b>\n"
+            f"<i>The MetaTrader 4 terminal for this profile is not running or listening on {account.zmq_url}.</i>\n\n"
+            "📌 <b>To connect this account:</b>\n"
+            f"1. Open MT4 terminal with profile <code>{account.profile_name}</code>.\n"
+            f"2. Attach SmartAutoTradeEA_Pro with <code>InpBindAddress = \"{account.zmq_url.replace('127.0.0.1', '*')}\"</code>."
+        )
+        keyboard = [
+            [InlineKeyboardButton("🔄 Re-Check Connection", callback_data=f"switch_acc:{account.id}")],
+            [InlineKeyboardButton("👥 Switch Another Account", callback_data="switch_acc:panel")]
+        ]
+        return msg, InlineKeyboardMarkup(keyboard)
+
+    pos_data = zmq_client.get_positions()
+
+    balance = float(acc_data.get("balance", 0.0))
+    equity = float(acc_data.get("equity", 0.0))
+    margin = float(acc_data.get("margin", 0.0))
+    free_margin = float(acc_data.get("free_margin", 0.0))
+    floating_pl = equity - balance
+    margin_level = f"{float(acc_data.get('margin_level', 0.0)):.1f}%" if margin > 0 else "∞"
+    server_time = acc_data.get("server_time", "N/A")
+    currency = acc_data.get("currency", "USD")
+
+    # Inspect positions for BUY vs SELL functions
+    positions = pos_data.get("positions", []) if pos_data.get("status") == "ok" else []
+
+    buy_orders = []
+    sell_orders = []
+
+    for pos in positions:
+        pos_type = str(pos.get("type", "")).upper()
+        if pos_type in ["0", "BUY"]:
+            buy_orders.append(pos)
+        elif pos_type in ["1", "SELL"]:
+            sell_orders.append(pos)
+
+    total_buy_lots = sum(float(p.get("volume", 0.0)) for p in buy_orders)
+    total_buy_pl = sum(float(p.get("profit", 0.0)) for p in buy_orders)
+
+    total_sell_lots = sum(float(p.get("volume", 0.0)) for p in sell_orders)
+    total_sell_pl = sum(float(p.get("profit", 0.0)) for p in sell_orders)
+
+    sign_pl = "+" if floating_pl >= 0 else ""
+    sign_buy = "+" if total_buy_pl >= 0 else ""
+    sign_sell = "+" if total_sell_pl >= 0 else ""
+
+    # Build Trade Inspection report
+    msg = (
+        f"👥 <b>ACCOUNT #{account.id}: {account.name.upper()}</b> [🟢 ACTIVE]\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🔢 <b>Account Number:</b> <code>{account.account_number}</code>\n"
+        f"📂 <b>MT4 Profile:</b> <code>{account.profile_name}</code>\n"
+        f"🌐 <b>Broker Server:</b> <code>{account.server}</code>\n"
+        f"💰 <b>Balance / Equity:</b> <code>${balance:,.2f} / ${equity:,.2f}</code>\n"
+        f"📊 <b>Margin:</b> <code>${margin:,.2f}</code> | <b>Free:</b> <code>${free_margin:,.2f}</code> ({margin_level})\n"
+        f"📈 <b>Floating P/L:</b> <code>{sign_pl}${floating_pl:,.2f} {currency}</code>\n"
+        f"⏰ <b>Server Time:</b> <code>{server_time}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⚡ <b>BUY / SELL FUNCTION DIAGNOSTICS:</b>\n\n"
+    )
+
+    # 1. BUY Function Inspection
+    if buy_orders:
+        msg += f"🟢 <b>ACTIVE BUY FUNCTION ({len(buy_orders)} order(s) | {total_buy_lots:.2f} lots)</b>\n"
+        msg += f"   • Total BUY Floating P/L: <code>{sign_buy}${total_buy_pl:,.2f}</code>\n"
+        for o in buy_orders[:5]:
+            t_id = o.get("ticket", "N/A")
+            sym = o.get("symbol", "")
+            vol = float(o.get("volume", 0.0))
+            op = float(o.get("open_price", 0.0))
+            prof = float(o.get("profit", 0.0))
+            s_prof = "+" if prof >= 0 else ""
+            sl = float(o.get("sl", 0.0))
+            tp = float(o.get("tp", 0.0))
+            sl_str = f"SL: {sl}" if sl > 0 else "SL: none"
+            tp_str = f"TP: {tp}" if tp > 0 else "TP: none"
+            msg += f"   ▫️ <code>#{t_id}</code> {sym} BUY {vol:.2f} @ {op:.5f} | <b>{s_prof}${prof:,.2f}</b>\n"
+            msg += f"      └ {sl_str} | {tp_str}\n"
+        if len(buy_orders) > 5:
+            msg += f"   <i>...and {len(buy_orders) - 5} more BUY orders.</i>\n"
+    else:
+        msg += "🟢 <b>BUY FUNCTION:</b> <i>No active BUY positions running.</i>\n"
+
+    msg += "\n"
+
+    # 2. SELL Function Inspection
+    if sell_orders:
+        msg += f"🔴 <b>ACTIVE SELL FUNCTION ({len(sell_orders)} order(s) | {total_sell_lots:.2f} lots)</b>\n"
+        msg += f"   • Total SELL Floating P/L: <code>{sign_sell}${total_sell_pl:,.2f}</code>\n"
+        for o in sell_orders[:5]:
+            t_id = o.get("ticket", "N/A")
+            sym = o.get("symbol", "")
+            vol = float(o.get("volume", 0.0))
+            op = float(o.get("open_price", 0.0))
+            prof = float(o.get("profit", 0.0))
+            s_prof = "+" if prof >= 0 else ""
+            sl = float(o.get("sl", 0.0))
+            tp = float(o.get("tp", 0.0))
+            sl_str = f"SL: {sl}" if sl > 0 else "SL: none"
+            tp_str = f"TP: {tp}" if tp > 0 else "TP: none"
+            msg += f"   ▫️ <code>#{t_id}</code> {sym} SELL {vol:.2f} @ {op:.5f} | <b>{s_prof}${prof:,.2f}</b>\n"
+            msg += f"      └ {sl_str} | {tp_str}\n"
+        if len(sell_orders) > 5:
+            msg += f"   <i>...and {len(sell_orders) - 5} more SELL orders.</i>\n"
+    else:
+        msg += "🔴 <b>SELL FUNCTION:</b> <i>No active SELL positions running.</i>\n"
+
+    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "✅ <i>Active target switched. All commands (/status, /positions, /close, /screenshot, /panic) will now run on this account.</i>"
+
+    keyboard = [
+        [
+            InlineKeyboardButton("💼 Open Positions", callback_data="nav_pos"),
+            InlineKeyboardButton("📸 Screenshot", callback_data="nav_shot")
+        ],
+        [
+            InlineKeyboardButton("🚨 Panic / Liquidate", callback_data="nav_panic"),
+            InlineKeyboardButton("👥 Switch Account", callback_data="switch_acc:panel")
+        ]
+    ]
+    return msg, InlineKeyboardMarkup(keyboard)
+
+@restricted
+async def cmd_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the Multi-Account & Profile Switching Panel."""
+    active = account_manager.get_active_account()
+    msg = (
+        "👥 <b>MULTI-ACCOUNT & PROFILE SWITCHER</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🟢 <b>Current Active Account:</b> <b>Account #{active.id}</b>\n"
+        f"• <b>Name:</b> {active.name}\n"
+        f"• <b>Number:</b> <code>{active.account_number}</code>\n"
+        f"• <b>MT4 Profile:</b> <code>{active.profile_name}</code>\n"
+        f"• <b>Broker Server:</b> <code>{active.server}</code>\n"
+        f"• <b>ZMQ Port:</b> <code>{active.zmq_url}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "👇 <b>Select an account below to switch control and inspect BUY/SELL functionality:</b>"
+    )
+    if update.callback_query:
+        await update.callback_query.edit_message_text(msg, reply_markup=get_accounts_keyboard(), parse_mode=ParseMode.HTML)
+    elif update.message:
+        await update.message.reply_text(msg, reply_markup=get_accounts_keyboard(), parse_mode=ParseMode.HTML)
+
+@restricted
+async def cb_switch_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles account switching button taps and trade inspection."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+
+    if data in ["switch_acc:refresh", "switch_acc:panel"]:
+        await cmd_accounts(update, context)
+        return
+
+    if data.startswith("switch_acc:"):
+        target_id = data.split(":", 1)[1]
+        acc = account_manager.set_active_account(target_id)
+        if not acc:
+            await query.answer("❌ Account ID not found", show_alert=True)
+            return
+
+        report_text, markup = inspect_account_trades(acc)
+        await query.edit_message_text(report_text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        await query.answer(f"✅ Switched to Account #{acc.id}: {acc.name}", show_alert=False)
+
+@restricted
+async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles navigation action buttons from the trade inspection report."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+
+    if data == "nav_pos":
+        # Call cmd_positions
+        if query.message:
+            await cmd_positions(update, context)
+    elif data == "nav_shot":
+        # Call cmd_screenshot
+        if query.message:
+            await cmd_screenshot(update, context)
+    elif data == "nav_panic":
+        # Call cmd_closeall
+        if query.message:
+            await cmd_closeall(update, context)
+
 # Aliases for Menu commands
+cmd_switch = cmd_accounts
 cmd_panic = cmd_closeall
 cmd_status = cmd_account
 cmd_pause = cmd_pause_bot

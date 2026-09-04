@@ -30,6 +30,16 @@ class MT4ZmqClient:
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True, name="ZmqHeartbeat")
         self._heartbeat_thread.start()
 
+    def switch_endpoint(self, new_url: str) -> None:
+        """Switches the active ZeroMQ connection target to a new server endpoint."""
+        with self._lock:
+            if self.server_url == new_url and self.socket is not None:
+                return
+            logger.info(f"Switching ZeroMQ endpoint from {self.server_url} to {new_url}")
+            self.server_url = new_url
+            self.is_connected = False
+            self._init_socket()
+
     def _init_socket(self) -> None:
         """Initializes or safely resets the ZeroMQ REQ socket."""
         if self.socket is not None:

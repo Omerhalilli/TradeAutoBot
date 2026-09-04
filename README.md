@@ -1,4 +1,4 @@
-﻿# 🤖 TradeAutoBot
+# 🤖 TradeAutoBot
 
 > **Resilient 24/7 Telegram Command Center & ZeroMQ Bridge for MetaTrader 4**
 
@@ -12,6 +12,7 @@ TradeAutoBot connects MetaTrader 4 (MT4) directly to Telegram using an ultra-low
 * **🛡️ 24/7 Self-Healing Resilience**: Decoupled Python architecture. If MT4 closes or restarts, the bot gracefully replies ⚠️ MT4 not connected, checks connectivity every 5 seconds, and auto-reconnects when MT4 returns.
 * **📅 Economic Calendar & News Shield**: Automatically fetches high/medium impact events from ForexFactory and broadcasts 15-minute lead warnings. Dispatched alerts persist across bot reboots to avoid duplicate spam.
 * **📊 Remote Trade & Risk Management**: Live account metrics (/status), open positions (/positions), closed trade history (/history), 24h performance audit (/report), and prop-firm drawdown tracker (/prop).
+* **👥 Multi-Account & Profile Switcher**: `/accounts` or `/switch` displays an interactive inline panel to switch between multiple accounts (e.g. Invest-AZ Demo, Prop-Firm Challenge, Live Scalper). Instantly inspects whether the selected account has active **BUY or SELL** functions running with real-time exposure breakdown.
 * **🚨 Emergency Controls**: Remote emergency kill-switch (/panic or /closeall with confirmation buttons), single-symbol liquidation (/close), SL/TP modification (/modify_sl, /modify_tp), and remote autotrade pause (/pause, /resume).
 * **🔒 Security**: Whitelist-restricted to authorized Telegram Chat IDs defined in .env.
 
@@ -21,6 +22,7 @@ TradeAutoBot connects MetaTrader 4 (MT4) directly to Telegram using an ultra-low
 
 | Command | Description |
 | :--- | :--- |
+| **/accounts** | **Multi-Account Profile Switcher**: Switch accounts & inspect active BUY/SELL functions |
 | **/status** | Balance, Equity, Margin, Free Margin, Floating P/L & Server Time |
 | **/positions** | View all open market orders with floating P/L and SL/TP |
 | **/screenshot** | **Interactive 2-step screenshot wizard** (Select Symbol ➜ Select Timeframe) |
@@ -32,7 +34,7 @@ TradeAutoBot connects MetaTrader 4 (MT4) directly to Telegram using an ultra-low
 | **/modify_tp <TICKET> <PRICE>** | Update Take Profit for an open ticket |
 | **/history [N/today/lastweek]** | Closed trade history with ticket, price, and net P/L |
 | **/colors** | Synchronize GBPUSD dark candlestick color theme across all open MT4 charts |
-| **/pause** | Pause automated trade entries (sets global variable and writes utotrade_state.flag) |
+| **/pause** | Pause automated trade entries (sets global variable and writes autotrade_state.flag) |
 | **/resume** | Resume automated trade entries |
 | **/news [week]** | Upcoming high/medium impact events in user (GMT+4) and broker (GMT+3) times |
 | **/help** | Displays interactive command guide |
@@ -96,7 +98,8 @@ void OnTick()
 `	ext
 ├── bot.py                  # Main Telegram bot daemon with 24/7 reconnect loop
 ├── handlers.py             # Telegram command & interactive screenshot wizard handlers
-├── zmq_client.py           # ZeroMQ client with Lazy Pirate auto-reconnect & 5s heartbeat
+├── account_manager.py      # Multi-account & profile registry, active switcher, and persistence
+├── zmq_client.py           # ZeroMQ client with dynamic endpoint switching & auto-reconnect
 ├── news_service.py         # Economic calendar scraper with persistent sent-alerts cache
 ├── config.py               # Configuration loader (.env, config.ini) & rotating file logger
 ├── AutoTradeFlagCheck.mqh  # Modular MQL4 header to pause external trading robots
