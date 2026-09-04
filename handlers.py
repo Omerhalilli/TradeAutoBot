@@ -718,8 +718,12 @@ async def cmd_resume_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # Multi-Account Profile Switcher & BUY/SELL Function Inspection
 # ==============================================================================
 
+# ==============================================================================
+# Invest-AZ Multi-Account (Demo vs Real) Switcher & BUY/SELL Function Inspection
+# ==============================================================================
+
 def get_accounts_keyboard() -> InlineKeyboardMarkup:
-    """Renders inline keyboard showing all accounts with active indicator."""
+    """Renders inline keyboard showing the 2 Invest-AZ accounts (Demo vs Real)."""
     accounts = account_manager.get_all_accounts()
     active = account_manager.get_active_account()
     keyboard = []
@@ -727,46 +731,63 @@ def get_accounts_keyboard() -> InlineKeyboardMarkup:
         is_active = (str(acc.id) == str(active.id))
         icon = "🟢" if is_active else "⚪"
         active_tag = " [ACTIVE]" if is_active else ""
-        btn_text = f"{icon} Account #{acc.id}: {acc.name} ({acc.profile_name}){active_tag}"
+        type_badge = "🟡 DEMO" if "DEMO" in acc.name.upper() else "🔴 REAL"
+        btn_text = f"{icon} {type_badge} — {acc.name} ({acc.account_number}){active_tag}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"switch_acc:{acc.id}")])
-    keyboard.append([InlineKeyboardButton("🔄 Refresh List", callback_data="switch_acc:refresh")])
+    keyboard.append([InlineKeyboardButton("🔄 Refresh Panel", callback_data="switch_acc:refresh")])
     return InlineKeyboardMarkup(keyboard)
 
 def inspect_account_trades(account: AccountProfile) -> tuple:
     """
-    Performs deep inspection of the account:
+    Performs deep inspection of the Invest-AZ account:
     Checks if the account has any active BUY or SELL functions/orders,
     computes exposure, volume, and floating profit, and formats a complete report.
     """
-    # Ensure zmq_client is on this account's endpoint
-    zmq_client.switch_endpoint(account.zmq_url)
+    # Try primary endpoint, with fallback to 5555 if port 5556 is unreachable
+    target_url = account.zmq_url
+    zmq_client.switch_endpoint(target_url)
     acc_data = zmq_client.get_account()
 
-    is_online = (acc_data.get("status") == "ok")
+    if acc_data.get("status") != "ok" and target_url != "tcp://127.0.0.1:5555":
+        zmq_client.switch_endpoint("tcp://127.0.0.1:5555")
+        acc_data = zmq_client.get_account()
 
-    if not is_online:
+    if acc_data.get("status") != "ok":
         msg = (
             f"👥 <b>ACCOUNT #{account.id}: {account.name.upper()}</b> [SWITCHED]\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🔢 <b>Account Number:</b> <code>{account.account_number}</code>\n"
-            f"📂 <b>MT4 Profile:</b> <code>{account.profile_name}</code>\n"
-            f"🌐 <b>Broker Server:</b> <code>{account.server}</code>\n"
-            f"🔌 <b>ZeroMQ Endpoint:</b> <code>{account.zmq_url}</code>\n"
+            f"📂 <b>Profile:</b> <code>{account.profile_name}</code>\n"
+            f"🌐 <b>Server:</b> <code>{account.server}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "⚠️ <b>CONNECTION STATUS: OFFLINE / UNREACHABLE</b>\n"
-            f"<i>The MetaTrader 4 terminal for this profile is not running or listening on {account.zmq_url}.</i>\n\n"
-            "📌 <b>To connect this account:</b>\n"
-            f"1. Open MT4 terminal with profile <code>{account.profile_name}</code>.\n"
-            f"2. Attach SmartAutoTradeEA_Pro with <code>InpBindAddress = \"{account.zmq_url.replace('127.0.0.1', '*')}\"</code>."
+            "<i>The Invest-AZ MetaTrader 4 terminal is currently closed or bridge EA is not attached.</i>\n\n"
+            "📌 <b>To connect:</b>\n"
+            "1. Open your Invest-AZ MT4 terminal.\n"
+            "2. Ensure SmartAutoTradeEA_Pro is attached to an open chart (e.g. GBPUSD, H1)."
         )
         keyboard = [
             [InlineKeyboardButton("🔄 Re-Check Connection", callback_data=f"switch_acc:{account.id}")],
-            [InlineKeyboardButton("👥 Switch Another Account", callback_data="switch_acc:panel")]
+            [InlineKeyboardButton("👥 Switch Account", callback_data="switch_acc:panel")]
         ]
         return msg, InlineKeyboardMarkup(keyboard)
 
-    pos_data = zmq_client.get_positions()
+    # MT4 is online! Extract live data
+    live_num = str(acc_data.get("account_number", account.account_number))
+    trade_mode = str(acc_data.get("trade_mode", "DEMO")).upper()
+    server = str(acc_data.get("server", account.server))
+    company = str(acc_data.get("company", "Invest-AZ"))
 
+    # Determine if target account matches terminal's current active login
+    target_is_real = (str(account.id) == "2" or "REAL" in account.name.upper())
+    terminal_is_real = (trade_mode == "REAL" or "REAL" in server.upper())
+
+    # Auto-update the account number in registry if detected on live account
+    if target_is_real and terminal_is_real and live_num not in ["Real Live", "0"]:
+        account.account_number = live_num
+        account_manager.add_or_update_account(account.id, live_num, account.name, account.profile_name, server, account.zmq_url)
+
+    pos_data = zmq_client.get_positions()
     balance = float(acc_data.get("balance", 0.0))
     equity = float(acc_data.get("equity", 0.0))
     margin = float(acc_data.get("margin", 0.0))
@@ -775,6 +796,19 @@ def inspect_account_trades(account: AccountProfile) -> tuple:
     margin_level = f"{float(acc_data.get('margin_level', 0.0)):.1f}%" if margin > 0 else "∞"
     server_time = acc_data.get("server_time", "N/A")
     currency = acc_data.get("currency", "USD")
+
+    # Mismatch warning if user selected Real but terminal is on Demo, or vice versa
+    mismatch_note = ""
+    if target_is_real and not terminal_is_real:
+        mismatch_note = (
+            "\n⚠️ <b>NOTICE:</b> <i>Target set to REAL, but your MT4 terminal is currently logged into DEMO (1234567).</i>\n"
+            "💡 <i>To execute on REAL: Open MT4 Navigator (Ctrl+N) ➜ Double-click your Real account to log in.</i>\n"
+        )
+    elif not target_is_real and terminal_is_real:
+        mismatch_note = (
+            f"\n⚠️ <b>NOTICE:</b> <i>Target set to DEMO, but your MT4 terminal is currently logged into REAL ({live_num}).</i>\n"
+            "💡 <i>To execute on DEMO: Open MT4 Navigator (Ctrl+N) ➜ Double-click your Demo account (1234567) to log in.</i>\n"
+        )
 
     # Inspect positions for BUY vs SELL functions
     positions = pos_data.get("positions", []) if pos_data.get("status") == "ok" else []
@@ -789,27 +823,28 @@ def inspect_account_trades(account: AccountProfile) -> tuple:
         elif pos_type in ["1", "SELL"]:
             sell_orders.append(pos)
 
-    total_buy_lots = sum(float(p.get("volume", 0.0)) for p in buy_orders)
+    total_buy_lots = sum(float(p.get("volume", p.get("lots", 0.0))) for p in buy_orders)
     total_buy_pl = sum(float(p.get("profit", 0.0)) for p in buy_orders)
 
-    total_sell_lots = sum(float(p.get("volume", 0.0)) for p in sell_orders)
+    total_sell_lots = sum(float(p.get("volume", p.get("lots", 0.0))) for p in sell_orders)
     total_sell_pl = sum(float(p.get("profit", 0.0)) for p in sell_orders)
 
     sign_pl = "+" if floating_pl >= 0 else ""
     sign_buy = "+" if total_buy_pl >= 0 else ""
     sign_sell = "+" if total_sell_pl >= 0 else ""
+    mode_badge = "🔴 REAL (LIVE)" if terminal_is_real else "🟡 DEMO"
 
-    # Build Trade Inspection report
     msg = (
         f"👥 <b>ACCOUNT #{account.id}: {account.name.upper()}</b> [🟢 ACTIVE]\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔢 <b>Account Number:</b> <code>{account.account_number}</code>\n"
-        f"📂 <b>MT4 Profile:</b> <code>{account.profile_name}</code>\n"
-        f"🌐 <b>Broker Server:</b> <code>{account.server}</code>\n"
+        f"🔢 <b>Account Number:</b> <code>{live_num}</code> ({mode_badge})\n"
+        f"🏢 <b>Broker:</b> {company}\n"
+        f"🌐 <b>Server:</b> <code>{server}</code>\n"
         f"💰 <b>Balance / Equity:</b> <code>${balance:,.2f} / ${equity:,.2f}</code>\n"
         f"📊 <b>Margin:</b> <code>${margin:,.2f}</code> | <b>Free:</b> <code>${free_margin:,.2f}</code> ({margin_level})\n"
         f"📈 <b>Floating P/L:</b> <code>{sign_pl}${floating_pl:,.2f} {currency}</code>\n"
         f"⏰ <b>Server Time:</b> <code>{server_time}</code>\n"
+        f"{mismatch_note}"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚡ <b>BUY / SELL FUNCTION DIAGNOSTICS:</b>\n\n"
     )
@@ -821,7 +856,7 @@ def inspect_account_trades(account: AccountProfile) -> tuple:
         for o in buy_orders[:5]:
             t_id = o.get("ticket", "N/A")
             sym = o.get("symbol", "")
-            vol = float(o.get("volume", 0.0))
+            vol = float(o.get("volume", o.get("lots", 0.0)))
             op = float(o.get("open_price", 0.0))
             prof = float(o.get("profit", 0.0))
             s_prof = "+" if prof >= 0 else ""
@@ -845,7 +880,7 @@ def inspect_account_trades(account: AccountProfile) -> tuple:
         for o in sell_orders[:5]:
             t_id = o.get("ticket", "N/A")
             sym = o.get("symbol", "")
-            vol = float(o.get("volume", 0.0))
+            vol = float(o.get("volume", o.get("lots", 0.0)))
             op = float(o.get("open_price", 0.0))
             prof = float(o.get("profit", 0.0))
             s_prof = "+" if prof >= 0 else ""
@@ -861,7 +896,7 @@ def inspect_account_trades(account: AccountProfile) -> tuple:
         msg += "🔴 <b>SELL FUNCTION:</b> <i>No active SELL positions running.</i>\n"
 
     msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += "✅ <i>Active target switched. All commands (/status, /positions, /close, /screenshot, /panic) will now run on this account.</i>"
+    msg += "✅ <i>Active target switched. All commands (/status, /positions, /close, /screenshot, /panic) operate on this account.</i>"
 
     keyboard = [
         [
@@ -880,19 +915,20 @@ async def cmd_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """Displays the Multi-Account & Profile Switching Panel."""
     active = account_manager.get_active_account()
     msg = (
-        "👥 <b>MULTI-ACCOUNT & PROFILE SWITCHER</b>\n"
+        "👥 <b>INVEST-AZ ACCOUNT SWITCHER & TRADE INSPECTOR</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🟢 <b>Current Active Account:</b> <b>Account #{active.id}</b>\n"
-        f"• <b>Name:</b> {active.name}\n"
+        f"🟢 <b>Current Active Target:</b> <b>{active.name}</b>\n"
         f"• <b>Number:</b> <code>{active.account_number}</code>\n"
-        f"• <b>MT4 Profile:</b> <code>{active.profile_name}</code>\n"
-        f"• <b>Broker Server:</b> <code>{active.server}</code>\n"
+        f"• <b>Server:</b> <code>{active.server}</code>\n"
         f"• <b>ZMQ Port:</b> <code>{active.zmq_url}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "👇 <b>Select an account below to switch control and inspect BUY/SELL functionality:</b>"
     )
     if update.callback_query:
-        await update.callback_query.edit_message_text(msg, reply_markup=get_accounts_keyboard(), parse_mode=ParseMode.HTML)
+        try:
+            await update.callback_query.edit_message_text(msg, reply_markup=get_accounts_keyboard(), parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
     elif update.message:
         await update.message.reply_text(msg, reply_markup=get_accounts_keyboard(), parse_mode=ParseMode.HTML)
 
@@ -915,7 +951,11 @@ async def cb_switch_account(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return
 
         report_text, markup = inspect_account_trades(acc)
-        await query.edit_message_text(report_text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        try:
+            await query.edit_message_text(report_text, reply_markup=markup, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.error(f"Error editing message in cb_switch_account: {e}")
         await query.answer(f"✅ Switched to Account #{acc.id}: {acc.name}", show_alert=False)
 
 @restricted
@@ -924,19 +964,81 @@ async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     query = update.callback_query
     await query.answer()
     data = query.data or ""
+    chat_id = update.effective_chat.id
 
     if data == "nav_pos":
-        # Call cmd_positions
-        if query.message:
-            await cmd_positions(update, context)
+        data_pos = zmq_client.get_positions()
+        if data_pos.get("status") != "ok":
+            await context.bot.send_message(chat_id=chat_id, text=data_pos.get("message", "⚠️ MT4 not connected."), parse_mode=ParseMode.HTML)
+            return
+
+        active_acc = account_manager.get_active_account()
+        positions = data_pos.get("positions", [])
+        count = data_pos.get("count", 0)
+
+        if count == 0:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"💼 <b>Open Positions:</b> None\n"
+                    f"👤 <b>Account #{active_acc.id}:</b> <code>{active_acc.account_number}</code> ({active_acc.name})\n"
+                    f"📂 <b>Profile:</b> <code>{active_acc.profile_name}</code>\n"
+                    f"<i>There are currently no active market orders.</i>"
+                ),
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        msg = (
+            f"💼 <b>Active Open Positions ({count})</b>\n"
+            f"👤 <b>Account #{active_acc.id}:</b> <code>{active_acc.account_number}</code> ({active_acc.name})\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+        total_pl = 0.0
+        for pos in positions:
+            ticket = pos.get("ticket")
+            sym = pos.get("symbol")
+            type_str = pos.get("type")
+            lots = pos.get("lots")
+            open_p = pos.get("open_price")
+            curr_p = pos.get("close_price")
+            sl = pos.get("sl")
+            tp = pos.get("tp")
+            profit = pos.get("profit")
+            total_pl += profit
+
+            icon = "🟢 BUY" if "BUY" in str(type_str) else "🔴 SELL"
+            p_icon = "📈" if profit >= 0 else "📉"
+            msg += (
+                f"• <b>#{ticket} {icon} {lots} {sym}</b>\n"
+                f"  In: <code>{open_p}</code> ➜ Now: <code>{curr_p}</code>\n"
+                f"  {p_icon} Profit: <b>${profit:+,.2f}</b> (SL: {sl} | TP: {tp})\n\n"
+            )
+        msg += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"💰 <b>Total Floating P/L:</b> <b>${total_pl:+,.2f}</b>"
+        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode=ParseMode.HTML)
+
     elif data == "nav_shot":
-        # Call cmd_screenshot
-        if query.message:
-            await cmd_screenshot(update, context)
+        msg = (
+            "📸 <b>Interactive Chart Screenshot Panel</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Select the currency pair or market instrument you wish to capture:"
+        )
+        await context.bot.send_message(chat_id=chat_id, text=msg, reply_markup=get_symbol_keyboard(), parse_mode=ParseMode.HTML)
+
     elif data == "nav_panic":
-        # Call cmd_closeall
-        if query.message:
-            await cmd_closeall(update, context)
+        keyboard = [
+            [
+                InlineKeyboardButton("🚨 CONFIRM EMERGENCY LIQUIDATE ALL", callback_data="confirm_close_all"),
+                InlineKeyboardButton("❌ Cancel", callback_data="cancel_close_all")
+            ]
+        ]
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ <b>CONFIRMATION REQUIRED</b>\n\nAre you sure you want to close <b>ALL active market positions</b> immediately?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.HTML
+        )
 
 # Aliases for Menu commands
 cmd_switch = cmd_accounts

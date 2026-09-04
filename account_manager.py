@@ -28,26 +28,18 @@ DEFAULT_ACCOUNTS: List[Dict[str, str]] = [
     {
         "id": "1",
         "account_number": "1234567",
-        "name": "Invest-AZ Primary",
-        "profile_name": "Omkanski",
-        "server": "IAZ Demo Server 1",
-        "zmq_url": ZMQ_SERVER_URL  # default tcp://127.0.0.1:5555
+        "name": "Invest-AZ Demo",
+        "profile_name": "Demo Profile",
+        "server": "InvestAZ-Demo",
+        "zmq_url": "tcp://127.0.0.1:5555"
     },
     {
         "id": "2",
-        "account_number": "2104892",
-        "name": "Prop-Firm Alpha",
-        "profile_name": "British Pound",
-        "server": "Prop Server 1",
-        "zmq_url": "tcp://127.0.0.1:5556"
-    },
-    {
-        "id": "3",
-        "account_number": "3598124",
-        "name": "Scalper Vault",
-        "profile_name": "Euro",
-        "server": "Live Server 2",
-        "zmq_url": "tcp://127.0.0.1:5557"
+        "account_number": "Real Live",
+        "name": "Invest-AZ Real",
+        "profile_name": "Real Profile",
+        "server": "InvestAZ-Real",
+        "zmq_url": "tcp://127.0.0.1:5555"
     }
 ]
 
@@ -61,7 +53,7 @@ class AccountManager:
         """Loads accounts and active selection from persistent disk storage."""
         if os.path.exists(ACCOUNTS_FILE):
             try:
-                with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                with open(ACCOUNTS_FILE, "r", encoding="utf-8-sig") as f:
                     raw_data = json.load(f)
                     self.accounts = [AccountProfile(**item) for item in raw_data]
             except Exception as e:
@@ -73,7 +65,7 @@ class AccountManager:
 
         if os.path.exists(ACTIVE_ACCOUNT_FILE):
             try:
-                with open(ACTIVE_ACCOUNT_FILE, "r", encoding="utf-8") as f:
+                with open(ACTIVE_ACCOUNT_FILE, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
                     self.active_id = str(data.get("active_id", "1"))
             except Exception as e:

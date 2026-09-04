@@ -1,4 +1,4 @@
-﻿void ZmqDebugLog(string msg)
+void ZmqDebugLog(string msg)
 {
    Print("[ZMQ Bridge] " + msg);
    int h = FileOpen("zmq_bridge_debug.txt", FILE_READ|FILE_WRITE|FILE_TXT);
@@ -103,6 +103,13 @@ string Zmq_HandleGetAccount()
    string json = "{";
    json += "\"status\":\"ok\",";
    json += "\"action\":\"GET_ACCOUNT\",";
+   json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
+   
+   int tradeMode = (int)AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   string tradeModeStr = (tradeMode == 2) ? "REAL" : "DEMO";
+   json += "\"trade_mode\":\"" + tradeModeStr + "\",";
+   json += "\"account_name\":\"" + Zmq_JsonEscape(AccountName()) + "\",";
+   
    json += "\"balance\":" + DoubleToString(AccountBalance(), 2) + ",";
    json += "\"equity\":" + DoubleToString(AccountEquity(), 2) + ",";
    json += "\"margin\":" + DoubleToString(AccountMargin(), 2) + ",";
