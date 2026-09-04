@@ -21,7 +21,7 @@ am.set_active_account('1')
 acc1 = am.get_active_account()
 text1, markup1 = inspect_account_trades(acc1)
 assert 'ACCOUNT #1: INVEST-AZ DEMO' in text1
-assert '1234567' in text1
+assert 'Account Number:' in text1
 assert 'BUY / SELL FUNCTION DIAGNOSTICS' in text1
 assert 'BUY FUNCTION:' in text1
 assert 'SELL FUNCTION:' in text1

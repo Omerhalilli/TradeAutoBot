@@ -801,13 +801,13 @@ def inspect_account_trades(account: AccountProfile) -> tuple:
     mismatch_note = ""
     if target_is_real and not terminal_is_real:
         mismatch_note = (
-            "\n⚠️ <b>NOTICE:</b> <i>Target set to REAL, but your MT4 terminal is currently logged into DEMO (1234567).</i>\n"
+            f"\n⚠️ <b>NOTICE:</b> <i>Target set to REAL, but your MT4 terminal is currently logged into DEMO ({live_num}).</i>\n"
             "💡 <i>To execute on REAL: Open MT4 Navigator (Ctrl+N) ➜ Double-click your Real account to log in.</i>\n"
         )
     elif not target_is_real and terminal_is_real:
         mismatch_note = (
             f"\n⚠️ <b>NOTICE:</b> <i>Target set to DEMO, but your MT4 terminal is currently logged into REAL ({live_num}).</i>\n"
-            "💡 <i>To execute on DEMO: Open MT4 Navigator (Ctrl+N) ➜ Double-click your Demo account (1234567) to log in.</i>\n"
+            "💡 <i>To execute on DEMO: Open MT4 Navigator (Ctrl+N) ➜ Double-click your Demo account to log in.</i>\n"
         )
 
     # Inspect positions for BUY vs SELL functions

@@ -46,13 +46,13 @@ if os.path.exists(CONFIG_FILE):
 # Telegram Bot Settings
 TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
-    config.get("TELEGRAM", "bot_token", fallback="your_telegram_bot_token_here")
+    config.get("TELEGRAM", "bot_token", fallback="")
 )
 
 _raw_chat_ids = os.environ.get(
     "ALLOWED_CHAT_IDS",
     os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS",
-        config.get("TELEGRAM", "allowed_chat_ids", fallback="your_telegram_chat_id_here"))
+        config.get("TELEGRAM", "allowed_chat_ids", fallback=""))
 )
 ALLOWED_CHAT_IDS: List[int] = [
     int(cid.strip()) for cid in _raw_chat_ids.split(",") if cid.strip().lstrip("-").isdigit()

@@ -82,7 +82,7 @@ Everything communicates locally on your machine with virtually zero delay (under
 ## ✨ Features at a Glance
 
 * 🤖 **Fully Automated Trading**: 10-point quantitative confluence engine combines Trend (Triple EMA + ADX), Momentum (RSI + MACD), Support & Resistance levels, and Candlestick patterns.
-* 👥 **Invest-AZ Account Switcher**: Switch between **Demo** (`1234567`) and **Real** live trading with one tap.
+* 👥 **Invest-AZ Account Switcher**: Switch between **Demo** (e.g. Account `1234567`) and **Real** live trading with one tap.
 * ⚡ **Live BUY/SELL Trade Diagnostics**: Instantly inspects active order count, total lots, floating P/L, ticket numbers, and stop levels.
 * 📸 **Interactive 2-Step Screenshot Wizard**: Pick any symbol (GBPUSD, EURUSD, XAUUSD Gold, BTCUSD, etc.) and timeframe (M1 to D1) to receive an instant high-resolution chart picture in Telegram.
 * 🚨 **Emergency Panic Button**: Liquidate all open market orders in one click with a confirmation safety prompt.
@@ -131,7 +131,7 @@ pip install -r requirements.txt
 4. Follow the prompt to give your bot a name (e.g. `MyInvestAZBot`) and a username ending in `bot` (e.g. `MyInvestAZ_TradeBot`).
 5. BotFather will send you a **HTTP API Token** (looks like `1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ_1234567`). **Save this token!**
 6. Next, search for **`@userinfobot`** in Telegram and press **Start**.
-7. It will reply with your numeric **Id** (e.g. `your_telegram_chat_id_here`). **Save this number!** This ensures only YOU can control the bot.
+7. It will reply with your numeric **Id** (e.g. `123456789`). **Save this number!** This ensures only YOU can control the bot.
 
 ---
 
@@ -283,8 +283,8 @@ When you send `/accounts` (or `/switch`) in Telegram, you get an interactive men
    🔢 Account Number: 1234567 (🟡 DEMO)
    🏢 Broker: Invest-AZ Investment Company CJSC
    🌐 Server: InvestAZ-Demo
-   💰 Balance / Equity: $10,167.68 / $10,167.68
-   📊 Margin: $0.00 | Free: $10,167.68 (∞)
+   💰 Balance / Equity: $10,000.00 / $10,000.00
+   📊 Margin: $0.00 | Free: $10,000.00 (∞)
    📈 Floating P/L: +$0.00 USD
    ⏰ Server Time: 2026.09.04 09:26:04
    ━━━━━━━━━━━━━━━━━━━━━━━━━━

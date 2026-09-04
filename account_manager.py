@@ -27,7 +27,7 @@ class AccountProfile:
 DEFAULT_ACCOUNTS: List[Dict[str, str]] = [
     {
         "id": "1",
-        "account_number": "1234567",
+        "account_number": "Demo Account",
         "name": "Invest-AZ Demo",
         "profile_name": "Demo Profile",
         "server": "InvestAZ-Demo",
