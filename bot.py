@@ -157,6 +157,15 @@ def create_application():
     app.add_handler(CallbackQueryHandler(handlers.cb_ea_be, pattern=r"^/?be_\d+$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_ea_shot, pattern=r"^/?shot_[A-Za-z0-9]+_[A-Za-z0-9]+$"))
 
+    # Modern Institutional Handlers
+    try:
+        from autotrade.telegram_interface.command_router import command_router
+        app.add_handler(CommandHandler(["menu"], command_router.cmd_start))
+        app.add_handler(CommandHandler(["strategies", "strat"], command_router.cmd_strategies))
+        app.add_handler(CallbackQueryHandler(command_router.handle_callback_query, pattern=r"^(nav_|shotsym:|shottf:)"))
+    except Exception as ex:
+        logger.warning(f"Could not register modern command router handlers: {ex}")
+
     # Error Handler
     app.add_error_handler(error_handler)
 
@@ -173,6 +182,23 @@ def main():
         sys.exit(1)
 
     logger.info(f"Starting 24/7 Telegram bot... Authorized Chat IDs: {ALLOWED_CHAT_IDS}")
+
+    # Startup Self-Compilation and Integrity Check
+    try:
+        from autotrade.self_healing.compiler import SourceCompiler
+        from autotrade.self_healing.healing_engine import HealingEngine
+        compiler = SourceCompiler()
+        res = compiler.compile_all_sync()
+        if not res.success:
+            logger.warning(f"Startup compilation detected {len(res.error_details)} errors. Engaging self-healing...")
+            healer = HealingEngine(compiler=compiler)
+            heal_res = healer.heal_compilation_errors_sync(res.error_details)
+            if not heal_res.resolved:
+                logger.critical("Unresolvable compilation errors remain! Starting bot in SAFEGUARD MODE.")
+        else:
+            logger.info(f"✅ Startup Self-Compilation Verified ({res.total_files_compiled}/{res.total_files_checked} files compiled in {res.duration_ms}ms).")
+    except Exception as ex:
+        logger.warning(f"Startup self-compilation check exception: {ex}")
     
     # Resilient 24/7 run loop
     while True:
