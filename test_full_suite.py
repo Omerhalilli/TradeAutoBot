@@ -384,11 +384,58 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
     def test_18_bot_app_initialization(self):
         """Verifies that bot.create_application builds cleanly with all registered handlers."""
         from bot import create_application
+        from telegram.ext import CommandHandler, CallbackQueryHandler
         app = create_application()
         self.assertIsNotNone(app)
-        handler_count = len(app.handlers.get(0, []))
-        self.assertGreaterEqual(handler_count, 20, f"Expected >= 20 handlers, got {handler_count}")
-        print(f"  [PASS] Bot ApplicationBuilder validated ({handler_count} handlers registered).")
+        handlers_list = app.handlers.get(0, [])
+        handler_count = len(handlers_list)
+        self.assertGreaterEqual(handler_count, 22, f"Expected >= 22 handlers, got {handler_count}")
+        
+        # Verify essential commands are registered
+        command_names = set()
+        for h in handlers_list:
+            if isinstance(h, CommandHandler):
+                for cmd in h.commands:
+                    command_names.add(cmd)
+        
+        for required_cmd in ["be", "breakeven", "trailing", "trail", "reset_risk", "panic", "boost", "prop"]:
+            self.assertIn(required_cmd, command_names, f"Required command /{required_cmd} not found in registered bot handlers")
+
+        print(f"  [PASS] Bot ApplicationBuilder validated ({handler_count} handlers registered, {len(command_names)} commands).")
+
+    def test_19_reset_safeguards(self):
+        """Verifies zmq_client.reset_safeguards and cmd_reset_safeguards logic."""
+        import asyncio
+        from telegram import Chat, User, Update, CallbackQuery
+        from unittest.mock import patch
+
+        if self.mt4_online:
+            res = zmq_client.reset_safeguards()
+            self.assertEqual(res.get("status"), "ok")
+            self.assertIn("equity", res)
+            print(f"  [PASS] Live MT4 Reset Safeguards OK (Account: #{res.get('account')}, Calibrated Equity: ${res.get('equity'):,.2f})")
+
+        async def run_reset_cmd():
+            test_chat_id = ALLOWED_CHAT_IDS[0] if ALLOWED_CHAT_IDS else 123456789
+            user = User(id=test_chat_id, is_bot=False, first_name="Owner")
+            chat = Chat(id=test_chat_id, type="private")
+            query = MagicMock(spec=CallbackQuery)
+            query.from_user = user
+            query.message = MagicMock()
+            query.message.chat = chat
+            query.edit_message_text = AsyncMock()
+            query.answer = AsyncMock()
+            update = Update(update_id=40, callback_query=query)
+            context = MagicMock()
+
+            mock_res = {"status": "ok", "action": "RESET_SAFEGUARDS", "account": "213173", "equity": 91.91}
+            with patch.object(zmq_client, "reset_safeguards", return_value=mock_res):
+                await handlers.cb_reset_safeguards(update, context)
+                self.assertIn("PROP SAFEGUARDS RECALIBRATED", query.edit_message_text.call_args[0][0])
+                self.assertIn("213173", query.edit_message_text.call_args[0][0])
+
+        asyncio.run(run_reset_cmd())
+        print("  [PASS] /reset_risk command & callback verification completed.")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -150,17 +150,21 @@ string Zmq_HandleGetPositions()
       else if(type == OP_BUYSTOP) typeStr = "BUY_STOP";
       else if(type == OP_SELLSTOP) typeStr = "SELL_STOP";
       
+      string orderSym = OrderSymbol();
+      int symDig = (int)MarketInfo(orderSym, MODE_DIGITS);
+      if(symDig <= 0) symDig = Digits;
+      
       if(count > 0) json += ",";
       
       json += "{";
       json += "\"ticket\":" + IntegerToString(OrderTicket()) + ",";
-      json += "\"symbol\":\"" + Zmq_JsonEscape(OrderSymbol()) + "\",";
+      json += "\"symbol\":\"" + Zmq_JsonEscape(orderSym) + "\",";
       json += "\"type\":\"" + typeStr + "\",";
       json += "\"lots\":" + DoubleToString(OrderLots(), 2) + ",";
-      json += "\"open_price\":" + DoubleToString(OrderOpenPrice(), Digits) + ",";
-      json += "\"close_price\":" + DoubleToString(OrderClosePrice(), Digits) + ",";
-      json += "\"sl\":" + DoubleToString(OrderStopLoss(), Digits) + ",";
-      json += "\"tp\":" + DoubleToString(OrderTakeProfit(), Digits) + ",";
+      json += "\"open_price\":" + DoubleToString(OrderOpenPrice(), symDig) + ",";
+      json += "\"close_price\":" + DoubleToString(OrderClosePrice(), symDig) + ",";
+      json += "\"sl\":" + DoubleToString(OrderStopLoss(), symDig) + ",";
+      json += "\"tp\":" + DoubleToString(OrderTakeProfit(), symDig) + ",";
       json += "\"profit\":" + DoubleToString(OrderProfit(), 2) + ",";
       json += "\"swap\":" + DoubleToString(OrderSwap(), 2) + ",";
       json += "\"commission\":" + DoubleToString(OrderCommission(), 2) + ",";
@@ -207,17 +211,21 @@ string Zmq_HandleGetHistory(const string reqJson)
       double netPL = OrderProfit() + OrderSwap() + OrderCommission();
       totalProfit += netPL;
       
+      string orderSym = OrderSymbol();
+      int symDig = (int)MarketInfo(orderSym, MODE_DIGITS);
+      if(symDig <= 0) symDig = Digits;
+      
       if(count > 0) json += ",";
       
       json += "{";
       json += "\"ticket\":" + IntegerToString(OrderTicket()) + ",";
-      json += "\"symbol\":\"" + Zmq_JsonEscape(OrderSymbol()) + "\",";
+      json += "\"symbol\":\"" + Zmq_JsonEscape(orderSym) + "\",";
       json += "\"type\":\"" + typeStr + "\",";
       json += "\"lots\":" + DoubleToString(OrderLots(), 2) + ",";
-      json += "\"open_price\":" + DoubleToString(OrderOpenPrice(), Digits) + ",";
-      json += "\"close_price\":" + DoubleToString(OrderClosePrice(), Digits) + ",";
-      json += "\"sl\":" + DoubleToString(OrderStopLoss(), Digits) + ",";
-      json += "\"tp\":" + DoubleToString(OrderTakeProfit(), Digits) + ",";
+      json += "\"open_price\":" + DoubleToString(OrderOpenPrice(), symDig) + ",";
+      json += "\"close_price\":" + DoubleToString(OrderClosePrice(), symDig) + ",";
+      json += "\"sl\":" + DoubleToString(OrderStopLoss(), symDig) + ",";
+      json += "\"tp\":" + DoubleToString(OrderTakeProfit(), symDig) + ",";
       json += "\"profit\":" + DoubleToString(OrderProfit(), 2) + ",";
       json += "\"swap\":" + DoubleToString(OrderSwap(), 2) + ",";
       json += "\"commission\":" + DoubleToString(OrderCommission(), 2) + ",";
@@ -322,7 +330,8 @@ double Zmq_GetPipPoint(string sym)
    int dig = (int)MarketInfo(sym, MODE_DIGITS);
    if(pt <= 0.0)
    {
-      if(dig == 3 || dig == 5) return 0.0001;
+      if(dig == 3) return 0.01;
+      if(dig == 5) return 0.0001;
       return 0.01;
    }
    if(dig == 3 || dig == 5)
@@ -661,13 +670,16 @@ string Zmq_HandleSetTrailing(const string reqJson)
       double curSL = OrderStopLoss();
       double trailDist = trailPips * pipPoint;
       
+      double stopLevel = MarketInfo(sym, MODE_STOPLEVEL) * MarketInfo(sym, MODE_POINT);
+      if(stopLevel <= 0.0) stopLevel = MarketInfo(sym, MODE_POINT) * 5.0;
+      
       if(type == OP_BUY)
       {
          double curBid = MarketInfo(sym, MODE_BID);
          if(curBid - openPrice > trailDist)
          {
             double newSL = NormalizeDouble(curBid - trailDist, digits);
-            if(newSL > curSL)
+            if(curBid - newSL >= stopLevel && (newSL > curSL))
             {
                if(OrderModify(OrderTicket(), openPrice, newSL, OrderTakeProfit(), 0, clrDodgerBlue))
                   modified++;
@@ -690,7 +702,7 @@ string Zmq_HandleSetTrailing(const string reqJson)
          if(openPrice - curAsk > trailDist)
          {
             double newSL = NormalizeDouble(curAsk + trailDist, digits);
-            if(newSL < curSL || curSL == 0.0)
+            if(newSL - curAsk >= stopLevel && (newSL < curSL || curSL == 0.0))
             {
                if(OrderModify(OrderTicket(), openPrice, newSL, OrderTakeProfit(), 0, clrDodgerBlue))
                   modified++;
@@ -1117,6 +1129,8 @@ string Zmq_HandleScreenshot(const string reqJson)
    double ask = MarketInfo(matchedSymbol, MODE_ASK);
    if(bid == 0.0) bid = Bid;
    if(ask == 0.0) ask = Ask;
+   int symDig = (int)MarketInfo(matchedSymbol, MODE_DIGITS);
+   if(symDig <= 0) symDig = Digits;
    
    string json = "{";
    json += "\"status\":\"ok\",";
@@ -1124,8 +1138,8 @@ string Zmq_HandleScreenshot(const string reqJson)
    json += "\"filename\":\"" + filename + "\",";
    json += "\"symbol\":\"" + matchedSymbol + "\",";
    json += "\"timeframe\":\"" + cleanTfStr + "\",";
-   json += "\"bid\":" + DoubleToString(bid, 5) + ",";
-   json += "\"ask\":" + DoubleToString(ask, 5) + ",";
+   json += "\"bid\":" + DoubleToString(bid, symDig) + ",";
+   json += "\"ask\":" + DoubleToString(ask, symDig) + ",";
    json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"";
    json += "}";
    return json;
@@ -1158,8 +1172,12 @@ string Zmq_HandleGetBoost()
    json += "\"free_margin\":" + DoubleToString(AccountFreeMargin(), 2) + ",";
    
    double spreadGBP = MarketInfo("GBPUSD", MODE_SPREAD);
+   if(spreadGBP <= 0.0 && StringFind(Symbol(), "GBP") >= 0) spreadGBP = MarketInfo(Symbol(), MODE_SPREAD);
    double spreadEUR = MarketInfo("EURUSD", MODE_SPREAD);
+   if(spreadEUR <= 0.0 && StringFind(Symbol(), "EUR") >= 0) spreadEUR = MarketInfo(Symbol(), MODE_SPREAD);
    double spreadGOLD = MarketInfo("XAUUSD", MODE_SPREAD);
+   if(spreadGOLD <= 0.0) spreadGOLD = MarketInfo("GOLD", MODE_SPREAD);
+   if(spreadGOLD <= 0.0 && StringFind(Symbol(), "XAU") >= 0) spreadGOLD = MarketInfo(Symbol(), MODE_SPREAD);
    json += "\"spread_gbpusd\":" + DoubleToString(spreadGBP, 1) + ",";
    json += "\"spread_eurusd\":" + DoubleToString(spreadEUR, 1) + ",";
    json += "\"spread_xauusd\":" + DoubleToString(spreadGOLD, 1) + ",";
@@ -1254,11 +1272,15 @@ void ZeroMQ_Init(string bindAddress = "tcp://*:5555")
    {
       g_zmqReady = true; 
       EventKillTimer();
-      EventSetMillisecondTimer(250);
+      if(!EventSetMillisecondTimer(250))
+      {
+         EventSetTimer(1);
+      }
       PrintFormat("[ZeroMQ Bridge ACTIVE] Listening on %s", bindAddress);
    }
    else
    {
+      PrintFormat("[ZeroMQ ERROR] Failed to bind socket to %s (Error: %d)", bindAddress, zmq_errno());
    }
 }
 

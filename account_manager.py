@@ -7,7 +7,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, asdict
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from config import DATA_DIR, ZMQ_SERVER_URL
 
 logger = logging.getLogger(__name__)

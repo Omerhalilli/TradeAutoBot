@@ -174,6 +174,9 @@ class MT4ZmqClient:
     def get_boost(self) -> Dict[str, Any]:
         return self.send_command("GET_BOOST")
 
+    def reset_safeguards(self) -> Dict[str, Any]:
+        return self.send_command("RESET_SAFEGUARDS")
+
     def ping_latency_ms(self) -> float:
         """Measures roundtrip latency to MT4 ZeroMQ bridge in milliseconds."""
         t0 = time.perf_counter()

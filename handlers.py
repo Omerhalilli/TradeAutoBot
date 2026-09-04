@@ -201,6 +201,10 @@ def get_nav_keyboard(active_section: str = "status") -> InlineKeyboardMarkup:
             InlineKeyboardButton("🚨 Emergency Panic", callback_data="nav_panic")
         ]
     ]
+    if active_section == "prop":
+        keyboard.insert(2, [
+            InlineKeyboardButton("🔄 Recalibrate Prop Anchors", callback_data="recalibrate_safeguards")
+        ])
     return InlineKeyboardMarkup(keyboard)
 
 def write_autotrade_flag(state: str) -> None:
@@ -250,6 +254,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /accounts or /switch — Multi-account switcher & BUY/SELL diagnostics\n\n"
         "💼 <b>PORTFOLIO & ORDER MANAGEMENT</b>\n"
         "• /positions — Active open orders with live P/L & tickets\n"
+        "• /be <code>[SYM|TICKET] [PIPS]</code> — Move Stop Loss to Break-Even (+pips locked)\n"
+        "• /trailing <code>[SYM|TICKET] [PIPS]</code> — Dynamic trailing stop management\n"
         "• /history — Closed trade deals, statistics & cumulative net P/L\n"
         "  └ <code>/history today</code> | <code>/history week</code> | <code>/history 20</code>\n"
         "• /close <code>[SYMBOL|TICKET]</code> — Liquidate positions for symbol or ticket\n"
@@ -258,6 +264,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /panic or /closeall — Emergency kill-switch (liquidate entire book)\n\n"
         "🛡️ <b>RISK GUARDIAN & PERFORMANCE</b>\n"
         "• /prop or /risk — Prop-firm risk scorecard, drawdown limits & target progress\n"
+        "• /reset_risk — Recalibrate prop firm daily anchors & clear lockouts\n"
         "• /report — Institutional 24-hour daily performance summary & win rate\n"
         "• /pause — Pause automated EA order entry immediately\n"
         "• /resume — Resume automated EA order entry scanning\n\n"
@@ -605,6 +612,45 @@ async def cmd_prop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     keyboard = get_nav_keyboard("prop")
     await send_or_edit(update, context, msg, reply_markup=keyboard)
+
+@restricted
+async def cmd_reset_safeguards(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Recalibrates prop firm daily anchors, peak equity, and trips to live account equity."""
+    data = zmq_client.reset_safeguards()
+    if data.get("status") != "ok":
+        err_msg = (
+            f"❌ <b>Recalibration Failed:</b>\n"
+            f"<i>{data.get('message', 'ZeroMQ bridge unreachable.')}</i>"
+        )
+        await send_or_edit(update, context, err_msg)
+        return
+
+    acc_num = data.get("account", "-")
+    eq = float(data.get("equity", 0.0))
+    msg = (
+        "╔══════════════════════════════════╗\n"
+        "   🔄 <b>PROP SAFEGUARDS RECALIBRATED</b>\n"
+        "╚══════════════════════════════════╝\n"
+        f"• <b>Account:</b> <code>#{acc_num}</code>\n"
+        f"• <b>Base Equity Anchor:</b> <code>${eq:,.2f}</code>\n"
+        f"• <b>Daily Drawdown Circuit:</b> <b>RESET 🟢</b>\n"
+        f"• <b>Lockout State:</b> <b>CLEARED 🔓</b>\n"
+        f"• <b>Trading Engine:</b> <b>ACTIVE ▶️</b>\n\n"
+        "✅ <i>All starting equity anchors have been successfully synchronized to live account equity.</i>"
+    )
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🛡️ View Prop Guard", callback_data="nav_prop"),
+            InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+        ]
+    ])
+    await send_or_edit(update, context, msg, reply_markup=kb)
+
+@restricted
+async def cb_reset_safeguards(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.callback_query:
+        await update.callback_query.answer("Recalibrating prop safeguards...")
+    await cmd_reset_safeguards(update, context)
 
 @restricted
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1670,6 +1716,8 @@ async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.answer(f"🎨 Synchronized {count} charts to GBPUSD scheme!", show_alert=True)
     elif data == "nav_panic":
         await cmd_closeall(update, context)
+    elif data in ["recalibrate_safeguards", "nav_reset_risk"]:
+        await cmd_reset_safeguards(update, context)
 
 @restricted
 async def cb_history_filter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1801,3 +1849,5 @@ cmd_resume = cmd_resume_bot
 cmd_be = cmd_breakeven
 cmd_trail = cmd_trailing
 cmd_calendar = cmd_news
+cmd_reset_risk = cmd_reset_safeguards
+cmd_reset_prop = cmd_reset_safeguards

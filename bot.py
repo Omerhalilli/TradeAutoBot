@@ -46,9 +46,12 @@ async def post_init(application) -> None:
             BotCommand("accounts", "👥 Switch Accounts & Inspect BUY/SELL"),
             BotCommand("status", "📊 Account Balance, Equity & Health"),
             BotCommand("positions", "💼 View & Manage Active Trades"),
+            BotCommand("be", "🛡️ Move SL to Break-Even (+1 Pip Locked)"),
+            BotCommand("trailing", "⚡ Dynamic Trailing Stop Management"),
             BotCommand("history", "📜 Closed Trades History & Net P/L"),
             BotCommand("screenshot", "📸 Interactive Chart Screenshot"),
             BotCommand("prop", "🛡️ Prop-Firm Risk Guardian Scorecard"),
+            BotCommand("reset_risk", "🔄 Recalibrate Prop Anchors & DD"),
             BotCommand("report", "📈 24-Hour Performance & P/L Summary"),
             BotCommand("panic", "🚨 Emergency Kill-Switch (Close All)"),
             BotCommand("colors", "🎨 Apply GBPUSD Color Scheme to Charts"),
@@ -113,7 +116,10 @@ def create_application():
     app.add_handler(CommandHandler(["accounts", "switch"], handlers.cmd_accounts))
     app.add_handler(CommandHandler(["status", "account"], handlers.cmd_account))
     app.add_handler(CommandHandler("positions", handlers.cmd_positions))
+    app.add_handler(CommandHandler(["be", "breakeven"], handlers.cmd_breakeven))
+    app.add_handler(CommandHandler(["trailing", "trail"], handlers.cmd_trailing))
     app.add_handler(CommandHandler(["prop", "risk"], handlers.cmd_prop))
+    app.add_handler(CommandHandler(["reset_risk", "reset_prop", "reset_safeguards"], handlers.cmd_reset_safeguards))
     app.add_handler(CommandHandler("report", handlers.cmd_report))
     app.add_handler(CommandHandler(["screenshot", "screenphoto", "chart"], handlers.cmd_screenshot))
     app.add_handler(CommandHandler(["colors", "synccharts", "sync"], handlers.cmd_colors))
@@ -129,6 +135,7 @@ def create_application():
     # Callback Query Handlers
     app.add_handler(CallbackQueryHandler(handlers.cb_switch_account, pattern=r"^switch_acc:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^(nav_|boost_colors)"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_reset_safeguards, pattern=r"^recalibrate_safeguards$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_history_filter, pattern=r"^hist_filter:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_news_filter, pattern=r"^news_filter:"))
     app.add_handler(CallbackQueryHandler(handlers.callback_closeall, pattern=r"^(confirm_close_all|cancel_close_all)$"))

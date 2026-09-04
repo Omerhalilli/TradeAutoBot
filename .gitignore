@@ -19,6 +19,7 @@ active_account.json
 *.bak
 *.tmp
 *.csv
+*.png
 *.session
 *.session-journal
 
