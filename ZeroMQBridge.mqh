@@ -45,11 +45,15 @@ string Zmq_ExtractJsonString(const string json, const string key)
    int colon = StringFind(json, ":", pos + StringLen(search));
    if(colon < 0) return "";
    
-   int quoteStart = StringFind(json, "\"", colon + 1);
-   if(quoteStart < 0) return "";
+   int i = colon + 1;
+   int len = StringLen(json);
+   while(i < len && (StringGetChar(json, i) == ' ' || StringGetChar(json, i) == '\t')) i++;
+   if(i >= len || StringGetChar(json, i) != '\"') return "";
    
+   int quoteStart = i;
    int quoteEnd = StringFind(json, "\"", quoteStart + 1);
    if(quoteEnd < 0) return "";
+   if(quoteEnd <= quoteStart + 1) return "";
    
    return StringSubstr(json, quoteStart + 1, quoteEnd - quoteStart - 1);
 }
@@ -608,7 +612,7 @@ string Zmq_HandleSetBreakEven(const string reqJson)
    json += "\"modified_count\":" + IntegerToString(modified) + ",";
    json += "\"skipped_count\":" + IntegerToString(skipped) + ",";
    json += "\"lock_pips\":" + DoubleToString(lockPips, 1) + ",";
-   json += "\"target\":\"" + (ticket > 0 ? IntegerToString(ticket) : (symbol == "" ? "ALL" : symbol)) + "\"";
+   json += "\"target\":\"" + Zmq_JsonEscape(ticket > 0 ? IntegerToString(ticket) : (symbol == "" ? "ALL" : symbol)) + "\"";
    json += "}";
    return json;
 }
@@ -701,7 +705,7 @@ string Zmq_HandleSetTrailing(const string reqJson)
    json += "\"modified_count\":" + IntegerToString(modified) + ",";
    json += "\"skipped_count\":" + IntegerToString(skipped) + ",";
    json += "\"trail_pips\":" + DoubleToString(trailPips, 1) + ",";
-   json += "\"target\":\"" + (ticket > 0 ? IntegerToString(ticket) : (symbol == "" ? "ALL" : symbol)) + "\"";
+   json += "\"target\":\"" + Zmq_JsonEscape(ticket > 0 ? IntegerToString(ticket) : (symbol == "" ? "ALL" : symbol)) + "\"";
    json += "}";
    return json;
 }
