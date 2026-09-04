@@ -314,7 +314,7 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
                  patch.object(zmq_client, "get_history", return_value={"status": "ok", "trades": [], "total_net_pl": 0.0, "count": 0}):
 
                 # 1. Navigation callbacks
-                nav_targets = ["nav_status", "nav_pos", "nav_prop", "nav_report", "nav_boost", "nav_be_all", "nav_shot", "nav_panic"]
+                nav_targets = ["nav_status", "nav_pos", "nav_prop", "nav_report", "nav_boost", "nav_shot", "nav_panic"]
                 for target in nav_targets:
                     query.data = target
                     query.edit_message_text.reset_mock()

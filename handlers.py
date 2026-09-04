@@ -192,8 +192,8 @@ def get_nav_keyboard(active_section: str = "status") -> InlineKeyboardMarkup:
             InlineKeyboardButton(b_boost, callback_data="nav_boost")
         ],
         [
-            InlineKeyboardButton("🛡️ BE All", callback_data="nav_be_all"),
             InlineKeyboardButton("📜 History", callback_data="hist_filter:10"),
+            InlineKeyboardButton("📅 News", callback_data="news_filter:today"),
             InlineKeyboardButton("🔄 Refresh", callback_data=f"nav_refresh:{active_section}")
         ],
         [
@@ -246,8 +246,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /positions — Active open orders with live P/L & tickets\n"
         "• /history — Closed trade deals, statistics & cumulative net P/L\n"
         "  └ <code>/history today</code> | <code>/history week</code> | <code>/history 20</code>\n"
-        "• /be <code>[SYM|TICKET] [PIPS]</code> — Move SL to Break-Even (default +1 pip lock)\n"
-        "• /trailing <code>[SYM|TICKET] [PIPS]</code> — Dynamic Trailing Stop (default 20 pips)\n"
         "• /close <code>[SYMBOL|TICKET]</code> — Liquidate positions for symbol or ticket\n"
         "• /modify_sl <code>[SYM|TICKET] [PRICE]</code> — Modify Stop Loss (0 to remove)\n"
         "• /modify_tp <code>[SYM|TICKET] [PRICE]</code> — Modify Take Profit (0 to remove)\n"
@@ -365,8 +363,8 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     pos_action_kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🛡️ BE All Orders", callback_data="nav_be_all"),
-            InlineKeyboardButton("📸 Active Screenshot", callback_data="shotsym:CURRENT")
+            InlineKeyboardButton("📸 Active Screenshot", callback_data="shotsym:CURRENT"),
+            InlineKeyboardButton("📅 Economic News", callback_data="news_filter:today")
         ],
         [
             InlineKeyboardButton("🔄 Refresh", callback_data="nav_refresh:positions"),
@@ -513,7 +511,7 @@ async def cmd_boost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             InlineKeyboardButton("💼 Open Positions", callback_data="nav_pos")
         ],
         [
-            InlineKeyboardButton("🛡️ BE All Orders", callback_data="nav_be_all"),
+            InlineKeyboardButton("📅 Economic News", callback_data="news_filter:today"),
             InlineKeyboardButton("📜 Closed History", callback_data="hist_filter:10")
         ],
         [
@@ -1587,8 +1585,6 @@ async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await cmd_report(update, context)
     elif data in ["nav_boost", "nav_refresh:boost"]:
         await cmd_boost(update, context)
-    elif data == "nav_be_all":
-        await cmd_breakeven(update, context)
     elif data == "nav_shot":
         msg = (
             "📸 <b>INSTITUTIONAL CHART SNAPSHOT WIZARD</b>\n"

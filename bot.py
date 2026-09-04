@@ -46,8 +46,6 @@ async def post_init(application) -> None:
             BotCommand("accounts", "👥 Switch Accounts & Inspect BUY/SELL"),
             BotCommand("status", "📊 Account Balance, Equity & Health"),
             BotCommand("positions", "💼 View & Manage Active Trades"),
-            BotCommand("be", "🛡️ Move SL to Break-Even (+1 pip lock)"),
-            BotCommand("trailing", "⚡ Dynamic Trailing Stop (e.g. 20 pips)"),
             BotCommand("history", "📜 Closed Trades History & Net P/L"),
             BotCommand("screenshot", "📸 Interactive Chart Screenshot"),
             BotCommand("prop", "🛡️ Prop-Firm Risk Guardian Scorecard"),
@@ -115,8 +113,6 @@ def create_application():
     app.add_handler(CommandHandler(["accounts", "switch"], handlers.cmd_accounts))
     app.add_handler(CommandHandler(["status", "account"], handlers.cmd_account))
     app.add_handler(CommandHandler("positions", handlers.cmd_positions))
-    app.add_handler(CommandHandler(["be", "breakeven"], handlers.cmd_breakeven))
-    app.add_handler(CommandHandler(["trailing", "trail"], handlers.cmd_trailing))
     app.add_handler(CommandHandler(["prop", "risk"], handlers.cmd_prop))
     app.add_handler(CommandHandler("report", handlers.cmd_report))
     app.add_handler(CommandHandler(["screenshot", "screenphoto", "chart"], handlers.cmd_screenshot))
