@@ -12,7 +12,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-from config import ALLOWED_CHAT_IDS, AUTOTRADE_FLAG_FILE
+from config import ALLOWED_CHAT_IDS, AUTOTRADE_FLAG_FILE, MT4_FILES_DIR
 from zmq_client import zmq_client
 from news_service import news_service, CURRENCY_FLAGS
 from account_manager import account_manager, AccountProfile
@@ -217,7 +217,7 @@ def write_autotrade_flag(state: str) -> None:
         logger.debug(f"Could not write local flag file: {ex}")
 
     try:
-        mt4_files_dir = os.path.expandvars(r"%APPDATA%\MetaQuotes\Terminal\80152BA938C72BA373B1EA4889AEE06F\MQL4\Files")
+        mt4_files_dir = MT4_FILES_DIR
         os.makedirs(mt4_files_dir, exist_ok=True)
         mt4_flag_path = os.path.join(mt4_files_dir, "autotrade_state.flag")
         with open(mt4_flag_path, "w", encoding="utf-8") as f:
@@ -1403,7 +1403,7 @@ async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAUL
     ask = data.get("ask", 0.0)
     server_time = data.get("server_time", "")
 
-    mt4_files_dir = os.path.expandvars(r"%APPDATA%\MetaQuotes\Terminal\80152BA938C72BA373B1EA4889AEE06F\MQL4\Files")
+    mt4_files_dir = MT4_FILES_DIR
     shot_path = os.path.join(mt4_files_dir, shot_filename)
 
     # Wait up to 2.5 seconds for MT4 graphics engine to flush image file to disk

@@ -97,7 +97,7 @@ class MT4ZmqClient:
                 
                 self.socket.send(req_bytes)
                 reply_bytes = self.socket.recv()
-                reply_str = reply_bytes.decode("utf-8")
+                reply_str = reply_bytes.decode("utf-8", errors="replace")
                 res = json.loads(reply_str)
                 self.is_connected = True
                 return res

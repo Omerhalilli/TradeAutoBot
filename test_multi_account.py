@@ -36,14 +36,14 @@ assert ('DEMO' in text2 or 'REAL' in text2)
 print('Real Inspection Success! Length:', len(text2))
 
 print('\n=== 5. Testing Persistence across instance reload ===')
-am.set_active_account('2')
-am_reloaded = AccountManager()
-assert am_reloaded.get_active_account().id == '2', 'Active account failed to persist!'
-print('Persistence Verified: Active is ID 2')
-
-# Restore back to Account 1
 am.set_active_account('1')
-assert am.get_active_account().id == '1'
-print('Restored to Account 1 (Invest-AZ Demo)')
+am_reloaded = AccountManager()
+assert am_reloaded.get_active_account().id == '1', 'Active account failed to persist!'
+print('Persistence Verified: Active switched and persisted to ID 1')
+
+# Restore back to Account 2 (Invest-AZ Real)
+am.set_active_account('2')
+assert am.get_active_account().id == '2'
+print('Restored to Account 2 (Invest-AZ Real)')
 
 print('\n[SUCCESS] ALL INVEST-AZ MULTI-ACCOUNT TESTS PASSED!')

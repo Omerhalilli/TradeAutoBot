@@ -69,7 +69,7 @@ double Zmq_ExtractJsonNumber(const string json, const string key, double default
    
    int i = colon + 1;
    int len = StringLen(json);
-   while(i < len && (StringGetChar(json, i) == ' ' || StringGetChar(json, i) == '\t')) i++;
+   while(i < len && (StringGetChar(json, i) == ' ' || StringGetChar(json, i) == '\t' || StringGetChar(json, i) == '\"')) i++;
    
    int start = i;
    while(i < len)
@@ -324,10 +324,112 @@ bool Zmq_SymbolsMatch(string orderSym, string targetSym)
    return false;
 }
 
+//+------------------------------------------------------------------+
+//| Multi-Broker Instrument Resolver & Market Watch Sync             |
+//+------------------------------------------------------------------+
+string Zmq_ResolveSymbol(string genericName)
+{
+   string base = genericName;
+   StringToUpper(base);
+   StringTrimLeft(base);
+   StringTrimRight(base);
+   
+   if(base == "CURRENT" || base == "") return Symbol();
+   if(base == "GOLD") base = "XAUUSD";
+   if(base == "SILVER") base = "XAGUSD";
+   if(base == "OIL" || base == "CRUDE" || base == "WTI") base = "USOIL";
+   if(base == "BRENT") base = "UKOIL";
+   if(base == "BITCOIN" || base == "CRYPTO") base = "BTCUSD";
+   
+   // 1. Direct match if broker supports exact name
+   if(MarketInfo(base, MODE_POINT) > 0.0) return base;
+   
+   // 2. Check if active chart matches base
+   string chartSym = Symbol();
+   string upperChart = chartSym;
+   StringToUpper(upperChart);
+   if(StringFind(upperChart, base) >= 0) return chartSym;
+   
+   // 3. Check active market orders
+   for(int k = 0; k < OrdersTotal(); k++)
+   {
+      if(OrderSelect(k, SELECT_BY_POS, MODE_TRADES))
+      {
+         string oSym = OrderSymbol();
+         string upperOSym = oSym;
+         StringToUpper(upperOSym);
+         if(StringFind(upperOSym, base) >= 0) return oSym;
+      }
+   }
+   
+   // 4. Derive broker prefix/suffix from chart Symbol() (e.g. "_min", ".pro", "m")
+   string standards[4];
+   standards[0] = "GBPUSD";
+   standards[1] = "EURUSD";
+   standards[2] = "USDJPY";
+   standards[3] = "XAUUSD";
+   
+   for(int s = 0; s < 4; s++)
+   {
+      int pos = StringFind(upperChart, standards[s]);
+      if(pos >= 0)
+      {
+         string prefix = StringSubstr(chartSym, 0, pos);
+         string suffix = StringSubstr(chartSym, pos + StringLen(standards[s]));
+         string candidate = prefix + base + suffix;
+         if(MarketInfo(candidate, MODE_POINT) > 0.0) return candidate;
+         SymbolSelect(candidate, true);
+         if(MarketInfo(candidate, MODE_POINT) > 0.0) return candidate;
+         break;
+      }
+   }
+   
+   // 5. Search Market Watch symbols
+   int total = SymbolsTotal(true);
+   for(int i = 0; i < total; i++)
+   {
+      string s = SymbolName(i, true);
+      string upperS = s;
+      StringToUpper(upperS);
+      if(StringFind(upperS, base) >= 0) return s;
+   }
+   
+   // 6. Search full broker symbol catalog and add to Market Watch
+   total = SymbolsTotal(false);
+   for(int j = 0; j < total; j++)
+   {
+      string sAll = SymbolName(j, false);
+      string upperSAll = sAll;
+      StringToUpper(upperSAll);
+      if(StringFind(upperSAll, base) >= 0)
+      {
+         SymbolSelect(sAll, true);
+         return sAll;
+      }
+   }
+   
+   return base;
+}
+
+double Zmq_GetSpreadPoints(string sym)
+{
+   string resolved = Zmq_ResolveSymbol(sym);
+   double spread = MarketInfo(resolved, MODE_SPREAD);
+   double pt = MarketInfo(resolved, MODE_POINT);
+   double ask = MarketInfo(resolved, MODE_ASK);
+   double bid = MarketInfo(resolved, MODE_BID);
+   if(spread <= 0.0 && pt > 0.0 && ask > bid)
+   {
+      spread = NormalizeDouble((ask - bid) / pt, 1);
+   }
+   return spread;
+}
+
 double Zmq_GetPipPoint(string sym)
 {
-   double pt = MarketInfo(sym, MODE_POINT);
-   int dig = (int)MarketInfo(sym, MODE_DIGITS);
+   string resolved = Zmq_ResolveSymbol(sym);
+   double pt = MarketInfo(resolved, MODE_POINT);
+   int dig = (int)MarketInfo(resolved, MODE_DIGITS);
    if(pt <= 0.0)
    {
       if(dig == 3) return 0.01;
@@ -564,8 +666,12 @@ string Zmq_HandleSetBreakEven(const string reqJson)
       double openPrice = OrderOpenPrice();
       double curSL = OrderStopLoss();
       
-      double stopLevel = MarketInfo(sym, MODE_STOPLEVEL) * MarketInfo(sym, MODE_POINT);
-      if(stopLevel <= 0.0) stopLevel = MarketInfo(sym, MODE_POINT) * 5.0;
+      double pt = MarketInfo(sym, MODE_POINT);
+      if(pt <= 0.0) pt = (digits == 3 || digits == 5) ? 0.00001 : 0.001;
+      double stopLevel = MarketInfo(sym, MODE_STOPLEVEL) * pt;
+      double freezeLevel = MarketInfo(sym, MODE_FREEZELEVEL) * pt;
+      if(stopLevel < freezeLevel) stopLevel = freezeLevel;
+      if(stopLevel <= 0.0) stopLevel = pt * 5.0;
 
       if(type == OP_BUY)
       {
@@ -670,8 +776,12 @@ string Zmq_HandleSetTrailing(const string reqJson)
       double curSL = OrderStopLoss();
       double trailDist = trailPips * pipPoint;
       
-      double stopLevel = MarketInfo(sym, MODE_STOPLEVEL) * MarketInfo(sym, MODE_POINT);
-      if(stopLevel <= 0.0) stopLevel = MarketInfo(sym, MODE_POINT) * 5.0;
+      double pt = MarketInfo(sym, MODE_POINT);
+      if(pt <= 0.0) pt = (digits == 3 || digits == 5) ? 0.00001 : 0.001;
+      double stopLevel = MarketInfo(sym, MODE_STOPLEVEL) * pt;
+      double freezeLevel = MarketInfo(sym, MODE_FREEZELEVEL) * pt;
+      if(stopLevel < freezeLevel) stopLevel = freezeLevel;
+      if(stopLevel <= 0.0) stopLevel = pt * 5.0;
       
       if(type == OP_BUY)
       {
@@ -1051,18 +1161,7 @@ string Zmq_HandleScreenshot(const string reqJson)
    if(targetSymbol == "" || targetSymbol == "CURRENT")
       targetSymbol = Symbol();
       
-   string matchedSymbol = targetSymbol;
-   for(int k = 0; k < OrdersTotal(); k++)
-   {
-      if(OrderSelect(k, SELECT_BY_POS, MODE_TRADES))
-      {
-         if(Zmq_SymbolsMatch(OrderSymbol(), targetSymbol))
-         {
-            matchedSymbol = OrderSymbol();
-            break;
-         }
-      }
-   }
+   string matchedSymbol = Zmq_ResolveSymbol(targetSymbol);
    
    ENUM_TIMEFRAMES tf = Zmq_StringToTimeframe(tfParam);
    string tfStr = EnumToString(tf);
@@ -1171,13 +1270,9 @@ string Zmq_HandleGetBoost()
    json += "\"equity\":" + DoubleToString(AccountEquity(), 2) + ",";
    json += "\"free_margin\":" + DoubleToString(AccountFreeMargin(), 2) + ",";
    
-   double spreadGBP = MarketInfo("GBPUSD", MODE_SPREAD);
-   if(spreadGBP <= 0.0 && StringFind(Symbol(), "GBP") >= 0) spreadGBP = MarketInfo(Symbol(), MODE_SPREAD);
-   double spreadEUR = MarketInfo("EURUSD", MODE_SPREAD);
-   if(spreadEUR <= 0.0 && StringFind(Symbol(), "EUR") >= 0) spreadEUR = MarketInfo(Symbol(), MODE_SPREAD);
-   double spreadGOLD = MarketInfo("XAUUSD", MODE_SPREAD);
-   if(spreadGOLD <= 0.0) spreadGOLD = MarketInfo("GOLD", MODE_SPREAD);
-   if(spreadGOLD <= 0.0 && StringFind(Symbol(), "XAU") >= 0) spreadGOLD = MarketInfo(Symbol(), MODE_SPREAD);
+   double spreadGBP = Zmq_GetSpreadPoints("GBPUSD");
+   double spreadEUR = Zmq_GetSpreadPoints("EURUSD");
+   double spreadGOLD = Zmq_GetSpreadPoints("XAUUSD");
    json += "\"spread_gbpusd\":" + DoubleToString(spreadGBP, 1) + ",";
    json += "\"spread_eurusd\":" + DoubleToString(spreadEUR, 1) + ",";
    json += "\"spread_xauusd\":" + DoubleToString(spreadGOLD, 1) + ",";
@@ -1242,6 +1337,11 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleGetBoost();
    if(action == "RESET_SAFEGUARDS" || action == "RESET_PROP" || action == "RESET")
       return Zmq_HandleResetSafeguards();
+   if(action == "RELOAD_EA" || action == "RELOAD")
+   {
+      ChartSetSymbolPeriod(0, Symbol(), (ENUM_TIMEFRAMES)Period());
+      return "{\"status\":\"ok\",\"action\":\"RELOAD_EA\",\"message\":\"EA reloaded from disk\"}";
+   }
       
    return "{\"status\":\"error\",\"message\":\"Unknown action: " + Zmq_JsonEscape(action) + "\"}";
 }
@@ -1299,20 +1399,22 @@ void ZeroMQ_Poll()
 {
    if(!g_zmqReady || g_zmqSocket == NULL || g_zmqSocket.ref() == 0) return;
    
-   uchar reqBuf[];
-   ArrayResize(reqBuf, 4096);
-   int bytesRecv = zmq_recv(g_zmqSocket.ref(), reqBuf, 4096, 1); // 1 = ZMQ_DONTWAIT
-   if(bytesRecv > 0)
+   for(int iter = 0; iter < 10; iter++)
    {
-      string reqStr = CharArrayToString(reqBuf, 0, bytesRecv, CP_UTF8);
+      uchar reqBuf[];
+      ArrayResize(reqBuf, 4096);
+      int bytesRecv = zmq_recv(g_zmqSocket.ref(), reqBuf, 4096, 1); // 1 = ZMQ_DONTWAIT
+      if(bytesRecv <= 0) break;
       
+      string reqStr = CharArrayToString(reqBuf, 0, bytesRecv, CP_UTF8);
       string replyStr = Zmq_ProcessRequest(reqStr);
       
       uchar replyBuf[];
       StringToCharArray(replyStr, replyBuf, 0, WHOLE_ARRAY, CP_UTF8);
-      int sendLen = StringLen(replyStr);
+      int sendLen = ArraySize(replyBuf) - 1;
+      if(sendLen < 0) sendLen = 0;
       
-      int bytesSent = zmq_send(g_zmqSocket.ref(), replyBuf, sendLen, 0);
+      zmq_send(g_zmqSocket.ref(), replyBuf, sendLen, 0);
    }
 }
 //+------------------------------------------------------------------+

@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from config import TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_IDS, ZMQ_SERVER_URL
+from config import TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_IDS, ZMQ_SERVER_URL, MT4_FILES_DIR
 from zmq_client import zmq_client
 from news_service import news_service
 from account_manager import account_manager
@@ -25,6 +25,18 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
             print("  [LIVE] MT4 ZeroMQ Bridge detected ONLINE. Running live socket tests.")
         else:
             print("  [OFFLINE] MT4 ZeroMQ Bridge is OFFLINE. Live socket tests will be skipped.")
+
+    @classmethod
+    def tearDownClass(cls):
+        # Restore active account to live terminal account (ID 2 for real)
+        try:
+            res = zmq_client.get_account()
+            if res and res.get("status") == "ok":
+                account_manager.sync_with_live_terminal(res)
+            else:
+                account_manager.set_active_account("2")
+        except Exception:
+            account_manager.set_active_account("2")
 
     def test_01_config(self):
         self.assertTrue(bool(TELEGRAM_BOT_TOKEN), "Bot token must not be empty")
@@ -112,7 +124,7 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         res = zmq_client.get_screenshot(symbol="GBPUSD", timeframe="H1")
         self.assertEqual(res.get("status"), "ok")
         fn = res.get("filename")
-        files_dir = os.path.expandvars(r"%APPDATA%\MetaQuotes\Terminal\80152BA938C72BA373B1EA4889AEE06F\MQL4\Files")
+        files_dir = MT4_FILES_DIR
         shot_path = os.path.join(files_dir, fn)
         self.assertTrue(os.path.exists(shot_path), f"Screenshot file does not exist at {shot_path}")
         size = os.path.getsize(shot_path)
@@ -138,10 +150,10 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         active = account_manager.get_active_account()
         self.assertIsNotNone(active)
         # Test switching
-        account_manager.set_active_account("2")
-        self.assertEqual(account_manager.get_active_account().id, "2")
         account_manager.set_active_account("1")
         self.assertEqual(account_manager.get_active_account().id, "1")
+        account_manager.set_active_account("2")
+        self.assertEqual(account_manager.get_active_account().id, "2")
         print("  [PASS] Account Manager switcher and persistence verified.")
 
     def test_13_news_service(self):

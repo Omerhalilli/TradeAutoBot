@@ -6,6 +6,7 @@ and manages proactive Telegram reminder notifications.
 import json
 import logging
 import urllib.request
+import urllib.error
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Set
 import zoneinfo
@@ -120,6 +121,13 @@ class EconomicNewsService:
                             "utc_datetime": dt.astimezone(timezone.utc)
                         })
                     return parsed_events
+        except urllib.error.HTTPError as he:
+            logger.error(f"HTTP error fetching ForexFactory news feed ({he.code}): {he}")
+            try:
+                he.close()
+            except Exception:
+                pass
+            return []
         except Exception as e:
             logger.error(f"Error fetching ForexFactory news feed: {e}")
             return []

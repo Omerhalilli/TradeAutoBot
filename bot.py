@@ -65,6 +65,17 @@ async def post_init(application) -> None:
     except Exception as e:
         logger.error(f"Failed to set Telegram menu commands: {e}")
 
+    # Synchronize active account profile with live MT4 terminal on startup
+    try:
+        from zmq_client import zmq_client
+        from account_manager import account_manager
+        acc_data = zmq_client.get_account()
+        if acc_data and acc_data.get("status") == "ok":
+            synced_acc = account_manager.sync_with_live_terminal(acc_data)
+            logger.info(f"Synchronized with live MT4 terminal: Account #{synced_acc.account_number} ({synced_acc.name})")
+    except Exception as e:
+        logger.debug(f"Could not synchronize active account with live terminal on startup: {e}")
+
 async def news_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Background recurring task to check and broadcast high-impact news reminders."""
     try:

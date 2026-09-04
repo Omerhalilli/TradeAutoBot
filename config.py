@@ -95,6 +95,25 @@ BROKER_GMT_OFFSET = int(os.environ.get(
 # Flag file for external EAs to check auto-trading state
 AUTOTRADE_FLAG_FILE = os.path.join(BASE_DIR, "autotrade_state.flag")
 
+# MT4 Directories
+def _resolve_mt4_files_dir() -> str:
+    explicit = os.environ.get("MT4_FILES_DIR", config.get("MT4", "files_dir", fallback=""))
+    if explicit and os.path.exists(explicit):
+        return explicit
+    default_target = os.path.expandvars(r"%APPDATA%\MetaQuotes\Terminal\80152BA938C72BA373B1EA4889AEE06F\MQL4\Files")
+    if os.path.exists(default_target):
+        return default_target
+    term_root = os.path.expandvars(r"%APPDATA%\MetaQuotes\Terminal")
+    if os.path.exists(term_root):
+        for entry in os.listdir(term_root):
+            cand = os.path.join(term_root, entry, "MQL4", "Files")
+            if os.path.exists(cand):
+                return cand
+    return default_target
+
+MT4_FILES_DIR = _resolve_mt4_files_dir()
+MT4_TERMINAL_DIR = os.path.dirname(os.path.dirname(MT4_FILES_DIR))
+
 # Logging Configuration
 LOG_FILE = os.path.join(LOGS_DIR, "bot.log")
 
