@@ -83,10 +83,16 @@ bool Telegram_SendMessage(const string botToken,
 {
    string activeToken = botToken;
    if(StringLen(activeToken) == 0)
-      activeToken = "your_telegram_bot_token_here";
+   {
+      Print("[Telegram] ERROR: Bot token is empty. Configure TelegramBotToken in EA inputs.");
+      return false;
+   }
    string activeChat = chatId;
    if(StringLen(activeChat) == 0)
-      activeChat = "123456789";
+   {
+      Print("[Telegram] ERROR: Chat ID is empty. Configure TelegramChatID in EA inputs.");
+      return false;
+   }
       
    string url = "https://api.telegram.org/bot" + activeToken + "/sendMessage";
    string headers = "Content-Type: application/json\r\n";

@@ -354,5 +354,38 @@ TradeAutoBot/
 
 ---
 
+## 🔒 Security Best Practices
+- **Never commit `.env` or files containing real account numbers, tokens, or passwords to Git.**
+- Always keep `ALLOWED_CHAT_IDS` strictly set to your own Telegram User ID.
+- The repository includes automated privacy filters in `config.py` that scrub tokens and credentials from logs.
+- Before committing any changes, run the automated secret scanner:
+  ```bash
+  python scripts/scan_secrets.py --tracked
+  ```
+- Use environment variables or `.env` in production environments.
+
+---
+
+## ⚠️ Financial Risk Disclaimer
+**Trading foreign exchange, commodities, indices, and cryptocurrencies carries a significant risk of capital loss and is not suitable for all investors.** High leverage can work against you as well as for you. Before deciding to trade or use automated systems, carefully consider your investment objectives, level of experience, and risk tolerance. Past performance is not an indicator of future results. The authors and contributors assume no liability for financial losses incurred through the use of this software. Always test strategies thoroughly on demo accounts before deploying live capital.
+
+---
+
+## 🤝 Contributing
+Contributions are welcome! Please follow these steps:
+1. Fork the repository.
+2. Create a dedicated branch: `git checkout -b feature/NewFeature`.
+3. Verify your changes pass all unit tests:
+   ```bash
+   python -m unittest discover -s tests
+   ```
+4. Verify no sensitive credentials or absolute paths are introduced:
+   ```bash
+   python scripts/scan_secrets.py --tracked
+   ```
+5. Commit your changes and submit a Pull Request.
+
+---
+
 ## 📄 License
-This project is open-source under the **MIT License**. Created for institutional and personal automated trading.
+This project is open-source under the [MIT License](LICENSE).

@@ -12,12 +12,13 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, List, Optional, Union
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 from autotrade.core.event_bus import event_bus, EventType, EventPriority
 
 logger = logging.getLogger("autotrade.core.config_manager")
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+BASE_DIR = str(Path(__file__).resolve().parent.parent.parent)
 ENV_FILE = os.path.join(BASE_DIR, ".env")
 CONFIG_FILE = os.path.join(BASE_DIR, "config.ini")
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -231,19 +232,50 @@ class ConfigManager:
         """Determines the active MT4 Files directory across Wine and Windows paths."""
         if explicit and os.path.exists(explicit):
             return explicit
-            
+
+        # 1. Linux Wine environment discovery
         wine_prefix = os.path.expanduser("~/.wine/drive_c")
         if os.path.exists(wine_prefix):
-            appdata = os.path.join(wine_prefix, "users", os.environ.get("USER", "omer"), "AppData", "Roaming", "MetaQuotes", "Terminal")
-            if os.path.exists(appdata):
-                for sub in os.listdir(appdata):
-                    cand = os.path.join(appdata, sub, "MQL4", "Files")
-                    if os.path.exists(cand):
-                        return cand
+            users_dir = os.path.join(wine_prefix, "users")
+            candidates: List[str] = []
+            cur_user = os.environ.get("USER") or os.environ.get("USERNAME")
+            if cur_user:
+                candidates.append(cur_user)
+            if os.path.exists(users_dir):
+                try:
+                    for u in os.listdir(users_dir):
+                        if u not in candidates and not u.startswith("."):
+                            candidates.append(u)
+                except Exception:
+                    pass
+            for u in candidates:
+                appdata = os.path.join(users_dir, u, "AppData", "Roaming", "MetaQuotes", "Terminal")
+                if os.path.exists(appdata):
+                    try:
+                        for sub in os.listdir(appdata):
+                            cand = os.path.join(appdata, sub, "MQL4", "Files")
+                            if os.path.exists(cand):
+                                return cand
+                    except Exception:
+                        pass
 
-        # Standard Windows fallback
-        default_target = os.path.expandvars(r"%APPDATA%\MetaQuotes\Terminal\80152BA938C72BA373B1EA4889AEE06F\MQL4\Files")
-        return default_target
+        # 2. Native Windows environment discovery
+        appdata_win = os.environ.get("APPDATA")
+        if appdata_win:
+            term_root = os.path.join(appdata_win, "MetaQuotes", "Terminal")
+            if os.path.exists(term_root):
+                try:
+                    for sub in os.listdir(term_root):
+                        cand = os.path.join(term_root, sub, "MQL4", "Files")
+                        if os.path.exists(cand):
+                            return cand
+                except Exception:
+                    pass
+
+        # 3. Fallback to data/mql4_files directory within workspace
+        fallback_dir = os.path.join(DATA_DIR, "mql4_files")
+        os.makedirs(fallback_dir, exist_ok=True)
+        return fallback_dir
 
     def update_risk_limits(self, **kwargs) -> None:
         """
@@ -271,6 +303,22 @@ class ConfigManager:
                 priority=EventPriority.NORMAL,
                 source="ConfigManager"
             )
+
+    def validate(self) -> Tuple[bool, List[str]]:
+        """
+        Validates the current configuration.
+        Returns a tuple of (is_valid, list_of_error_messages).
+        """
+        with self._lock:
+            errors: List[str] = []
+            tok = self.config.telegram.bot_token
+            if not tok or tok.startswith("your_") or ":" not in tok:
+                errors.append("TELEGRAM_BOT_TOKEN is missing, invalid, or set to placeholder value.")
+            if not self.config.telegram.allowed_chat_ids:
+                errors.append("ALLOWED_CHAT_IDS must specify at least one authorized numeric Telegram chat ID.")
+            if not self.config.zmq.server_url.startswith("tcp://"):
+                errors.append(f"ZMQ_SERVER_URL '{self.config.zmq.server_url}' is invalid (must start with tcp://).")
+            return (len(errors) == 0, errors)
 
     def export_dict(self) -> Dict[str, Any]:
         """Exports sanitized configuration dictionary (hiding sensitive token secrets)."""

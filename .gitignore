@@ -1,39 +1,72 @@
+# ==============================================================================
 # Secrets & Environment Variables (NEVER COMMIT)
+# ==============================================================================
 .env
 .env.*
 !.env.example
+config.json
+settings.ini
+*.key
+*.pem
+*.secret
+.vault_key
 
-# Runtime Logs
+# ==============================================================================
+# Runtime Logs & Forensic Audit
+# ==============================================================================
 logs/
 *.log
+*.jsonl
 
-# Runtime Data & State
+# ==============================================================================
+# Runtime Data & Persistent State
+# ==============================================================================
 data/
 *.flag
-accounts.json
-active_account.json
 *.off
 *.Off
+accounts.json
+active_account.json
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 
-# Temporary & Binary Artifacts
+# ==============================================================================
+# Compiled Binaries, Charts & Output Artifacts
+# ==============================================================================
+*.ex4
+*.ex5
 *.bak
 *.tmp
 *.csv
 *.png
+snap_*.png
+chart_*.png
 *.session
 *.session-journal
 
+# ==============================================================================
 # Python Cache & Virtual Environments
+# ==============================================================================
 __pycache__/
 *.py[cod]
-*.class
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 .venv/
 env/
 venv/
 
-# System & IDE Generated
+# ==============================================================================
+# System & IDE Generated Files
+# ==============================================================================
 .system_generated/
 .idea/
 .vscode/
 Thumbs.db
 Desktop.ini
+.DS_Store

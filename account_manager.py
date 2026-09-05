@@ -27,19 +27,19 @@ class AccountProfile:
 DEFAULT_ACCOUNTS: List[Dict[str, str]] = [
     {
         "id": "1",
-        "account_number": "Demo Account",
-        "name": "Invest-AZ Demo",
+        "account_number": os.environ.get("DEMO_ACCOUNT_NUMBER", "Demo Account"),
+        "name": os.environ.get("DEMO_ACCOUNT_NAME", "Invest-AZ Demo"),
         "profile_name": "Demo Profile",
-        "server": "InvestAZ-Demo",
-        "zmq_url": "tcp://127.0.0.1:5555"
+        "server": os.environ.get("DEMO_ACCOUNT_SERVER", "InvestAZ-Demo"),
+        "zmq_url": os.environ.get("ZMQ_SERVER_URL", ZMQ_SERVER_URL)
     },
     {
         "id": "2",
-        "account_number": "Real Live",
-        "name": "Invest-AZ Real",
+        "account_number": os.environ.get("REAL_ACCOUNT_NUMBER", "Real Live"),
+        "name": os.environ.get("REAL_ACCOUNT_NAME", "Invest-AZ Real"),
         "profile_name": "Real Profile",
-        "server": "InvestAZ-Real",
-        "zmq_url": "tcp://127.0.0.1:5555"
+        "server": os.environ.get("REAL_ACCOUNT_SERVER", "InvestAZ-Real"),
+        "zmq_url": os.environ.get("ZMQ_SERVER_URL", ZMQ_SERVER_URL)
     }
 ]
 

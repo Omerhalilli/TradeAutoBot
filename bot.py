@@ -264,11 +264,39 @@ def create_application():
     return app
 
 def main():
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("No Telegram bot token found! Check .env or TELEGRAM_BOT_TOKEN environment variable.")
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("your_"):
+        logger.error(
+            "\n"
+            "======================================================================\n"
+            "❌ CONFIGURATION ERROR: Missing or Placeholder Telegram Bot Token!\n"
+            "======================================================================\n"
+            "1. Copy the configuration template: cp .env.example .env\n"
+            "2. Message @BotFather on Telegram to obtain your unique bot token.\n"
+            "3. Edit .env and set: TELEGRAM_BOT_TOKEN=<your_token>\n"
+            "======================================================================\n"
+        )
         sys.exit(1)
 
-    logger.info(f"Starting 24/7 Telegram bot... Authorized Chat IDs: {ALLOWED_CHAT_IDS}")
+    if not ALLOWED_CHAT_IDS:
+        logger.error(
+            "\n"
+            "======================================================================\n"
+            "❌ CONFIGURATION ERROR: Missing Authorized Telegram Chat ID(s)!\n"
+            "======================================================================\n"
+            "1. Message @userinfobot on Telegram to discover your numeric Chat ID.\n"
+            "2. Edit .env and set: ALLOWED_CHAT_IDS=<your_numeric_id>\n"
+            "======================================================================\n"
+        )
+        sys.exit(1)
+
+    if not os.path.exists(MT4_FILES_DIR):
+        logger.warning(
+            f"ℹ️ MT4 Files directory not found at: {MT4_FILES_DIR}\n"
+            "   Bot will operate normally via high-speed ZeroMQ socket connection.\n"
+            "   Set MT4_FILES_DIR in .env if using custom terminal data paths."
+        )
+
+    logger.info(f"Starting 24/7 Telegram bot... Authorized Chat IDs: {len(ALLOWED_CHAT_IDS)} admin(s) registered")
 
     # Startup Self-Compilation and Integrity Check
     try:
