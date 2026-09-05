@@ -33,19 +33,28 @@ jobs:
 
       - name: Automated Secret & Privacy Scanner
         run: |
-          python scripts/scan_secrets.py --tracked
+          python scripts/scan_secrets.py --tracked --history
 
       - name: Python Syntax & Bytecode Compilation Check
         run: |
           python -m compileall -q autotrade/ *.py
 
-      - name: Run Core Test Suite
+      - name: Run Core Unit Test Suite
         env:
           TELEGRAM_BOT_TOKEN: "123456789:dummy_token_for_ci_testing"
           ALLOWED_CHAT_IDS: "123456789"
           ZMQ_SERVER_URL: "tcp://127.0.0.1:5555"
         run: |
           python -m unittest discover -s tests -v
+
+      - name: Run Integration & Multi-Account Test Suites
+        env:
+          TELEGRAM_BOT_TOKEN: "123456789:dummy_token_for_ci_testing"
+          ALLOWED_CHAT_IDS: "123456789"
+          ZMQ_SERVER_URL: "tcp://127.0.0.1:5555"
+        run: |
+          python test_full_suite.py
+          python test_multi_account.py
 
       - name: Validate Portable Configuration Loader
         env:

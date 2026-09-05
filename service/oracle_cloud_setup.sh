@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # ==============================================================================
 # Oracle Cloud Always Free: MT4 + TradeAutoBot 1-Click Installer
 # OS: Ubuntu 22.04 LTS (AMD x86_64 or ARM with box86)
@@ -35,7 +35,7 @@ sudo systemctl daemon-reload
 echo "=================================================================="
 echo "✅ Installation Complete!"
 echo "Next Steps:"
-echo "1. Set a password for your user: sudo passwd \"
+echo "1. Set a password for your user: sudo passwd \$USER"
 echo "2. Open Windows Remote Desktop (mstsc.exe) and connect to this VM's Public IP"
 echo "3. Download your MT4 installer inside the desktop (wine mt4setup.exe)"
 echo "4. Configure /opt/TradeAutoBot/.env with your Bot Token and Chat ID"

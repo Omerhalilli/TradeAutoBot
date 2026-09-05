@@ -131,6 +131,8 @@ class ConfigManager:
     def __init__(self, env_path: str = ENV_FILE, config_ini_path: str = CONFIG_FILE):
         self.env_path = env_path
         self.config_ini_path = config_ini_path
+        self.settings_ini_path = os.path.join(BASE_DIR, "settings.ini")
+        self.config_json_path = os.path.join(BASE_DIR, "config.json")
         self._lock = threading.RLock()
         self._last_loaded_mtime: float = 0.0
         self.config = SystemConfig()
@@ -160,34 +162,51 @@ class ConfigManager:
         return env_vars
 
     def _read_ini_file(self) -> configparser.ConfigParser:
-        """Parses fallback config.ini if available."""
+        """Parses fallback config.ini or settings.ini if available."""
         parser = configparser.ConfigParser()
-        if os.path.exists(self.config_ini_path):
-            try:
-                parser.read(self.config_ini_path, encoding="utf-8-sig")
-            except Exception as ex:
-                logger.warning(f"Failed to read {self.config_ini_path}: {ex}")
+        for cand in (self.config_ini_path, self.settings_ini_path):
+            if os.path.exists(cand):
+                try:
+                    parser.read(cand, encoding="utf-8-sig")
+                    break
+                except Exception as ex:
+                    logger.warning(f"Failed to read {cand}: {ex}")
         return parser
 
+    def _read_json_file(self) -> Dict[str, Any]:
+        """Parses tertiary fallback config.json if available."""
+        if os.path.exists(self.config_json_path):
+            try:
+                with open(self.config_json_path, "r", encoding="utf-8-sig") as jf:
+                    return json.load(jf)
+            except Exception as ex:
+                logger.warning(f"Failed to read {self.config_json_path}: {ex}")
+        return {}
+
     def reload(self) -> None:
-        """Loads configuration from environment variables, .env, and config.ini."""
+        """Loads configuration from environment variables, .env, config.ini, settings.ini, and config.json."""
         with self._lock:
             env_vars = self._parse_env_file()
             ini = self._read_ini_file()
+            json_cfg = self._read_json_file()
             
-            # Helper to retrieve value with fallback cascade: OS ENV -> .env -> config.ini -> default
+            # Helper to retrieve value with fallback cascade: OS ENV -> .env -> config.ini -> config.json -> default
             def get_val(key: str, section: str, ini_key: str, default: Any) -> Any:
-                if key in os.environ:
+                if key in os.environ and os.environ[key] != "":
                     return os.environ[key]
-                if key in env_vars:
+                if key in env_vars and env_vars[key] != "":
                     return env_vars[key]
                 if ini.has_option(section, ini_key):
                     return ini.get(section, ini_key)
+                if json_cfg and isinstance(json_cfg.get(section.lower()), dict):
+                    val = json_cfg[section.lower()].get(ini_key)
+                    if val is not None:
+                        return val
                 return default
 
             # Telegram Config
-            token = get_val("TELEGRAM_BOT_TOKEN", "TELEGRAM", "bot_token", "")
-            raw_chats = str(get_val("ALLOWED_CHAT_IDS", "TELEGRAM", "allowed_chat_ids", ""))
+            token = str(get_val("TELEGRAM_BOT_TOKEN", "TELEGRAM", "bot_token", ""))
+            raw_chats = str(get_val("ALLOWED_CHAT_IDS", "TELEGRAM", "allowed_chat_ids", os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")))
             allowed_ids = [
                 int(c.strip()) for c in raw_chats.split(",") if c.strip().lstrip("-").isdigit()
             ]
@@ -199,7 +218,7 @@ class ConfigManager:
             self.config.telegram.enable_2fa = str(get_val("TELEGRAM_ENABLE_2FA", "TELEGRAM", "enable_2fa", "False")).lower() in ("true", "1", "yes")
 
             # ZMQ Config
-            self.config.zmq.server_url = get_val("ZMQ_SERVER_URL", "ZEROMQ", "server_url", "tcp://127.0.0.1:5555")
+            self.config.zmq.server_url = str(get_val("ZMQ_SERVER_URL", "ZEROMQ", "server_url", "tcp://127.0.0.1:5555"))
             self.config.zmq.timeout_ms = int(get_val("ZMQ_TIMEOUT_MS", "ZEROMQ", "timeout_ms", 3000))
             self.config.zmq.retry_interval_sec = int(get_val("ZMQ_RETRY_INTERVAL_SEC", "ZEROMQ", "retry_interval_sec", 5))
 
@@ -207,11 +226,11 @@ class ConfigManager:
             self.config.news.reminder_lead_minutes = int(get_val("NEWS_REMINDER_LEAD_MINUTES", "NEWS", "reminder_lead_minutes", 15))
             raw_impact = str(get_val("NEWS_IMPACT_FILTER", "NEWS", "impact_filter", "High,Medium"))
             self.config.news.impact_filter = [i.strip() for i in raw_impact.split(",") if i.strip()]
-            self.config.news.user_timezone = get_val("USER_TIMEZONE", "NEWS", "user_timezone", "Asia/Baku")
+            self.config.news.user_timezone = str(get_val("USER_TIMEZONE", "NEWS", "user_timezone", "Asia/Baku"))
             self.config.news.broker_gmt_offset = int(get_val("BROKER_GMT_OFFSET", "NEWS", "broker_gmt_offset", 3))
 
             # MT4 Files Dir Resolution
-            explicit_files = get_val("MT4_FILES_DIR", "MT4", "files_dir", "")
+            explicit_files = str(get_val("MT4_FILES_DIR", "MT4", "files_dir", ""))
             self.config.mt4_files_dir = self._resolve_mt4_files(explicit_files)
 
             # Risk Limits
@@ -221,6 +240,19 @@ class ConfigManager:
             self.config.risk.max_open_positions = int(get_val("MAX_OPEN_POSITIONS", "RISK", "max_open_positions", 10))
             self.config.risk.max_lots_per_symbol = float(get_val("MAX_LOTS_PER_SYMBOL", "RISK", "max_lots_per_symbol", 5.0))
             self.config.risk.max_total_lots = float(get_val("MAX_TOTAL_LOTS", "RISK", "max_total_lots", 15.0))
+            self.config.risk.enable_trailing_stop = str(get_val("ENABLE_TRAILING_STOP", "RISK", "enable_trailing_stop", "true")).lower() in ("true", "1", "yes")
+            self.config.risk.default_trailing_pips = int(get_val("DEFAULT_TRAILING_PIPS", "RISK", "default_trailing_pips", 20))
+            self.config.risk.enable_breakeven = str(get_val("ENABLE_BREAKEVEN", "RISK", "enable_breakeven", "true")).lower() in ("true", "1", "yes")
+            self.config.risk.breakeven_trigger_pips = int(get_val("BREAKEVEN_TRIGGER_PIPS", "RISK", "breakeven_trigger_pips", 15))
+            self.config.risk.breakeven_lock_pips = int(get_val("BREAKEVEN_LOCK_PIPS", "RISK", "breakeven_lock_pips", 1))
+
+            # Strategy Settings
+            raw_syms = str(get_val("TRADING_SYMBOLS", "STRATEGY", "trading_symbols", "GBPUSD,EURUSD,XAUUSD,USOIL,USDJPY"))
+            self.config.strategy.primary_symbols = [s.strip() for s in raw_syms.split(",") if s.strip()]
+            raw_tfs = str(get_val("TRADING_TIMEFRAMES", "STRATEGY", "trading_timeframes", "M5,M15,H1,H4"))
+            self.config.strategy.timeframes = [tf.strip() for tf in raw_tfs.split(",") if tf.strip()]
+            self.config.strategy.default_sizing_method = str(get_val("DEFAULT_SIZING_METHOD", "STRATEGY", "default_sizing_method", "volatility_atr")).strip()
+            self.config.strategy.default_fixed_lot = float(get_val("DEFAULT_FIXED_LOT", "STRATEGY", "default_fixed_lot", 0.05))
 
             # System & Logging
             self.config.log_level = get_val("LOG_LEVEL", "SYSTEM", "log_level", "INFO").upper()

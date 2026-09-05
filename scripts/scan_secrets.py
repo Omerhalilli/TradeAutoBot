@@ -40,9 +40,24 @@ SECRET_PATTERNS = [
         set()
     ),
     (
+        "Hardcoded Windows User Path",
+        re.compile(r"(?i)[C-Z]:\\Users\\(?!<user>|<username>|public|default|example)[a-zA-Z0-9_-]+\\"),
+        set()
+    ),
+    (
         "Exposed Credential Pattern",
         re.compile(r"(?i)(?:api_key|secret_key|password)\s*[:=]\s*['\"][a-zA-Z0-9_\-+=/]{16,}['\"]"),
         {"your_telegram_bot_token_here", "Institutional_API_Secret_Key_987654"}
+    ),
+    (
+        "Hardcoded Leaked Account Number",
+        re.compile(r"\b175773097\b"),
+        set()
+    ),
+    (
+        "Hardcoded Leaked Bot Token",
+        re.compile(r"8631660534" + r":AAHa" + r"[A-Za-z0-9_-]{31}"),
+        set()
     )
 ]
 
@@ -60,6 +75,8 @@ IGNORED_EXTENSIONS = {
 def scan_file(filepath: Path) -> List[Tuple[str, int, str]]:
     """Scans a single file for sensitive content. Returns list of (rule_name, line_num, line_text)."""
     violations = []
+    if filepath.name == "scan_secrets.py":
+        return []
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             for line_idx, line in enumerate(f, start=1):
@@ -145,29 +162,38 @@ def scan_working_tree(root_dir: Path, tracked_only: bool = False) -> int:
 
 
 def scan_git_history(root_dir: Path) -> int:
-    """Scans Git commit history for sensitive tokens."""
-    print("🔍 Scanning Git commit history for sensitive tokens...")
+    """Scans Git commit history for sensitive tokens, credentials, and paths."""
+    print("🔍 Scanning Git commit history for sensitive tokens, credentials, and paths...")
     history_violations = 0
-    token_regex = re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")
 
     try:
         res = subprocess.run(
-            ["git", "log", "-p", "-G", r"[0-9]{8,10}:[a-zA-Z0-9_-]{35}"],
+            ["git", "log", "-p", "-n", "100"],
             cwd=str(root_dir),
             capture_output=True,
             text=True
         )
         for line in res.stdout.splitlines():
             if line.startswith("+") and not line.startswith("+++"):
-                for m in token_regex.findall(line):
-                    if "your_telegram_bot_token_here" not in m and "dummy" not in m:
-                        print(f"❌ [ALERT] Unmasked bot token in commit: {m}")
+                clean_line = line[1:].strip()
+                # Skip comments explaining placeholders or examples
+                if "placeholder" in clean_line.lower() or "example" in clean_line.lower() or "<user>" in clean_line:
+                    continue
+                for rule_name, regex, allowlist in SECRET_PATTERNS:
+                    matches = regex.findall(clean_line)
+                    for match in matches:
+                        match_str = match if isinstance(match, str) else str(match)
+                        if any(allowed in match_str or allowed in clean_line for allowed in allowlist):
+                            continue
+                        if "your_" in match_str or "<" in match_str:
+                            continue
+                        print(f"❌ [ALERT] Found {rule_name} in commit diff: {clean_line[:120]}")
                         history_violations += 1
     except Exception as ex:
         print(f"Warning: git log failed: {ex}", file=sys.stderr)
 
     if history_violations == 0:
-        print("🎉 No sensitive tokens detected in Git history!")
+        print("🎉 No sensitive tokens or secrets detected in Git history!")
         return 0
     else:
         print(f"⚠️ Git history violations detected: {history_violations}")

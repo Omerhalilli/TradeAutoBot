@@ -5,7 +5,17 @@
 .env.*
 !.env.example
 config.json
+config.*.json
+!config.example.json
+!config.json.example
+config.ini
+config.*.ini
+!config.ini.example
+!config.example.ini
 settings.ini
+settings.*.ini
+!settings.ini.example
+!settings.example.ini
 *.key
 *.pem
 *.secret

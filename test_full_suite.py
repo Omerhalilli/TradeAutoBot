@@ -5,6 +5,13 @@ and handlers text formatting.
 """
 import os
 import sys
+
+# Provide test fixture defaults if environment is unconfigured
+if not os.environ.get("TELEGRAM_BOT_TOKEN"):
+    os.environ["TELEGRAM_BOT_TOKEN"] = "123456789:dummy_token_for_ci_testing"
+if not os.environ.get("ALLOWED_CHAT_IDS"):
+    os.environ["ALLOWED_CHAT_IDS"] = "123456789"
+
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 

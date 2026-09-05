@@ -1,0 +1,40 @@
+{
+  "telegram": {
+    "bot_token": "your_telegram_bot_token_here",
+    "allowed_chat_ids": "your_telegram_chat_id_here",
+    "enable_2fa": false
+  },
+  "zeromq": {
+    "server_url": "tcp://127.0.0.1:5555",
+    "timeout_ms": 3000,
+    "retry_interval_sec": 5
+  },
+  "news": {
+    "reminder_lead_minutes": 15,
+    "impact_filter": "High,Medium",
+    "user_timezone": "UTC",
+    "broker_gmt_offset": 3
+  },
+  "risk": {
+    "max_account_risk_pct": 2.0,
+    "max_daily_loss_pct": 4.0,
+    "max_total_drawdown_pct": 8.0,
+    "max_open_positions": 10,
+    "max_lots_per_symbol": 5.0,
+    "max_total_lots": 15.0,
+    "enable_trailing_stop": true,
+    "default_trailing_pips": 20,
+    "enable_breakeven": true,
+    "breakeven_trigger_pips": 15,
+    "breakeven_lock_pips": 1
+  },
+  "strategy": {
+    "trading_symbols": "GBPUSD,EURUSD,XAUUSD,USOIL,USDJPY",
+    "trading_timeframes": "M5,M15,H1,H4",
+    "default_sizing_method": "volatility_atr",
+    "default_fixed_lot": 0.05
+  },
+  "system": {
+    "log_level": "INFO"
+  }
+}

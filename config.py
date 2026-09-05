@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 CONFIG_FILE = BASE_DIR / "config.ini"
+SETTINGS_FILE = BASE_DIR / "settings.ini"
+CONFIG_JSON_FILE = BASE_DIR / "config.json"
 LOGS_DIR = BASE_DIR / "logs"
 DATA_DIR = BASE_DIR / "data"
 
@@ -23,7 +25,7 @@ os.makedirs(str(LOGS_DIR), exist_ok=True)
 os.makedirs(str(DATA_DIR), exist_ok=True)
 
 # ------------------------------------------------------------------------------
-# Environment Loading (python-dotenv with native fallback)
+# Environment & Configuration Loading
 # ------------------------------------------------------------------------------
 def _load_environment() -> None:
     # 1. Try python-dotenv
@@ -56,29 +58,54 @@ def _load_environment() -> None:
 
 _load_environment()
 
-# Read config.ini as secondary fallback
+# Read config.ini or settings.ini as secondary fallback
 config = configparser.ConfigParser()
-if CONFIG_FILE.exists():
+for ini_cand in (CONFIG_FILE, SETTINGS_FILE):
+    if ini_cand.exists():
+        try:
+            config.read(str(ini_cand), encoding="utf-8-sig")
+            break
+        except Exception:
+            pass
+
+# Read config.json as tertiary fallback
+config_json: Dict[str, Any] = {}
+if CONFIG_JSON_FILE.exists():
     try:
-        config.read(str(CONFIG_FILE), encoding="utf-8-sig")
+        import json
+        with open(str(CONFIG_JSON_FILE), "r", encoding="utf-8-sig") as jf:
+            config_json = json.load(jf)
     except Exception:
         pass
+
+def _get_setting(env_key: str, section: str, ini_key: str, default: Any = "") -> Any:
+    """Cascade lookup: OS environment -> config.ini / settings.ini -> config.json -> default."""
+    if env_key in os.environ and os.environ[env_key] != "":
+        return os.environ[env_key]
+    if config.has_option(section, ini_key):
+        return config.get(section, ini_key)
+    if config_json and isinstance(config_json.get(section.lower()), dict):
+        val = config_json[section.lower()].get(ini_key)
+        if val is not None:
+            return val
+    return default
 
 # ------------------------------------------------------------------------------
 # Telegram Bot Configuration
 # ------------------------------------------------------------------------------
-TELEGRAM_BOT_TOKEN: str = os.environ.get(
+TELEGRAM_BOT_TOKEN: str = str(_get_setting(
     "TELEGRAM_BOT_TOKEN",
-    config.get("TELEGRAM", "bot_token", fallback="")
-).strip()
+    "TELEGRAM",
+    "bot_token",
+    ""
+)).strip()
 
-_raw_chat_ids: str = os.environ.get(
+_raw_chat_ids: str = str(_get_setting(
     "ALLOWED_CHAT_IDS",
-    os.environ.get(
-        "TELEGRAM_ALLOWED_CHAT_IDS",
-        config.get("TELEGRAM", "allowed_chat_ids", fallback="")
-    )
-).strip()
+    "TELEGRAM",
+    "allowed_chat_ids",
+    os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
+)).strip()
 
 ALLOWED_CHAT_IDS: List[int] = [
     int(cid.strip())
@@ -86,58 +113,115 @@ ALLOWED_CHAT_IDS: List[int] = [
     if cid.strip().lstrip("-").isdigit()
 ]
 
-TELEGRAM_ENABLE_2FA: bool = os.environ.get(
+TELEGRAM_ENABLE_2FA: bool = str(_get_setting(
     "TELEGRAM_ENABLE_2FA",
-    config.get("TELEGRAM", "enable_2fa", fallback="false")
-).lower() in ("true", "1", "yes")
+    "TELEGRAM",
+    "enable_2fa",
+    "false"
+)).lower() in ("true", "1", "yes")
 
 # ------------------------------------------------------------------------------
 # ZeroMQ Settings
 # ------------------------------------------------------------------------------
-ZMQ_SERVER_URL: str = os.environ.get(
+ZMQ_SERVER_URL: str = str(_get_setting(
     "ZMQ_SERVER_URL",
-    config.get("ZEROMQ", "server_url", fallback="tcp://127.0.0.1:5555")
-).strip()
+    "ZEROMQ",
+    "server_url",
+    "tcp://127.0.0.1:5555"
+)).strip()
 
-ZMQ_TIMEOUT_MS: int = int(os.environ.get(
+ZMQ_TIMEOUT_MS: int = int(_get_setting(
     "ZMQ_TIMEOUT_MS",
-    config.get("ZEROMQ", "timeout_ms", fallback="3000")
+    "ZEROMQ",
+    "timeout_ms",
+    3000
 ))
 
-ZMQ_RETRY_INTERVAL_SEC: int = int(os.environ.get(
+ZMQ_RETRY_INTERVAL_SEC: int = int(_get_setting(
     "ZMQ_RETRY_INTERVAL_SEC",
-    config.get("ZEROMQ", "retry_interval_sec", fallback="5")
+    "ZEROMQ",
+    "retry_interval_sec",
+    5
 ))
 
 # ------------------------------------------------------------------------------
 # Economic Calendar / News Settings
 # ------------------------------------------------------------------------------
-NEWS_REMINDER_LEAD_MINUTES: int = int(os.environ.get(
+NEWS_REMINDER_LEAD_MINUTES: int = int(_get_setting(
     "NEWS_REMINDER_LEAD_MINUTES",
-    config.get("NEWS", "reminder_lead_minutes", fallback="15")
+    "NEWS",
+    "reminder_lead_minutes",
+    15
 ))
 
 NEWS_IMPACT_FILTER: List[str] = [
     imp.strip()
-    for imp in os.environ.get(
+    for imp in str(_get_setting(
         "NEWS_IMPACT_FILTER",
-        config.get("NEWS", "impact_filter", fallback="High,Medium")
-    ).split(",")
+        "NEWS",
+        "impact_filter",
+        "High,Medium"
+    )).split(",")
     if imp.strip()
 ]
 
-USER_TIMEZONE: str = os.environ.get(
+USER_TIMEZONE: str = str(_get_setting(
     "USER_TIMEZONE",
-    config.get("NEWS", "user_timezone", fallback="Asia/Baku")
-).strip()
+    "NEWS",
+    "user_timezone",
+    "Asia/Baku"
+)).strip()
 
-BROKER_GMT_OFFSET: int = int(os.environ.get(
+BROKER_GMT_OFFSET: int = int(_get_setting(
     "BROKER_GMT_OFFSET",
-    config.get("NEWS", "broker_gmt_offset", fallback="3")
+    "NEWS",
+    "broker_gmt_offset",
+    3
 ))
 
 # Flag file for external EAs to check auto-trading state
 AUTOTRADE_FLAG_FILE: str = str(BASE_DIR / "autotrade_state.flag")
+
+# ------------------------------------------------------------------------------
+# Multi-Account Broker Profiles (Optional)
+# ------------------------------------------------------------------------------
+DEMO_ACCOUNT_NAME: str = str(_get_setting("DEMO_ACCOUNT_NAME", "ACCOUNTS", "demo_account_name", "Invest-AZ Demo")).strip()
+DEMO_ACCOUNT_NUMBER: str = str(_get_setting("DEMO_ACCOUNT_NUMBER", "ACCOUNTS", "demo_account_number", "Demo Account")).strip()
+DEMO_ACCOUNT_SERVER: str = str(_get_setting("DEMO_ACCOUNT_SERVER", "ACCOUNTS", "demo_account_server", "InvestAZ-Demo")).strip()
+REAL_ACCOUNT_NAME: str = str(_get_setting("REAL_ACCOUNT_NAME", "ACCOUNTS", "real_account_name", "Invest-AZ Real")).strip()
+REAL_ACCOUNT_NUMBER: str = str(_get_setting("REAL_ACCOUNT_NUMBER", "ACCOUNTS", "real_account_number", "Real Live")).strip()
+REAL_ACCOUNT_SERVER: str = str(_get_setting("REAL_ACCOUNT_SERVER", "ACCOUNTS", "real_account_server", "InvestAZ-Real")).strip()
+
+# ------------------------------------------------------------------------------
+# Risk Management & Prop-Firm Safeguards
+# ------------------------------------------------------------------------------
+MAX_ACCOUNT_RISK_PCT: float = float(_get_setting("MAX_ACCOUNT_RISK_PCT", "RISK", "max_account_risk_pct", 2.0))
+MAX_DAILY_LOSS_PCT: float = float(_get_setting("MAX_DAILY_LOSS_PCT", "RISK", "max_daily_loss_pct", 4.0))
+MAX_TOTAL_DRAWDOWN_PCT: float = float(_get_setting("MAX_TOTAL_DRAWDOWN_PCT", "RISK", "max_total_drawdown_pct", 8.0))
+MAX_OPEN_POSITIONS: int = int(_get_setting("MAX_OPEN_POSITIONS", "RISK", "max_open_positions", 10))
+MAX_LOTS_PER_SYMBOL: float = float(_get_setting("MAX_LOTS_PER_SYMBOL", "RISK", "max_lots_per_symbol", 5.0))
+MAX_TOTAL_LOTS: float = float(_get_setting("MAX_TOTAL_LOTS", "RISK", "max_total_lots", 15.0))
+ENABLE_TRAILING_STOP: bool = str(_get_setting("ENABLE_TRAILING_STOP", "RISK", "enable_trailing_stop", "true")).lower() in ("true", "1", "yes")
+DEFAULT_TRAILING_PIPS: int = int(_get_setting("DEFAULT_TRAILING_PIPS", "RISK", "default_trailing_pips", 20))
+ENABLE_BREAKEVEN: bool = str(_get_setting("ENABLE_BREAKEVEN", "RISK", "enable_breakeven", "true")).lower() in ("true", "1", "yes")
+BREAKEVEN_TRIGGER_PIPS: int = int(_get_setting("BREAKEVEN_TRIGGER_PIPS", "RISK", "breakeven_trigger_pips", 15))
+BREAKEVEN_LOCK_PIPS: int = int(_get_setting("BREAKEVEN_LOCK_PIPS", "RISK", "breakeven_lock_pips", 1))
+
+# ------------------------------------------------------------------------------
+# Strategy Parameters
+# ------------------------------------------------------------------------------
+TRADING_SYMBOLS: List[str] = [
+    s.strip()
+    for s in str(_get_setting("TRADING_SYMBOLS", "STRATEGY", "trading_symbols", "GBPUSD,EURUSD,XAUUSD,USOIL,USDJPY")).split(",")
+    if s.strip()
+]
+TRADING_TIMEFRAMES: List[str] = [
+    tf.strip()
+    for tf in str(_get_setting("TRADING_TIMEFRAMES", "STRATEGY", "trading_timeframes", "M5,M15,H1,H4")).split(",")
+    if tf.strip()
+]
+DEFAULT_SIZING_METHOD: str = str(_get_setting("DEFAULT_SIZING_METHOD", "STRATEGY", "default_sizing_method", "volatility_atr")).strip()
+DEFAULT_FIXED_LOT: float = float(_get_setting("DEFAULT_FIXED_LOT", "STRATEGY", "default_fixed_lot", 0.05))
 
 # ------------------------------------------------------------------------------
 # Cross-Platform MT4 Files Directory Resolution
@@ -202,8 +286,8 @@ _SENSITIVE_PATTERNS = [
     re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b"),
     # Telegram Bot API URLs with token embedded
     re.compile(r"(https?://api\.telegram\.org/bot)\d+:[A-Za-z0-9_-]+"),
-    # Key / Secret / Password parameter assignments
-    re.compile(r"(?i)(password|secret|api[_-]?key|token)\s*[:=]\s*['\"]?[^\s,'\"]+['\"]?"),
+    # Passwords, keys, tokens assignments
+    re.compile(r"(?i)(password|passwd|pwd|pass|secret|api[_-]?key|token|auth[_-]?token)\s*[:=]\s*['\"]?[^\s,'\"]+['\"]?"),
 ]
 
 def scrub_sensitive_text(text: str) -> str:
@@ -219,7 +303,7 @@ def scrub_sensitive_text(text: str) -> str:
     for pat in _SENSITIVE_PATTERNS:
         if "bot" in pat.pattern:
             scrubbed = pat.sub(r"\1[REDACTED_BOT_TOKEN]" if r"\1" in pat.pattern else "[REDACTED_BOT_TOKEN]", scrubbed)
-        elif "password" in pat.pattern:
+        elif any(p in pat.pattern for p in ("password", "passwd", "pwd", "pass")):
             scrubbed = pat.sub(r"\1=[REDACTED]", scrubbed)
         else:
             scrubbed = pat.sub("[REDACTED_SECRET]", scrubbed)
@@ -237,7 +321,7 @@ class SensitiveDataFilter(logging.Filter):
                     k: scrub_sensitive_text(v) if isinstance(v, str) else v
                     for k, v in record.args.items()
                 }
-            elif isinstance(record.args, tuple):
+            elif isinstance(record.args, (tuple, list)):
                 record.args = tuple(
                     scrub_sensitive_text(v) if isinstance(v, str) else v
                     for v in record.args

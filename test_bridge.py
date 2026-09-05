@@ -1,7 +1,15 @@
-﻿"""
+"""
 Automated Test Suite for MT4 ZeroMQ Bridge & News Service.
 """
+import os
 import sys
+
+# Provide test fixture defaults if running in unconfigured environment
+if not os.environ.get("TELEGRAM_BOT_TOKEN"):
+    os.environ["TELEGRAM_BOT_TOKEN"] = "123456789:dummy_token_for_ci_testing"
+if not os.environ.get("ALLOWED_CHAT_IDS"):
+    os.environ["ALLOWED_CHAT_IDS"] = "123456789"
+
 from config import TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_IDS, ZMQ_SERVER_URL
 from zmq_client import zmq_client
 from news_service import news_service
@@ -10,7 +18,7 @@ def test_config():
     print("[1/3] Testing Configuration...")
     assert TELEGRAM_BOT_TOKEN, "Telegram token is empty"
     assert len(ALLOWED_CHAT_IDS) > 0, "No allowed chat IDs"
-    print(f"  -> Token: {TELEGRAM_BOT_TOKEN[:10]}...")
+    print("  -> Token: ******** (Masked for privacy)")
     print(f"  -> Allowed Chat IDs: {ALLOWED_CHAT_IDS}")
     print(f"  -> ZMQ Server URL: {ZMQ_SERVER_URL}")
     print("  [PASS] Config OK\n")

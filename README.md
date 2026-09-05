@@ -135,9 +135,12 @@ pip install -r requirements.txt
 
 ---
 
-### Step 4: Configure Your Settings (.env)
-In the project folder, you will find a file named `.env.example`.
-1. Make a copy of `.env.example` and rename it to `.env` (or open `.env` if already present).
+### Step 4: Configure Your Settings (.env / config.ini / config.json)
+The repository provides configuration templates with placeholder values:
+1. Make a copy of `.env.example` and rename it to `.env` (or copy `config.ini.example` to `config.ini` / `config.example.json` to `config.json`):
+   ```bash
+   cp .env.example .env
+   ```
 2. Open `.env` using **Notepad** and fill in your values:
    ```env
    # Your Bot Token from @BotFather
@@ -163,13 +166,14 @@ We have organized the files into an `MQL4` folder to make installation instant:
 1. Open your **MetaTrader 4** terminal.
 2. Click **File ➜ Open Data Folder** from the top menu. A Windows Explorer folder will open.
 3. Simply **copy the `MQL4` folder** from this project into your MetaTrader 4 Data Folder (choose *Merge / Replace* if asked).
-   * It places `SmartAutoTradeEA_Pro.ex4` into `MQL4/Experts/`
+   * It places `SmartAutoTradeEA_Pro.mq4` and `MT4_ZeroMQ_Bridge.mq4` into `MQL4/Experts/`
    * It places `ZeroMQBridge.mqh` and `AutoTradeFlagCheck.mqh` into `MQL4/Include/`
-   * It places `libzmq.dll` into `MQL4/Libraries/`
-4. In MetaTrader 4, open **Tools ➜ Options ➜ Expert Advisors** and ensure these two boxes are checked:
+   * It places `libzmq.dll` and `libsodium.dll` into `MQL4/Libraries/`
+4. In MetaTrader 4, press **F4** to open **MetaEditor**. Open `SmartAutoTradeEA_Pro.mq4` and click **Compile** (**F7**). It will compile cleanly with 0 errors and 0 warnings, creating `SmartAutoTradeEA_Pro.ex4`.
+5. In MetaTrader 4, open **Tools ➜ Options ➜ Expert Advisors** and ensure these two boxes are checked:
    * **[✓] Allow automated trading**
    * **[✓] Allow DLL imports**
-5. Click **OK**.
+6. Click **OK**.
 
 ---
 
@@ -330,23 +334,26 @@ Just send **`/pause`** in Telegram! The robot will stop looking for new entries.
 TradeAutoBot/
 ├── MQL4/                       # Copy this entire folder into MT4 Data Folder!
 │   ├── Experts/
-│   │   ├── SmartAutoTradeEA_Pro.ex4   # Compiled ready-to-run trading robot
-│   │   └── SmartAutoTradeEA_Pro.mq4   # Full EA source code with embedded ZeroMQ
+│   │   ├── SmartAutoTradeEA_Pro.mq4   # Full EA source code (compile with F7 in MetaEditor)
+│   │   └── MT4_ZeroMQ_Bridge.mq4      # ZeroMQ command bridge source code
 │   ├── Include/
 │   │   ├── ZeroMQBridge.mqh           # ZeroMQ communication bridge & screenshot engine
 │   │   ├── TelegramShared.mqh         # Unicode-safe Telegram emoji definitions
 │   │   └── AutoTradeFlagCheck.mqh     # Remote pause checker for external EAs
 │   └── Libraries/
-│       └── libzmq.dll                 # High-speed ZeroMQ Windows library
+│       ├── libzmq.dll                 # High-speed ZeroMQ Windows library
+│       └── libsodium.dll              # Cryptographic transport library
 ├── bot.py                      # Main Telegram bot daemon with 24/7 auto-reconnect
 ├── handlers.py                 # Telegram command handlers & interactive screenshot wizard
 ├── account_manager.py          # Invest-AZ Demo & Real multi-account switcher
 ├── zmq_client.py               # ZeroMQ client with heartbeat recovery
 ├── news_service.py             # ForexFactory scraper & 15-minute news reminders
-├── config.py                   # Configuration (.env) and rotating logger
+├── config.py                   # Portable configuration loader and rotating logger
 ├── run_bot.bat                 # 1-Click launcher for Windows
 ├── requirements.txt            # Python dependencies
-├── .env.example                # Configuration template
+├── .env.example                # Dotenv configuration template
+├── config.ini.example          # INI configuration template
+├── config.example.json         # JSON configuration template
 ├── data/                       # Persistent account settings and alert cache
 ├── logs/                       # Rotating bot logs
 └── service/                    # 24/7 background service scripts (Linux & Windows)
