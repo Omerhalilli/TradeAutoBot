@@ -72,6 +72,66 @@ string Telegram_EscapeHtml(string text)
 }
 
 //+------------------------------------------------------------------+
+//| Deduplication & Debounce Configuration                           |
+//+------------------------------------------------------------------+
+#define TG_DEBOUNCE_SLOTS 16
+#define TG_DEFAULT_DEBOUNCE_SEC 10
+
+//+------------------------------------------------------------------+
+//| Fast DJB2 string hashing for message deduplication               |
+//+------------------------------------------------------------------+
+uint Telegram_HashText(const string text)
+{
+   uint hash = 5381;
+   int len = StringLen(text);
+   for(int i = 0; i < len; i++)
+   {
+      hash = ((hash << 5) + hash) + (uint)StringGetChar(text, i);
+   }
+   return hash;
+}
+
+//+------------------------------------------------------------------+
+//| Check if message is a duplicate within the debounce window       |
+//| (Cross-chart terminal ring buffer + local instance guard)         |
+//+------------------------------------------------------------------+
+bool Telegram_IsDuplicateMessage(const string text, const int debounceSeconds = TG_DEFAULT_DEBOUNCE_SEC)
+{
+   if(debounceSeconds <= 0 || StringLen(text) == 0) return false;
+   
+   uint hash = Telegram_HashText(text);
+   datetime now = TimeLocal();
+   
+   // 1. Check terminal-wide GlobalVariables ring buffer
+   for(int i = 0; i < TG_DEBOUNCE_SLOTS; i++)
+   {
+      string hKey = StringFormat("TG_DEB_H_%d", i);
+      string tKey = StringFormat("TG_DEB_T_%d", i);
+      if(GlobalVariableCheck(hKey) && GlobalVariableCheck(tKey))
+      {
+         uint entryHash = (uint)GlobalVariableGet(hKey);
+         datetime entryTime = (datetime)GlobalVariableGet(tKey);
+         if(entryHash == hash && (now >= entryTime) && (now - entryTime) < debounceSeconds)
+         {
+            return true; // Duplicate detected within debounce window
+         }
+      }
+   }
+   
+   // 2. Record this message into the global ring buffer slot
+   int slot = 0;
+   if(GlobalVariableCheck("TG_DEB_PTR"))
+   {
+      slot = (int)GlobalVariableGet("TG_DEB_PTR") % TG_DEBOUNCE_SLOTS;
+   }
+   GlobalVariableSet(StringFormat("TG_DEB_H_%d", slot), (double)hash);
+   GlobalVariableSet(StringFormat("TG_DEB_T_%d", slot), (double)now);
+   GlobalVariableSet("TG_DEB_PTR", (double)((slot + 1) % TG_DEBOUNCE_SLOTS));
+   
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //| Send message via Telegram Bot API with retry mechanism           |
 //+------------------------------------------------------------------+
 bool Telegram_SendMessage(const string botToken, 
@@ -81,6 +141,13 @@ bool Telegram_SendMessage(const string botToken,
                           const int retryDelaySec = 2,
                           const string replyMarkupJson = "")
 {
+   // Debounce guard: suppress duplicate messages sent within the debounce window
+   if(Telegram_IsDuplicateMessage(messageTextHtml, TG_DEFAULT_DEBOUNCE_SEC))
+   {
+      Print("[Telegram] Debounce: duplicate message suppressed within 10-second window.");
+      return true;
+   }
+
    string activeToken = botToken;
    if(StringLen(activeToken) == 0)
    {
@@ -127,15 +194,8 @@ bool Telegram_SendMessage(const string botToken,
       dataSize--;
    }
 
-   // Fail-safe outbox buffer for external Python bot dispatcher (pure UTF-8 binary)
-   string uniqueOutName = StringFormat("tg_out_%u_%d.json", (uint)GetTickCount(), MathRand());
-   int uHandle = FileOpen(uniqueOutName, FILE_WRITE|FILE_BIN);
-   if(uHandle != INVALID_HANDLE)
-   {
-      FileWriteArray(uHandle, postData, 0, dataSize);
-      FileClose(uHandle);
-   }
-   
+   // --- STEP 1: Attempt direct WebRequest via MetaTrader 4 ---
+   bool webRequestSent = false;
    int attempts = MathMax(1, retryCount);
    for(int attempt = 1; attempt <= attempts; attempt++)
    {
@@ -144,7 +204,8 @@ bool Telegram_SendMessage(const string botToken,
       
       if(res == 200)
       {
-         return true; // Sent successfully
+         webRequestSent = true;
+         break; // Sent successfully via WebRequest!
       }
       
       int err = GetLastError();
@@ -153,13 +214,8 @@ bool Telegram_SendMessage(const string botToken,
       // Common configuration error: WebRequest URL not whitelisted in terminal options
       if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060)
       {
-         Print("==================================================================");
-         Print("[Telegram] CRITICAL ERROR: WebRequest is not allowed in MetaTrader!");
-         Print("[Telegram] FIX: Go to Tools -> Options -> Expert Advisors tab.");
-         Print("[Telegram] 1. Check 'Allow WebRequest for listed URL:'");
-         Print("[Telegram] 2. Add: https://api.telegram.org");
-         Print("==================================================================");
-         return false; // Retrying will not fix configuration
+         PrintFormat("[Telegram] WebRequest not permitted in MT4 options (Error %d). Falling back to outbox for Python dispatcher.", err);
+         break; // Retrying will not fix configuration; fall back to outbox
       }
       
       PrintFormat("[Telegram] Attempt %d/%d failed. HTTP Code: %d, Terminal Error: %d, Response: %s", 
@@ -169,7 +225,7 @@ bool Telegram_SendMessage(const string botToken,
       if(res == 400 || res == 401 || res == 404)
       {
          Print("[Telegram] Aborting retries due to non-recoverable HTTP client error.");
-         return false;
+         break;
       }
       
       // Backoff before retry
@@ -177,6 +233,26 @@ bool Telegram_SendMessage(const string botToken,
       {
          Sleep(retryDelaySec * 1000);
       }
+   }
+   
+   if(webRequestSent)
+   {
+      return true; // Sent successfully via WebRequest! DO NOT write outbox file to prevent duplicate messages!
+   }
+
+   // --- STEP 2: Fallback to outbox buffer for external Python bot dispatcher ONLY if WebRequest failed ---
+   string uniqueOutName = StringFormat("tg_out_%u_%d.json", (uint)GetTickCount(), MathRand());
+   int uHandle = FileOpen(uniqueOutName, FILE_WRITE|FILE_BIN);
+   if(uHandle != INVALID_HANDLE)
+   {
+      FileWriteArray(uHandle, postData, 0, dataSize);
+      FileClose(uHandle);
+      PrintFormat("[Telegram] WebRequest unavailable; queued message to fail-safe outbox for Python dispatcher: %s", uniqueOutName);
+      return true;
+   }
+   else
+   {
+      PrintFormat("[Telegram] ERROR: Failed to write outbox file %s (Error %d)", uniqueOutName, GetLastError());
    }
    
    return false;

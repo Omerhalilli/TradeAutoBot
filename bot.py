@@ -5,6 +5,7 @@ Runs python-telegram-bot v20+ with background economic news reminder tasks,
 and 24/7 automatic reconnect loops.
 """
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -84,8 +85,13 @@ async def post_init(application) -> None:
     except Exception as e:
         logger.debug(f"Could not synchronize active account with live terminal on startup: {e}")
 
+# Cache for debouncing identical outbox alerts: (chat_id, text_sha256) -> dispatch_timestamp
+_recent_outbox_dispatches: dict[tuple[str, str], float] = {}
+_OUTBOX_DEBOUNCE_WINDOW_SEC: float = 10.0
+
 async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Dispatches any trade events written to telegram_outbox.json or tg_out_*.json by MT4 EA."""
+    global _recent_outbox_dispatches
     if not os.path.exists(MT4_FILES_DIR):
         return
 
@@ -102,15 +108,19 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.debug(f"Error scanning outbox files: {e}")
         return
 
+    now_ts = time.time()
     for target_file in targets:
+        proc_file = f"{target_file}.proc_{time.time_ns()}"
         try:
-            with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
+            os.rename(target_file, proc_file)
+        except OSError:
+            # File already claimed or deleted by another poll iteration
+            continue
+
+        try:
+            with open(proc_file, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read().strip()
             if not content:
-                try:
-                    os.remove(target_file)
-                except Exception:
-                    pass
                 continue
 
             data = json.loads(content)
@@ -133,6 +143,14 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
             target_chats = [chat_id] if chat_id else ALLOWED_CHAT_IDS
             for cid in target_chats:
+                cid_str = str(cid)
+                sig = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+                cache_key = (cid_str, sig)
+                last_time = _recent_outbox_dispatches.get(cache_key, 0.0)
+                if (now_ts - last_time) < _OUTBOX_DEBOUNCE_WINDOW_SEC:
+                    logger.info(f"Debounce: Suppressed duplicate outbox alert to chat {cid} (sent {now_ts - last_time:.1f}s ago)")
+                    continue
+
                 try:
                     await context.bot.send_message(
                         chat_id=cid,
@@ -141,19 +159,23 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                         reply_markup=reply_markup,
                         disable_web_page_preview=True
                     )
+                    _recent_outbox_dispatches[cache_key] = time.time()
                 except Exception as e:
                     logger.error(f"Error sending outbox alert to chat {cid}: {e}")
 
-            try:
-                os.remove(target_file)
-            except Exception:
-                pass
         except Exception as ex:
-            logger.error(f"Error processing outbox file {target_file}: {ex}")
+            logger.error(f"Error processing outbox file {proc_file}: {ex}")
+        finally:
             try:
-                os.remove(target_file)
+                if os.path.exists(proc_file):
+                    os.remove(proc_file)
             except Exception:
                 pass
+
+    # Prune old entries from debounce cache
+    if len(_recent_outbox_dispatches) > 200:
+        cutoff = now_ts - 60.0
+        _recent_outbox_dispatches = {k: v for k, v in _recent_outbox_dispatches.items() if v >= cutoff}
 
 async def news_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Background recurring task to check and broadcast high-impact news reminders."""

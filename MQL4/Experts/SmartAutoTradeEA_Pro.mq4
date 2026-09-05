@@ -4732,7 +4732,7 @@ void Telegram_CaptureAndSendScreenshot(int ticket, string caption, string replyM
 //+------------------------------------------------------------------+
 //| Initialize Telegram Tracker and Drain Stale Updates              |
 //+------------------------------------------------------------------+
-void Telegram_InitTradeTracker()
+void Telegram_InitTradeTracker(const bool isTimeframeChange = false)
 {
    ArrayResize(g_tgActiveTrades, 0);
    if(!EnableTelegramAlerts) return;
@@ -4757,6 +4757,23 @@ void Telegram_InitTradeTracker()
       g_tgActiveTrades[sz].openTime  = OrderOpenTime();
       g_tgActiveTrades[sz].magic     = OrderMagicNumber();
    }
+   
+   // Suppress startup alert on simple timeframe change
+   if(isTimeframeChange) return;
+
+   // Chart startup debounce guard: prevent duplicate startup alert if MT4 reloads chart/template in rapid succession
+   string startupKey = StringFormat("TG_STARTUP_%s_%d", Symbol(), MagicNumber);
+   datetime now = TimeLocal();
+   if(GlobalVariableCheck(startupKey))
+   {
+      datetime lastStartup = (datetime)GlobalVariableGet(startupKey);
+      if(now >= lastStartup && (now - lastStartup) < 10)
+      {
+         PrintFormat("[Telegram] Startup notification for %s debounced (last sent %d sec ago).", Symbol(), (int)(now - lastStartup));
+         return;
+      }
+   }
+   GlobalVariableSet(startupKey, (double)now);
    
    // Send startup notification with command hints
    string startMsg = TG_ROCKET + " <b>SmartAutoTradeEA Pro Online</b>\n";
@@ -6494,7 +6511,7 @@ int OnInit()
                   MinRequiredScore, RiskPercent);
    }
 
-   Telegram_InitTradeTracker();
+   Telegram_InitTradeTracker(isTimeframeChange);
    ZeroMQ_Init(InpZmqBindAddress);
 
    return(INIT_SUCCEEDED);

@@ -608,6 +608,66 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
             self.assertEqual(res.get("status"), "ok")
             print(f"  [PASS] Live MT4 OPEN_ORDER executed successfully (Ticket: #{res.get('ticket')})")
 
+    def test_25_outbox_dedup_and_atomic_processing(self):
+        """Verifies bot.outbox_alert_job debounces identical messages and processes files atomically."""
+        import asyncio
+        import tempfile
+        import shutil
+        import json
+        from unittest.mock import patch, MagicMock, AsyncMock
+        from bot import outbox_alert_job, _recent_outbox_dispatches
+
+        # Clear debounce cache before test
+        _recent_outbox_dispatches.clear()
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            # Create two files with identical startup notification text
+            msg_payload = {
+                "chat_id": "123456789",
+                "text": "🚀 <b>SmartAutoTradeEA Pro Online</b>\nSymbol: EURUSD (H1)",
+                "parse_mode": "HTML"
+            }
+            f1 = os.path.join(test_dir, "tg_out_100_1.json")
+            f2 = os.path.join(test_dir, "tg_out_101_2.json")
+            with open(f1, "w", encoding="utf-8") as f:
+                json.dump(msg_payload, f)
+            with open(f2, "w", encoding="utf-8") as f:
+                json.dump(msg_payload, f)
+
+            mock_context = MagicMock()
+            mock_context.bot.send_message = AsyncMock()
+
+            with patch("bot.MT4_FILES_DIR", test_dir):
+                asyncio.run(outbox_alert_job(mock_context))
+
+            # Verify send_message was only called once (second identical message was debounced!)
+            self.assertEqual(mock_context.bot.send_message.call_count, 1)
+            # Verify both files were removed (claimed and cleaned up)
+            remaining_files = os.listdir(test_dir)
+            self.assertEqual(len(remaining_files), 0)
+
+            # Test different message text is NOT suppressed
+            f3 = os.path.join(test_dir, "tg_out_102_3.json")
+            msg_payload_different = {
+                "chat_id": "123456789",
+                "text": "🎯 <b>Order #12345 TP Hit</b>\nProfit: +$50.00",
+                "parse_mode": "HTML"
+            }
+            with open(f3, "w", encoding="utf-8") as f:
+                json.dump(msg_payload_different, f)
+
+            with patch("bot.MT4_FILES_DIR", test_dir):
+                asyncio.run(outbox_alert_job(mock_context))
+
+            self.assertEqual(mock_context.bot.send_message.call_count, 2)
+            self.assertEqual(len(os.listdir(test_dir)), 0)
+
+            print("  [PASS] Outbox deduplication and atomic processing verified (identical alerts suppressed).")
+        finally:
+            shutil.rmtree(test_dir, ignore_errors=True)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
