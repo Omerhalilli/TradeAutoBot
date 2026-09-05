@@ -686,27 +686,6 @@ int GetScaledSlippage()
 
 
 //+------------------------------------------------------------------+
-//| STRING FORMATTING AND PADDING HELPERS                            |
-//+------------------------------------------------------------------+
-string FormatDoublePrecision(const double val, const int decimals)
-{
-   return DoubleToString(NormalizeDouble(val, decimals), decimals);
-}
-
-
-string PadRight(string str, const int totalLen, const string padChar = " ")
-{
-   int currentLen = StringLen(str);
-   while(currentLen < totalLen)
-   {
-      str = str + padChar;
-      currentLen++;
-   }
-   return str;
-}
-
-
-//+------------------------------------------------------------------+
 //| SECTION 1: TREND DETECTION ENGINE (0 - 3 POINTS)                 |
 //+------------------------------------------------------------------+
 void CalculateTrendModule(int &outTrendBuy, int &outTrendSell)
@@ -1695,14 +1674,18 @@ void CalculateMultiTF_ATR_SLTP(const int cmd, const double entryPrice, double &s
    double htfATR = iATR(Symbol(), hTF, ATRPeriod, 1);
 
 
-   if(curATR <= 0.0 && htfATR <= 0.0)
+   double blendedATR = 0.0;
+   if(curATR > 0.0 && htfATR > 0.0)
+      blendedATR = (0.50 * curATR) + (0.50 * htfATR);
+   else if(curATR > 0.0)
+      blendedATR = curATR;
+   else if(htfATR > 0.0)
+      blendedATR = htfATR;
+   else
    {
       CalculateStatic_SLTP(cmd, entryPrice, sl, tp);
       return;
    }
-
-
-   double blendedATR = (0.50 * curATR) + (0.50 * htfATR);
    double slDist = blendedATR * 1.50;
    double tpDist = blendedATR * 3.00;
 
@@ -1802,6 +1785,12 @@ void CalculatePivot_SLTP(const int cmd, const double entryPrice, double &sl, dou
    double pH = iHigh(Symbol(),  pTF, 1);
    double pL = iLow(Symbol(),   pTF, 1);
    double pC = iClose(Symbol(), pTF, 1);
+
+   if(pH <= 0.0 || pL <= 0.0 || pC <= 0.0)
+   {
+      CalculateStatic_SLTP(cmd, entryPrice, sl, tp);
+      return;
+   }
 
 
    double P  = (pH + pL + pC) / 3.0;
@@ -2142,7 +2131,7 @@ double CalculateDynamicLotSize(const double entryPrice, const double slPrice)
 
    double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
    double tickSize  = MarketInfo(Symbol(), MODE_TICKSIZE);
-   if(tickSize <= 0.0)  tickSize  = Point;
+   if(tickSize <= 0.0)  tickSize  = (Point > 0.0) ? Point : 0.0001;
    if(tickValue <= 0.0) tickValue = 10.0;
 
    double pipValue = tickValue * (g_PipPoint / tickSize);
@@ -2305,6 +2294,7 @@ void UpdateStealthOrderTP(const int ticket, const double newTP)
 void CleanupStealthOrders()
 {
    int size = ArraySize(g_StealthOrders);
+   int origSize = size;
    for(int i = size - 1; i >= 0; i--)
    {
       if(!OrderSelect(g_StealthOrders[i].ticket, SELECT_BY_TICKET, MODE_TRADES) || OrderCloseTime() > 0)
@@ -2314,8 +2304,11 @@ void CleanupStealthOrders()
             g_StealthOrders[j] = g_StealthOrders[j + 1];
          }
          size--;
-         ArrayResize(g_StealthOrders, size);
       }
+   }
+   if(size != origSize)
+   {
+      ArrayResize(g_StealthOrders, size);
    }
 }
 
@@ -2493,6 +2486,7 @@ bool SafeOrderClose(const int ticket, const double volume, const int slippage, c
 
 
       double closePrice = (cmd == OP_BUY) ? Bid : Ask;
+      closePrice = NormalizeDouble(closePrice, Digits);
       closed = OrderClose(ticket, volume, closePrice, slippage, arrowColor);
 
 
@@ -2539,6 +2533,8 @@ bool SafeOrderModify(const int ticket, const double price, double sl, double tp,
    int cmd = OrderType();
    double modifyPrice = (cmd <= OP_SELL) ? OrderOpenPrice() : price;
    ValidateStopLevels(cmd, modifyPrice, sl, tp);
+   if(sl > 0.0) sl = NormalizeDouble(sl, Digits);
+   if(tp > 0.0) tp = NormalizeDouble(tp, Digits);
 
    // If using stealth stops, update in-memory levels and skip broker modify if stops are hidden
    if(UseStealthStops)
@@ -2613,6 +2609,15 @@ bool SafeOrderModify(const int ticket, const double price, double sl, double tp,
 //+------------------------------------------------------------------+
 void ManageActiveTradeLifecycle()
 {
+   double pipPt = (g_PipPoint > 0.0) ? g_PipPoint : Point;
+   double tfRatio = GetActiveTimeframeScaleRatio((ENUM_TIMEFRAMES)Period());
+   int scaledBE_Pips = (int)MathRound(BreakEvenPips * tfRatio);
+   if(scaledBE_Pips < 3) scaledBE_Pips = 3;
+   int scaledTrailStart = (int)MathRound(TrailingStartPips * tfRatio);
+   int scaledTrailStep  = (int)MathRound(TrailingStepPips * tfRatio);
+   if(scaledTrailStart < 5) scaledTrailStart = 5;
+   if(scaledTrailStep < 2)  scaledTrailStep  = 2;
+
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
@@ -2633,18 +2638,13 @@ void ManageActiveTradeLifecycle()
       // Long / Buy Position Management
       if(type == OP_BUY)
       {
-         double profitPips = (Bid - openPrice) / g_PipPoint;
-
-
-         double tfRatio = GetActiveTimeframeScaleRatio((ENUM_TIMEFRAMES)Period());
-         int scaledBE_Pips = (int)MathRound(BreakEvenPips * tfRatio);
-         if(scaledBE_Pips < 3) scaledBE_Pips = 3;
+         double profitPips = (Bid - openPrice) / pipPt;
 
 
          // 1. Automated Break-Even Logic
          if(UseBreakEven && profitPips >= scaledBE_Pips)
          {
-            double beLevel = NormalizeDouble(openPrice + (BreakEvenLockPips * g_PipPoint), Digits);
+            double beLevel = NormalizeDouble(openPrice + (BreakEvenLockPips * pipPt), Digits);
             if(currentSL < openPrice || currentSL == 0.0)
             {
                if(SafeOrderModify(ticket, openPrice, beLevel, currentTP, 0, clrAqua))
@@ -2673,12 +2673,6 @@ void ManageActiveTradeLifecycle()
          }
 
 
-         int scaledTrailStart = (int)MathRound(TrailingStartPips * tfRatio);
-         int scaledTrailStep  = (int)MathRound(TrailingStepPips * tfRatio);
-         if(scaledTrailStart < 5) scaledTrailStart = 5;
-         if(scaledTrailStep < 2)  scaledTrailStep  = 2;
-
-
          // 3. Multi-Mode Trailing Stop Engine
          if(TrailingStopType != TRAILING_NONE && profitPips >= scaledTrailStart)
          {
@@ -2687,7 +2681,7 @@ void ManageActiveTradeLifecycle()
 
             if(TrailingStopType == TRAILING_FIXED_PIPS)
             {
-               desiredSL = NormalizeDouble(Bid - (scaledTrailStep * g_PipPoint), Digits);
+               desiredSL = NormalizeDouble(Bid - (scaledTrailStep * pipPt), Digits);
             }
             else if(TrailingStopType == TRAILING_ATR_DYNAMIC)
             {
@@ -2709,7 +2703,7 @@ void ManageActiveTradeLifecycle()
 
 
             // Verify trailing stop improves protection beyond current stop loss
-            if(desiredSL > currentSL + (g_PipPoint * 0.5) && desiredSL < Bid)
+            if(desiredSL > currentSL + (pipPt * 0.5) && desiredSL < Bid)
             {
                if(SafeOrderModify(ticket, openPrice, desiredSL, currentTP, 0, clrGold))
                {
@@ -2721,18 +2715,13 @@ void ManageActiveTradeLifecycle()
       // Short / Sell Position Management
       else if(type == OP_SELL)
       {
-         double profitPips = (openPrice - Ask) / g_PipPoint;
-
-
-         double tfRatio = GetActiveTimeframeScaleRatio((ENUM_TIMEFRAMES)Period());
-         int scaledBE_Pips = (int)MathRound(BreakEvenPips * tfRatio);
-         if(scaledBE_Pips < 3) scaledBE_Pips = 3;
+         double profitPips = (openPrice - Ask) / pipPt;
 
 
          // 1. Automated Break-Even Logic
          if(UseBreakEven && profitPips >= scaledBE_Pips)
          {
-            double beLevel = NormalizeDouble(openPrice - (BreakEvenLockPips * g_PipPoint), Digits);
+            double beLevel = NormalizeDouble(openPrice - (BreakEvenLockPips * pipPt), Digits);
             if(currentSL > openPrice || currentSL == 0.0)
             {
                if(SafeOrderModify(ticket, openPrice, beLevel, currentTP, 0, clrAqua))
@@ -2761,12 +2750,6 @@ void ManageActiveTradeLifecycle()
          }
 
 
-         int scaledTrailStart = (int)MathRound(TrailingStartPips * tfRatio);
-         int scaledTrailStep  = (int)MathRound(TrailingStepPips * tfRatio);
-         if(scaledTrailStart < 5) scaledTrailStart = 5;
-         if(scaledTrailStep < 2)  scaledTrailStep  = 2;
-
-
          // 3. Multi-Mode Trailing Stop Engine
          if(TrailingStopType != TRAILING_NONE && profitPips >= scaledTrailStart)
          {
@@ -2775,7 +2758,7 @@ void ManageActiveTradeLifecycle()
 
             if(TrailingStopType == TRAILING_FIXED_PIPS)
             {
-               desiredSL = NormalizeDouble(Ask + (scaledTrailStep * g_PipPoint), Digits);
+               desiredSL = NormalizeDouble(Ask + (scaledTrailStep * pipPt), Digits);
             }
             else if(TrailingStopType == TRAILING_ATR_DYNAMIC)
             {
@@ -2797,7 +2780,7 @@ void ManageActiveTradeLifecycle()
 
 
             // Verify trailing stop improves protection beyond current stop loss
-            if((desiredSL < currentSL - (g_PipPoint * 0.5) || currentSL == 0.0) && desiredSL > Ask)
+            if((desiredSL < currentSL - (pipPt * 0.5) || currentSL == 0.0) && desiredSL > Ask)
             {
                if(SafeOrderModify(ticket, openPrice, desiredSL, currentTP, 0, clrGold))
                {
@@ -3566,11 +3549,13 @@ void Telegram_CmdPositions()
          if(type != OP_BUY && type != OP_SELL) continue;
          int t = OrderTicket();
          if(btnCount > 0) kbJson += ",";
-         kbJson += StringFormat("[{\"text\":\"Close #%d\",\"callback_data\":\"/close_%d\"},{\"text\":\"Close 50%%\",\"callback_data\":\"/half_%d\"}],[{\"text\":\"Active Positions\",\"callback_data\":\"nav_pos\"},{\"text\":\"Status\",\"callback_data\":\"nav_status\"}]", t, t, t);
+         kbJson += StringFormat("[{\"text\":\"Close #%d\",\"callback_data\":\"/close_%d\"},{\"text\":\"Close 50%%\",\"callback_data\":\"/half_%d\"}]", t, t, t);
          btnCount++;
          if(btnCount >= 6) break;
       }
-      kbJson += ",[{\"text\":\"Close All\",\"callback_data\":\"/panic\"},{\"text\":\"Screenshot\",\"callback_data\":\"/screenshot\"}]]}";
+      if(btnCount > 0) kbJson += ",";
+      kbJson += "[{\"text\":\"Active Positions\",\"callback_data\":\"nav_pos\"},{\"text\":\"Status\",\"callback_data\":\"nav_status\"}],";
+      kbJson += "[{\"text\":\"Close All\",\"callback_data\":\"/panic\"},{\"text\":\"Screenshot\",\"callback_data\":\"/screenshot\"}]]}";
    }
    
    if(count == 0)
@@ -3836,6 +3821,7 @@ void Telegram_CheckPropRiskGuardian()
          g_PropLockoutActive = true;
          g_PropLockoutDate = TimeCurrent();
          g_AutoTradingRuntimeActive = false;
+         GlobalVariableSet("AutoTrading_Paused", 1.0);
          
          if(PropAutoLockoutOnBreach)
          {
@@ -3862,6 +3848,7 @@ void Telegram_CheckPropRiskGuardian()
          g_PropLockoutActive = true;
          g_PropLockoutDate = TimeCurrent();
          g_AutoTradingRuntimeActive = false;
+         GlobalVariableSet("AutoTrading_Paused", 1.0);
          
          if(PropAutoLockoutOnBreach)
          {
@@ -4735,7 +4722,7 @@ void Telegram_CaptureAndSendScreenshot(int ticket, string caption, string replyM
    if(!TelegramSendScreenshots) return;
    
    string shotName = "Entry_" + IntegerToString(ticket) + ".png";
-   if(WindowScreenShot(shotName, 1024, 768))
+   if(ChartScreenShot(0, shotName, 1024, 768, ALIGN_RIGHT))
    {
       Sleep(100);
       Telegram_SendPhoto(TelegramBotToken, TelegramChatID, shotName, caption, replyMarkupJson);
@@ -6022,12 +6009,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             double curTP = OrderTakeProfit();
             double curSL = OrderStopLoss();
 
+            double pipPt = (g_PipPoint > 0.0) ? g_PipPoint : Point;
             if(cmd == OP_BUY)
             {
-               double profitPips = (Bid - openP) / g_PipPoint;
+               double profitPips = (Bid - openP) / pipPt;
                if(profitPips >= BreakEvenLockPips && profitPips > 0)
                {
-                  double beLevel = NormalizeDouble(openP + (BreakEvenLockPips * g_PipPoint), Digits);
+                  double beLevel = NormalizeDouble(openP + (BreakEvenLockPips * pipPt), Digits);
                   if(curSL < beLevel && beLevel < Bid)
                   {
                      SafeOrderModify(ticket, openP, beLevel, curTP, 0, clrAqua);
@@ -6036,10 +6024,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
             }
             else if(cmd == OP_SELL)
             {
-               double profitPips = (openP - Ask) / g_PipPoint;
+               double profitPips = (openP - Ask) / pipPt;
                if(profitPips >= BreakEvenLockPips && profitPips > 0)
                {
-                  double beLevel = NormalizeDouble(openP - (BreakEvenLockPips * g_PipPoint), Digits);
+                  double beLevel = NormalizeDouble(openP - (BreakEvenLockPips * pipPt), Digits);
                   if((curSL > beLevel || curSL == 0.0) && beLevel > Ask)
                   {
                      SafeOrderModify(ticket, openP, beLevel, curTP, 0, clrAqua);
@@ -6055,6 +6043,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
    else if(sparam == PREFIX_GUI + "BTN_Toggle")
    {
       g_AutoTradingRuntimeActive = !g_AutoTradingRuntimeActive;
+      GlobalVariableSet("AutoTrading_Paused", g_AutoTradingRuntimeActive ? 0.0 : 1.0);
+      int h = FileOpen("autotrade_state.flag", FILE_WRITE|FILE_TXT);
+      if(h != INVALID_HANDLE)
+      {
+         FileWriteString(h, (g_AutoTradingRuntimeActive ? "ACTIVE" : "PAUSED") + "\nTimestamp=" + IntegerToString((int)TimeCurrent()));
+         FileClose(h);
+      }
       string toggleText = g_AutoTradingRuntimeActive ? "PAUSE EA" : "RESUME EA";
       color toggleColor = g_AutoTradingRuntimeActive ? ColorBtnToggleTrade : C'150,80,20';
       ObjectSetString(ChartID(), sparam, OBJPROP_TEXT, toggleText);
@@ -6652,10 +6647,9 @@ void OnTimer()
       RenderHUDDashboard();
    }
 
-   // Process Telegram trade alerts & risk guardian checks (handled on ticks)
-   // Telegram_ProcessTradeEvents();
-   // Telegram_CheckRiskGuardian();
-   // Telegram_CheckPropFirmRules();
+   // Process Telegram risk guardian & prop-firm protection watchdogs
+   Telegram_CheckRiskGuardian();
+   Telegram_CheckPropRiskGuardian();
 }
 
 

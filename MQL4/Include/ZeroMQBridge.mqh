@@ -36,6 +36,25 @@ string Zmq_JsonEscape(string str)
    return res;
 }
 
+int Zmq_GetLotDecimals(double lotStep)
+{
+   int stepDecimals = 0;
+   if(lotStep < 1.0 && lotStep > 0.0)
+   {
+      string stepStr = DoubleToString(lotStep, 8);
+      int dotPos = StringFind(stepStr, ".");
+      if(dotPos >= 0)
+      {
+         int lastNonZero = StringLen(stepStr) - 1;
+         while(lastNonZero > dotPos && StringGetCharacter(stepStr, lastNonZero) == '0')
+            lastNonZero--;
+         stepDecimals = lastNonZero - dotPos;
+      }
+   }
+   if(stepDecimals < 0) stepDecimals = 2;
+   return stepDecimals;
+}
+
 string Zmq_ExtractJsonString(const string json, const string key)
 {
    string search = "\"" + key + "\"";
@@ -47,8 +66,8 @@ string Zmq_ExtractJsonString(const string json, const string key)
    
    int i = colon + 1;
    int len = StringLen(json);
-   while(i < len && (StringGetChar(json, i) == ' ' || StringGetChar(json, i) == '\t')) i++;
-   if(i >= len || StringGetChar(json, i) != '\"') return "";
+   while(i < len && (StringGetCharacter(json, i) == ' ' || StringGetCharacter(json, i) == '\t')) i++;
+   if(i >= len || StringGetCharacter(json, i) != '\"') return "";
    
    int quoteStart = i;
    int quoteEnd = StringFind(json, "\"", quoteStart + 1);
@@ -69,12 +88,12 @@ double Zmq_ExtractJsonNumber(const string json, const string key, double default
    
    int i = colon + 1;
    int len = StringLen(json);
-   while(i < len && (StringGetChar(json, i) == ' ' || StringGetChar(json, i) == '\t' || StringGetChar(json, i) == '\"')) i++;
+   while(i < len && (StringGetCharacter(json, i) == ' ' || StringGetCharacter(json, i) == '\t' || StringGetCharacter(json, i) == '\"')) i++;
    
    int start = i;
    while(i < len)
    {
-      ushort ch = StringGetChar(json, i);
+      ushort ch = StringGetCharacter(json, i);
       if((ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+')
          i++;
       else
@@ -262,11 +281,24 @@ string Zmq_HandleCloseAll()
          continue;
       }
       
-      RefreshRates();
-      double closePrice = (type == OP_BUY) ? MarketInfo(OrderSymbol(), MODE_BID) : MarketInfo(OrderSymbol(), MODE_ASK);
+      string orderSym = OrderSymbol();
+      int digits = (int)MarketInfo(orderSym, MODE_DIGITS);
+      if(digits <= 0) digits = Digits;
       double pl = OrderProfit() + OrderSwap() + OrderCommission();
       
-      bool ok = OrderClose(OrderTicket(), OrderLots(), closePrice, 5, clrOrangeRed);
+      bool ok = false;
+      for(int r = 0; r < 3; r++)
+      {
+         RefreshRates();
+         double closePrice = (type == OP_BUY) ? MarketInfo(orderSym, MODE_BID) : MarketInfo(orderSym, MODE_ASK);
+         closePrice = NormalizeDouble(closePrice, digits);
+         ResetLastError();
+         ok = OrderClose(OrderTicket(), OrderLots(), closePrice, 5, clrOrangeRed);
+         if(ok) break;
+         int err = GetLastError();
+         if(err != 135 && err != 136 && err != 137 && err != 138 && err != 146) break;
+         Sleep(50);
+      }
       if(ok)
       {
          closed++;
@@ -522,6 +554,7 @@ string Zmq_HandleCloseSymbol(const string reqJson)
          if(ok) break;
          int err = GetLastError();
          if(err != 135 && err != 136 && err != 137 && err != 138 && err != 146) break;
+         Sleep(50);
       }
       if(ok)
       {
@@ -705,18 +738,24 @@ string Zmq_HandleCloseHalf(const string reqJson)
    if(lotStep <= 0.0) lotStep = 0.01;
    if(minLot <= 0.0) minLot = 0.01;
    
+   int lotDecimals = Zmq_GetLotDecimals(lotStep);
    double reqLots = Zmq_ExtractJsonNumber(reqJson, "lots", 0.0);
    double closeLots = 0.0;
    if(reqLots > 0.0 && reqLots < totalLots)
    {
-      closeLots = MathFloor(reqLots / lotStep) * lotStep;
+      closeLots = MathFloor((reqLots / lotStep) + 0.000001) * lotStep;
       if(closeLots < minLot) closeLots = minLot;
    }
    else
    {
-      closeLots = MathFloor((totalLots / 2.0) / lotStep) * lotStep;
+      closeLots = MathFloor(((totalLots / 2.0) / lotStep) + 0.000001) * lotStep;
       if(closeLots < minLot) closeLots = totalLots;
    }
+   if((totalLots - closeLots) > 0.000001 && (totalLots - closeLots) < minLot)
+   {
+      closeLots = totalLots;
+   }
+   closeLots = NormalizeDouble(closeLots, lotDecimals);
    
    int digits = (int)MarketInfo(orderSym, MODE_DIGITS);
    if(digits <= 0) digits = Digits;
@@ -733,6 +772,7 @@ string Zmq_HandleCloseHalf(const string reqJson)
       if(ok) break;
       lastErr = GetLastError();
       if(lastErr != 135 && lastErr != 136 && lastErr != 137 && lastErr != 138 && lastErr != 146) break;
+      Sleep(50);
    }
    
    if(ok)
@@ -743,8 +783,8 @@ string Zmq_HandleCloseHalf(const string reqJson)
       json += "\"status\":\"ok\",";
       json += "\"action\":\"CLOSE_HALF\",";
       json += "\"ticket\":" + IntegerToString(ticket) + ",";
-      json += "\"closed_lots\":" + DoubleToString(closeLots, 2) + ",";
-      json += "\"remaining_lots\":" + DoubleToString(totalLots - closeLots, 2) + ",";
+      json += "\"closed_lots\":" + DoubleToString(closeLots, lotDecimals) + ",";
+      json += "\"remaining_lots\":" + DoubleToString(totalLots - closeLots, lotDecimals) + ",";
       json += "\"realized_pl\":" + DoubleToString(estPL, 2);
       json += "}";
       return json;
@@ -846,8 +886,8 @@ string Zmq_HandleOpenOrder(const string reqJson)
    if(lotStep <= 0.0) lotStep = 0.01;
    
    lots = MathMax(minLot, MathMin(maxLot, lots));
-   lots = MathFloor(lots / lotStep) * lotStep;
-   int lotDecimals = (lotStep < 0.01) ? 3 : ((lotStep < 0.1) ? 2 : 1);
+   lots = MathFloor((lots / lotStep) + 0.000001) * lotStep;
+   int lotDecimals = Zmq_GetLotDecimals(lotStep);
    lots = NormalizeDouble(lots, lotDecimals);
    
    int digits = (int)MarketInfo(sym, MODE_DIGITS);
@@ -1248,6 +1288,12 @@ string Zmq_HandleResetSafeguards()
    GlobalVariableSet("Prop_Starting_Day_Equity", curEquity);
    GlobalVariableSet("Prop_Peak_Equity", curEquity);
    GlobalVariableSet("AutoTrading_Paused", 0.0);
+   int hFlag = FileOpen("autotrade_state.flag", FILE_WRITE|FILE_TXT);
+   if(hFlag != INVALID_HANDLE)
+   {
+      FileWriteString(hFlag, "ACTIVE\nTimestamp=" + IntegerToString((int)TimeCurrent()));
+      FileClose(hFlag);
+   }
    
    g_DayAnchorDate = TimeCurrent();
    g_StartingDayEquity = curEquity;
@@ -1615,8 +1661,12 @@ string Zmq_HandleGetBoost()
    {
       if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
       {
-         totalLots += OrderLots();
-         totalProfit += OrderProfit() + OrderSwap() + OrderCommission();
+         int oType = OrderType();
+         if(oType == OP_BUY || oType == OP_SELL)
+         {
+            totalLots += OrderLots();
+            totalProfit += OrderProfit() + OrderSwap() + OrderCommission();
+         }
       }
    }
    json += "\"total_lots\":" + DoubleToString(totalLots, 2) + ",";
@@ -1801,8 +1851,7 @@ void ZeroMQ_Poll()
    
    for(int iter = 0; iter < 10; iter++)
    {
-      uchar reqBuf[];
-      ArrayResize(reqBuf, 8192);
+      uchar reqBuf[8192];
       int bytesRecv = zmq_recv(g_zmqSocket.ref(), reqBuf, 8192, 1); // 1 = ZMQ_DONTWAIT
       if(bytesRecv <= 0) break;
       

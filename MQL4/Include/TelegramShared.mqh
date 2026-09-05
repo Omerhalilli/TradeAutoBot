@@ -48,25 +48,14 @@
 //+------------------------------------------------------------------+
 string Telegram_JsonEscape(string text)
 {
-   string result = "";
-   int len = StringLen(text);
-   for(int i = 0; i < len; i++)
-   {
-      ushort ch = StringGetCharacter(text, i);
-      switch(ch)
-      {
-         case '\"': result += "\\\""; break;
-         case '\\': result += "\\\\"; break;
-         case 0x08: result += "\\b"; break;
-         case 0x0C: result += "\\f"; break;
-         case '\n': result += "\\n"; break;
-         case '\r': result += "\\r"; break;
-         case '\t': result += "\\t"; break;
-         default:
-            result += ShortToString(ch);
-            break;
-      }
-   }
+   string result = text;
+   StringReplace(result, "\\", "\\\\");
+   StringReplace(result, "\"", "\\\"");
+   StringReplace(result, ShortToString(0x08), "\\b");
+   StringReplace(result, ShortToString(0x0C), "\\f");
+   StringReplace(result, "\r", "");
+   StringReplace(result, "\n", "\\n");
+   StringReplace(result, "\t", "\\t");
    return result;
 }
 
@@ -122,7 +111,6 @@ bool Telegram_SendMessage(const string botToken,
    uchar resultData[];
    string resultHeaders = "";
    
-   int payloadLen = StringLen(jsonPayload);
    StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
    
    // StringToCharArray includes trailing null character, strip it for HTTP body and file outbox
@@ -366,7 +354,7 @@ int Telegram_ParseUpdates(const string json, TelegramUpdateMessage &updates[])
       StringReplace(text, "\\/", "/");
       
       int sz = ArraySize(updates);
-      ArrayResize(updates, sz + 1);
+      ArrayResize(updates, sz + 1, 32);
       updates[sz].update_id   = updateId;
       updates[sz].sender_id   = senderId;
       updates[sz].text        = text;

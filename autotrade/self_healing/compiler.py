@@ -221,7 +221,13 @@ class SourceCompiler:
             if not os.path.exists(mq4):
                 continue
             log_path = mq4.replace(".mq4", "_compile.log")
-            cmd = f'wine "{metaeditor_cand}" /compile:"{mq4}" /log:"{log_path}"'
+            try:
+                win_mq4 = subprocess.check_output(["winepath", "-w", mq4], text=True).strip()
+                win_log = subprocess.check_output(["winepath", "-w", log_path], text=True).strip()
+            except Exception:
+                win_mq4 = mq4
+                win_log = log_path
+            cmd = f'DISPLAY=:1 wine "{metaeditor_cand}" /compile:"{win_mq4}" /log:"{win_log}"'
             try:
                 proc = subprocess.run(
                     cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15
