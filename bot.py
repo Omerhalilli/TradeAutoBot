@@ -116,6 +116,12 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             data = json.loads(content)
             chat_id = data.get("chat_id")
             text = data.get("text", "")
+            if text:
+                import re
+                text = re.sub(r"\?{4,}", "-----------------------------------", text)
+                text = text.replace("?? <b>SmartAutoTradeEA Pro Online", "🚀 <b>SmartAutoTradeEA Pro Online")
+                text = text.replace("ACTIVE ?", "ACTIVE ✅")
+                text = text.replace("PAUSED ?", "PAUSED ⏸️")
             parse_mode = data.get("parse_mode", "HTML")
             reply_markup = None
             if "reply_markup" in data:

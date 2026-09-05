@@ -21,13 +21,27 @@
 #define TG_DOOR         (ShortToString(0xD83D) + ShortToString(0xDEAA))
 #define TG_BULLET       (ShortToString(0x2022))
 #define TG_CAMERA       (ShortToString(0xD83D) + ShortToString(0xDCF8))
-#define TG_SHIELD       (ShortToString(0xD83D) + ShortToString(0xDEE1))
-#define TG_SCISSORS     (ShortToString(0x2702))
+#define TG_SHIELD       (ShortToString(0xD83D) + ShortToString(0xDEE1) + ShortToString(0xFE0F))
+#define TG_SCISSORS     (ShortToString(0x2702) + ShortToString(0xFE0F))
 #define TG_CHART_UP     (ShortToString(0xD83D) + ShortToString(0xDCC8))
 #define TG_CHART_DOWN   (ShortToString(0xD83D) + ShortToString(0xDCC9))
 #define TG_LOCK         (ShortToString(0xD83D) + ShortToString(0xDD12))
 #define TG_SIREN        (ShortToString(0xD83D) + ShortToString(0xDEA8))
 #define TG_DIVIDER      "-----------------------------------"
+#define TG_ROCKET       (ShortToString(0xD83D) + ShortToString(0xDE80))
+#define TG_MONEY        (ShortToString(0xD83D) + ShortToString(0xDCB0))
+#define TG_CHART        (ShortToString(0xD83D) + ShortToString(0xDCCA))
+#define TG_TARGET       (ShortToString(0xD83C) + ShortToString(0xDFAF))
+#define TG_USER         (ShortToString(0xD83D) + ShortToString(0xDC64))
+#define TG_CLOCK        (ShortToString(0x23F0))
+#define TG_TICKET       (ShortToString(0xD83C) + ShortToString(0xDFAB))
+#define TG_FIRE         (ShortToString(0xD83D) + ShortToString(0xDD25))
+#define TG_PAUSE        (ShortToString(0x23F8) + ShortToString(0xFE0F))
+#define TG_ARROW_UP     (ShortToString(0x2197))
+#define TG_ARROW_DOWN   (ShortToString(0x2198))
+#define TG_ARROW_RIGHT  (ShortToString(0x27A1))
+#define TG_CASH         (ShortToString(0xD83D) + ShortToString(0xDCB5))
+#define TG_CLIPBOARD    (ShortToString(0xD83D) + ShortToString(0xDCCB))
 
 //+------------------------------------------------------------------+
 //| Escape special JSON characters                                  |
@@ -49,7 +63,7 @@ string Telegram_JsonEscape(string text)
          case '\r': result += "\\r"; break;
          case '\t': result += "\\t"; break;
          default:
-            StringSetCharacter(result, StringLen(result), ch);
+            result += ShortToString(ch);
             break;
       }
    }
@@ -103,21 +117,6 @@ bool Telegram_SendMessage(const string botToken,
                                  activeChat, escapedText);
    }
    
-   // Fail-safe outbox buffer for external Python bot dispatcher
-   string uniqueOutName = StringFormat("tg_out_%u_%d.json", (uint)GetTickCount(), MathRand());
-   int uHandle = FileOpen(uniqueOutName, FILE_WRITE|FILE_TXT|FILE_ANSI);
-   if(uHandle != INVALID_HANDLE)
-   {
-      FileWriteString(uHandle, jsonPayload);
-      FileClose(uHandle);
-   }
-   int outHandle = FileOpen("telegram_outbox.json", FILE_WRITE|FILE_TXT|FILE_ANSI);
-   if(outHandle != INVALID_HANDLE)
-   {
-      FileWriteString(outHandle, jsonPayload);
-      FileClose(outHandle);
-   }
-   
    // Convert to UTF-8 char array
    uchar postData[];
    uchar resultData[];
@@ -126,11 +125,21 @@ bool Telegram_SendMessage(const string botToken,
    int payloadLen = StringLen(jsonPayload);
    StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
    
-   // StringToCharArray includes trailing null character, strip it for HTTP body
+   // StringToCharArray includes trailing null character, strip it for HTTP body and file outbox
    int dataSize = ArraySize(postData);
    if(dataSize > 0 && postData[dataSize - 1] == 0)
    {
       ArrayResize(postData, dataSize - 1);
+      dataSize--;
+   }
+
+   // Fail-safe outbox buffer for external Python bot dispatcher (pure UTF-8 binary)
+   string uniqueOutName = StringFormat("tg_out_%u_%d.json", (uint)GetTickCount(), MathRand());
+   int uHandle = FileOpen(uniqueOutName, FILE_WRITE|FILE_BIN);
+   if(uHandle != INVALID_HANDLE)
+   {
+      FileWriteArray(uHandle, postData, 0, dataSize);
+      FileClose(uHandle);
    }
    
    int attempts = MathMax(1, retryCount);
