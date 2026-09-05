@@ -82,5 +82,65 @@ class TestOutboxDeduplication(unittest.TestCase):
         self.assertEqual(len(os.listdir(self.test_dir)), 0)
 
 
+    def test_empty_chat_id_falls_back_to_allowed_chat_ids(self):
+        """When outbox file has empty chat_id, message should fall back to ALLOWED_CHAT_IDS."""
+        f1 = os.path.join(self.test_dir, "tg_out_fallback.json")
+        with open(f1, "w", encoding="utf-8") as f:
+            json.dump({"chat_id": "", "text": "🚀 <b>SmartAutoTradeEA Pro Online</b>", "parse_mode": "HTML"}, f)
+
+        mock_context = MagicMock()
+        mock_context.bot.send_message = AsyncMock()
+
+        with patch("bot.MT4_FILES_DIR", self.test_dir), patch("bot.ALLOWED_CHAT_IDS", [123456789]):
+            asyncio.run(outbox_alert_job(mock_context))
+
+        self.assertEqual(mock_context.bot.send_message.call_count, 1)
+        mock_context.bot.send_message.assert_called_once_with(
+            chat_id=123456789,
+            text="🚀 <b>SmartAutoTradeEA Pro Online</b>",
+            parse_mode=unittest.mock.ANY,
+            reply_markup=None,
+            disable_web_page_preview=True
+        )
+
+    def test_debounce_cache_pruning_in_place(self):
+        """Debounce cache pruning must evict expired entries (>60s) while preserving dict object identity."""
+        initial_dict_id = id(_recent_outbox_dispatches)
+        old_time = time.time() - 100.0
+        # Populate over 200 entries to trigger pruning
+        for i in range(205):
+            _recent_outbox_dispatches[(f"chat_{i}", f"sig_{i}")] = old_time
+        # Add 1 fresh entry
+        _recent_outbox_dispatches[("fresh_chat", "fresh_sig")] = time.time()
+
+        # Run outbox_alert_job with empty dir to trigger post-loop pruning
+        mock_context = MagicMock()
+        with patch("bot.MT4_FILES_DIR", self.test_dir):
+            asyncio.run(outbox_alert_job(mock_context))
+
+        self.assertEqual(id(_recent_outbox_dispatches), initial_dict_id, "Cache dictionary object identity must be preserved")
+        self.assertIn(("fresh_chat", "fresh_sig"), _recent_outbox_dispatches)
+        self.assertEqual(len(_recent_outbox_dispatches), 1)
+
+    def test_timeframe_specific_messages_not_suppressed(self):
+        """Messages for different timeframes on same symbol should both be dispatched."""
+        f1 = os.path.join(self.test_dir, "tg_out_h1.json")
+        f2 = os.path.join(self.test_dir, "tg_out_m15.json")
+        with open(f1, "w", encoding="utf-8") as f:
+            json.dump({"chat_id": "111", "text": "Online EURUSD (H1)", "parse_mode": "HTML"}, f)
+        with open(f2, "w", encoding="utf-8") as f:
+            json.dump({"chat_id": "111", "text": "Online EURUSD (M15)", "parse_mode": "HTML"}, f)
+
+        mock_context = MagicMock()
+        mock_context.bot.send_message = AsyncMock()
+
+        with patch("bot.MT4_FILES_DIR", self.test_dir):
+            asyncio.run(outbox_alert_job(mock_context))
+
+        self.assertEqual(mock_context.bot.send_message.call_count, 2)
+        self.assertEqual(len(os.listdir(self.test_dir)), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
+

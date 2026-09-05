@@ -141,14 +141,16 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 if kb_rows:
                     reply_markup = InlineKeyboardMarkup(kb_rows)
 
-            target_chats = [chat_id] if chat_id else ALLOWED_CHAT_IDS
+            target_chats = [chat_id] if (chat_id and str(chat_id).strip()) else ALLOWED_CHAT_IDS
+            curr_ts = time.time()
             for cid in target_chats:
                 cid_str = str(cid)
                 sig = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
                 cache_key = (cid_str, sig)
                 last_time = _recent_outbox_dispatches.get(cache_key, 0.0)
-                if (now_ts - last_time) < _OUTBOX_DEBOUNCE_WINDOW_SEC:
-                    logger.info(f"Debounce: Suppressed duplicate outbox alert to chat {cid} (sent {now_ts - last_time:.1f}s ago)")
+                diff = curr_ts - last_time
+                if diff >= 0.0 and diff < _OUTBOX_DEBOUNCE_WINDOW_SEC:
+                    logger.info(f"Debounce: Suppressed duplicate outbox alert to chat {cid} (sent {diff:.1f}s ago)")
                     continue
 
                 try:
@@ -172,10 +174,12 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             except Exception:
                 pass
 
-    # Prune old entries from debounce cache
+    # Prune old entries from debounce cache in-place to preserve dict identity
     if len(_recent_outbox_dispatches) > 200:
-        cutoff = now_ts - 60.0
-        _recent_outbox_dispatches = {k: v for k, v in _recent_outbox_dispatches.items() if v >= cutoff}
+        cutoff = time.time() - 60.0
+        stale_keys = [k for k, v in _recent_outbox_dispatches.items() if v < cutoff]
+        for k in stale_keys:
+            _recent_outbox_dispatches.pop(k, None)
 
 async def news_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Background recurring task to check and broadcast high-impact news reminders."""

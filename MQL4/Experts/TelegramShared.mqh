@@ -74,7 +74,7 @@ string Telegram_EscapeHtml(string text)
 //+------------------------------------------------------------------+
 //| Deduplication & Debounce Configuration                           |
 //+------------------------------------------------------------------+
-#define TG_DEBOUNCE_SLOTS 16
+#define TG_DEBOUNCE_SLOTS 32
 #define TG_DEFAULT_DEBOUNCE_SEC 10
 
 //+------------------------------------------------------------------+
@@ -111,7 +111,7 @@ bool Telegram_IsDuplicateMessage(const string text, const int debounceSeconds = 
       {
          uint entryHash = (uint)GlobalVariableGet(hKey);
          datetime entryTime = (datetime)GlobalVariableGet(tKey);
-         if(entryHash == hash && (now >= entryTime) && (now - entryTime) < debounceSeconds)
+         if(entryHash == hash && MathAbs((int)(now - entryTime)) < debounceSeconds)
          {
             return true; // Duplicate detected within debounce window
          }
@@ -124,6 +124,8 @@ bool Telegram_IsDuplicateMessage(const string text, const int debounceSeconds = 
    {
       slot = (int)GlobalVariableGet("TG_DEB_PTR") % TG_DEBOUNCE_SLOTS;
    }
+   if(slot < 0 || slot >= TG_DEBOUNCE_SLOTS) slot = 0;
+
    GlobalVariableSet(StringFormat("TG_DEB_H_%d", slot), (double)hash);
    GlobalVariableSet(StringFormat("TG_DEB_T_%d", slot), (double)now);
    GlobalVariableSet("TG_DEB_PTR", (double)((slot + 1) % TG_DEBOUNCE_SLOTS));
@@ -141,31 +143,19 @@ bool Telegram_SendMessage(const string botToken,
                           const int retryDelaySec = 2,
                           const string replyMarkupJson = "")
 {
+   if(StringLen(messageTextHtml) == 0) return false;
+
    // Debounce guard: suppress duplicate messages sent within the debounce window
    if(Telegram_IsDuplicateMessage(messageTextHtml, TG_DEFAULT_DEBOUNCE_SEC))
    {
-      Print("[Telegram] Debounce: duplicate message suppressed within 10-second window.");
+      Print("[Telegram] Debounce: duplicate message suppressed within debounce window.");
       return true;
    }
 
    string activeToken = botToken;
-   if(StringLen(activeToken) == 0)
-   {
-      Print("[Telegram] ERROR: Bot token is empty. Configure TelegramBotToken in EA inputs.");
-      return false;
-   }
    string activeChat = chatId;
-   if(StringLen(activeChat) == 0)
-   {
-      Print("[Telegram] ERROR: Chat ID is empty. Configure TelegramChatID in EA inputs.");
-      return false;
-   }
       
-   string url = "https://api.telegram.org/bot" + activeToken + "/sendMessage";
-   string headers = "Content-Type: application/json\r\n";
-   int timeout = 5000; // 5 seconds
-   
-   // Build JSON payload
+   // Build JSON payload (works with or without direct chat ID)
    string escapedText = Telegram_JsonEscape(messageTextHtml);
    string jsonPayload;
    if(StringLen(replyMarkupJson) > 0)
@@ -181,9 +171,6 @@ bool Telegram_SendMessage(const string botToken,
    
    // Convert to UTF-8 char array
    uchar postData[];
-   uchar resultData[];
-   string resultHeaders = "";
-   
    StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
    
    // StringToCharArray includes trailing null character, strip it for HTTP body and file outbox
@@ -194,45 +181,58 @@ bool Telegram_SendMessage(const string botToken,
       dataSize--;
    }
 
-   // --- STEP 1: Attempt direct WebRequest via MetaTrader 4 ---
+   // --- STEP 1: Attempt direct WebRequest via MetaTrader 4 ONLY if both bot token and chat ID are provided ---
    bool webRequestSent = false;
-   int attempts = MathMax(1, retryCount);
-   for(int attempt = 1; attempt <= attempts; attempt++)
+   if(StringLen(activeToken) > 0 && StringLen(activeChat) > 0)
    {
-      ResetLastError();
-      int res = WebRequest("POST", url, headers, timeout, postData, resultData, resultHeaders);
-      
-      if(res == 200)
+      string url = "https://api.telegram.org/bot" + activeToken + "/sendMessage";
+      string headers = "Content-Type: application/json\r\n";
+      int timeout = 5000; // 5 seconds
+      uchar resultData[];
+      string resultHeaders = "";
+
+      int attempts = MathMax(1, retryCount);
+      for(int attempt = 1; attempt <= attempts; attempt++)
       {
-         webRequestSent = true;
-         break; // Sent successfully via WebRequest!
+         ResetLastError();
+         int res = WebRequest("POST", url, headers, timeout, postData, resultData, resultHeaders);
+         
+         if(res == 200)
+         {
+            webRequestSent = true;
+            break; // Sent successfully via WebRequest!
+         }
+         
+         int err = GetLastError();
+         string responseBody = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
+         
+         // Common configuration error: WebRequest URL not whitelisted in terminal options
+         if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060)
+         {
+            PrintFormat("[Telegram] WebRequest not permitted in MT4 options (Error %d). Falling back to outbox for Python dispatcher.", err);
+            break; // Retrying will not fix configuration; fall back to outbox
+         }
+         
+         PrintFormat("[Telegram] Attempt %d/%d failed. HTTP Code: %d, Terminal Error: %d, Response: %s", 
+                     attempt, attempts, res, err, responseBody);
+         
+         // If client-side error (400 Bad Request, 401 Unauthorized, 404 Not Found), don't retry fruitlessly
+         if(res == 400 || res == 401 || res == 404)
+         {
+            Print("[Telegram] Aborting retries due to non-recoverable HTTP client error.");
+            break;
+         }
+         
+         // Backoff before retry
+         if(attempt < attempts)
+         {
+            Sleep(retryDelaySec * 1000);
+         }
       }
-      
-      int err = GetLastError();
-      string responseBody = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
-      
-      // Common configuration error: WebRequest URL not whitelisted in terminal options
-      if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060)
-      {
-         PrintFormat("[Telegram] WebRequest not permitted in MT4 options (Error %d). Falling back to outbox for Python dispatcher.", err);
-         break; // Retrying will not fix configuration; fall back to outbox
-      }
-      
-      PrintFormat("[Telegram] Attempt %d/%d failed. HTTP Code: %d, Terminal Error: %d, Response: %s", 
-                  attempt, attempts, res, err, responseBody);
-      
-      // If client-side error (400 Bad Request, 401 Unauthorized, 404 Not Found), don't retry fruitlessly
-      if(res == 400 || res == 401 || res == 404)
-      {
-         Print("[Telegram] Aborting retries due to non-recoverable HTTP client error.");
-         break;
-      }
-      
-      // Backoff before retry
-      if(attempt < attempts)
-      {
-         Sleep(retryDelaySec * 1000);
-      }
+   }
+   else
+   {
+      Print("[Telegram] Direct WebRequest skipped (token or chat ID empty in EA inputs). Queuing to outbox for Python dispatcher.");
    }
    
    if(webRequestSent)
@@ -240,14 +240,14 @@ bool Telegram_SendMessage(const string botToken,
       return true; // Sent successfully via WebRequest! DO NOT write outbox file to prevent duplicate messages!
    }
 
-   // --- STEP 2: Fallback to outbox buffer for external Python bot dispatcher ONLY if WebRequest failed ---
+   // --- STEP 2: Fallback to outbox buffer for external Python bot dispatcher ONLY if WebRequest failed or was skipped ---
    string uniqueOutName = StringFormat("tg_out_%u_%d.json", (uint)GetTickCount(), MathRand());
    int uHandle = FileOpen(uniqueOutName, FILE_WRITE|FILE_BIN);
    if(uHandle != INVALID_HANDLE)
    {
       FileWriteArray(uHandle, postData, 0, dataSize);
       FileClose(uHandle);
-      PrintFormat("[Telegram] WebRequest unavailable; queued message to fail-safe outbox for Python dispatcher: %s", uniqueOutName);
+      PrintFormat("[Telegram] Queued message to fail-safe outbox for Python dispatcher: %s", uniqueOutName);
       return true;
    }
    else

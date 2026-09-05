@@ -4732,7 +4732,7 @@ void Telegram_CaptureAndSendScreenshot(int ticket, string caption, string replyM
 //+------------------------------------------------------------------+
 //| Initialize Telegram Tracker and Drain Stale Updates              |
 //+------------------------------------------------------------------+
-void Telegram_InitTradeTracker(const bool isTimeframeChange = false)
+void Telegram_InitTradeTracker(const bool isChartReload = false)
 {
    ArrayResize(g_tgActiveTrades, 0);
    if(!EnableTelegramAlerts) return;
@@ -4758,18 +4758,18 @@ void Telegram_InitTradeTracker(const bool isTimeframeChange = false)
       g_tgActiveTrades[sz].magic     = OrderMagicNumber();
    }
    
-   // Suppress startup alert on simple timeframe change
-   if(isTimeframeChange) return;
+   // Suppress startup alert on chart reloads (timeframe change, parameters dialog, template load, recompile)
+   if(isChartReload) return;
 
    // Chart startup debounce guard: prevent duplicate startup alert if MT4 reloads chart/template in rapid succession
-   string startupKey = StringFormat("TG_STARTUP_%s_%d", Symbol(), MagicNumber);
+   string startupKey = StringFormat("TG_STARTUP_%s_%d_%d", Symbol(), Period(), MagicNumber);
    datetime now = TimeLocal();
    if(GlobalVariableCheck(startupKey))
    {
       datetime lastStartup = (datetime)GlobalVariableGet(startupKey);
-      if(now >= lastStartup && (now - lastStartup) < 10)
+      if(MathAbs((int)(now - lastStartup)) < 10)
       {
-         PrintFormat("[Telegram] Startup notification for %s debounced (last sent %d sec ago).", Symbol(), (int)(now - lastStartup));
+         PrintFormat("[Telegram] Startup notification for %s (%s) debounced (last sent %d sec ago).", Symbol(), EnumToString((ENUM_TIMEFRAMES)Period()), (int)(now - lastStartup));
          return;
       }
    }
@@ -6392,7 +6392,12 @@ void RenderKeltnerChannelsOverlay()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   bool isTimeframeChange = (UninitializeReason() == REASON_CHARTCHANGE);
+   int uReason = UninitializeReason();
+   bool isTimeframeChange = (uReason == REASON_CHARTCHANGE);
+   bool isChartReload     = (uReason == REASON_CHARTCHANGE || 
+                             uReason == REASON_PARAMETERS  || 
+                             uReason == REASON_TEMPLATE    || 
+                             uReason == REASON_RECOMPILE);
 
    // === STEP 1: INSTRUMENT SYMBOL METRICS ===
    InitializeSymbolMetrics();
@@ -6511,7 +6516,7 @@ int OnInit()
                   MinRequiredScore, RiskPercent);
    }
 
-   Telegram_InitTradeTracker(isTimeframeChange);
+   Telegram_InitTradeTracker(isChartReload);
    ZeroMQ_Init(InpZmqBindAddress);
 
    return(INIT_SUCCEEDED);
