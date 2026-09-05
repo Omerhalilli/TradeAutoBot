@@ -118,6 +118,8 @@ string Zmq_HandleGetAccount()
    json += "\"company\":\"" + Zmq_JsonEscape(AccountCompany()) + "\",";
    json += "\"server\":\"" + Zmq_JsonEscape(AccountServer()) + "\",";
    json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
+   json += "\"chart_symbol\":\"" + Zmq_JsonEscape(Symbol()) + "\",";
+   json += "\"chart_period\":\"" + EnumToString((ENUM_TIMEFRAMES)Period()) + "\",";
    
    bool tradeAllowed = IsTradeAllowed();
    bool expertEnabled = IsExpertEnabled();
@@ -333,6 +335,11 @@ string Zmq_ResolveSymbol(string genericName)
    StringToUpper(base);
    StringTrimLeft(base);
    StringTrimRight(base);
+   StringReplace(base, "/", "");
+   StringReplace(base, "\\", "");
+   StringReplace(base, "-", "");
+   StringReplace(base, ".", "");
+   StringReplace(base, " ", "");
    
    if(base == "CURRENT" || base == "") return Symbol();
    if(base == "GOLD") base = "XAUUSD";
@@ -500,11 +507,22 @@ string Zmq_HandleCloseSymbol(const string reqJson)
          continue;
       }
       
-      RefreshRates();
-      double closePrice = (type == OP_BUY) ? MarketInfo(OrderSymbol(), MODE_BID) : MarketInfo(OrderSymbol(), MODE_ASK);
+      int digits = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
+      if(digits <= 0) digits = Digits;
       double pl = OrderProfit() + OrderSwap() + OrderCommission();
       
-      bool ok = OrderClose(OrderTicket(), OrderLots(), closePrice, 5, clrOrangeRed);
+      bool ok = false;
+      for(int retries = 0; retries < 3; retries++)
+      {
+         RefreshRates();
+         double closePrice = (type == OP_BUY) ? MarketInfo(OrderSymbol(), MODE_BID) : MarketInfo(OrderSymbol(), MODE_ASK);
+         closePrice = NormalizeDouble(closePrice, digits);
+         ResetLastError();
+         ok = OrderClose(OrderTicket(), OrderLots(), closePrice, 5, clrOrangeRed);
+         if(ok) break;
+         int err = GetLastError();
+         if(err != 135 && err != 136 && err != 137 && err != 138 && err != 146) break;
+      }
       if(ok)
       {
          closed++;
@@ -516,10 +534,17 @@ string Zmq_HandleCloseSymbol(const string reqJson)
       }
    }
    
+   if(ticketParam > 0 && closed == 0)
+   {
+      string failMsg = (failed > 0) ? ("Failed to close order #" + IntegerToString(ticketParam) + ": " + Zmq_ErrorDescription(GetLastError())) : ("Order #" + IntegerToString(ticketParam) + " not found or already closed");
+      return "{\"status\":\"error\",\"action\":\"CLOSE_SYMBOL\",\"symbol\":\"" + targetSymbol + "\",\"ticket\":" + IntegerToString(ticketParam) + ",\"closed_count\":0,\"failed_count\":" + IntegerToString(failed) + ",\"message\":\"" + Zmq_JsonEscape(failMsg) + "\"}";
+   }
+   
    string json = "{";
    json += "\"status\":\"ok\",";
    json += "\"action\":\"CLOSE_SYMBOL\",";
    json += "\"symbol\":\"" + targetSymbol + "\",";
+   json += "\"ticket\":" + IntegerToString(ticketParam) + ",";
    json += "\"closed_count\":" + IntegerToString(closed) + ",";
    json += "\"failed_count\":" + IntegerToString(failed) + ",";
    json += "\"realized_pl\":" + DoubleToString(realizedPL, 2);
@@ -540,6 +565,7 @@ string Zmq_HandleModifySL(const string reqJson)
    }
    
    int modified = 0;
+   int lastErr = 0;
    int total = OrdersTotal();
    
    for(int i = 0; i < total; i++)
@@ -548,8 +574,21 @@ string Zmq_HandleModifySL(const string reqJson)
       if(ticket > 0 && OrderTicket() != ticket) continue;
       if(symbol != "" && !Zmq_SymbolsMatch(OrderSymbol(), symbol)) continue;
       
-      if(OrderModify(OrderTicket(), OrderOpenPrice(), newSL, OrderTakeProfit(), 0, clrGold))
+      int digits = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
+      if(digits <= 0) digits = Digits;
+      double slVal = (newSL > 0.0) ? NormalizeDouble(newSL, digits) : 0.0;
+      
+      ResetLastError();
+      if(OrderModify(OrderTicket(), OrderOpenPrice(), slVal, OrderTakeProfit(), 0, clrGold))
          modified++;
+      else
+         lastErr = GetLastError();
+   }
+   
+   if(ticket > 0 && modified == 0)
+   {
+      string desc = (lastErr != 0) ? Zmq_ErrorDescription(lastErr) : "Order not found or parameters unchanged";
+      return "{\"status\":\"error\",\"action\":\"MODIFY_SL\",\"modified_count\":0,\"error_code\":" + IntegerToString(lastErr) + ",\"message\":\"" + Zmq_JsonEscape(desc) + "\"}";
    }
    
    return "{\"status\":\"ok\",\"action\":\"MODIFY_SL\",\"modified_count\":" + IntegerToString(modified) + ",\"new_sl\":" + DoubleToString(newSL, 5) + "}";
@@ -568,6 +607,7 @@ string Zmq_HandleModifyTP(const string reqJson)
    }
    
    int modified = 0;
+   int lastErr = 0;
    int total = OrdersTotal();
    
    for(int i = 0; i < total; i++)
@@ -576,11 +616,69 @@ string Zmq_HandleModifyTP(const string reqJson)
       if(ticket > 0 && OrderTicket() != ticket) continue;
       if(symbol != "" && !Zmq_SymbolsMatch(OrderSymbol(), symbol)) continue;
       
-      if(OrderModify(OrderTicket(), OrderOpenPrice(), OrderStopLoss(), newTP, 0, clrDodgerBlue))
+      int digits = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
+      if(digits <= 0) digits = Digits;
+      double tpVal = (newTP > 0.0) ? NormalizeDouble(newTP, digits) : 0.0;
+      
+      ResetLastError();
+      if(OrderModify(OrderTicket(), OrderOpenPrice(), OrderStopLoss(), tpVal, 0, clrDodgerBlue))
          modified++;
+      else
+         lastErr = GetLastError();
+   }
+   
+   if(ticket > 0 && modified == 0)
+   {
+      string desc = (lastErr != 0) ? Zmq_ErrorDescription(lastErr) : "Order not found or parameters unchanged";
+      return "{\"status\":\"error\",\"action\":\"MODIFY_TP\",\"modified_count\":0,\"error_code\":" + IntegerToString(lastErr) + ",\"message\":\"" + Zmq_JsonEscape(desc) + "\"}";
    }
    
    return "{\"status\":\"ok\",\"action\":\"MODIFY_TP\",\"modified_count\":" + IntegerToString(modified) + ",\"new_tp\":" + DoubleToString(newTP, 5) + "}";
+}
+
+string Zmq_HandleModifyOrder(const string reqJson)
+{
+   int ticket = (int)Zmq_ExtractJsonNumber(reqJson, "ticket", 0);
+   string symbol = Zmq_ExtractJsonString(reqJson, "symbol");
+   double newSL = Zmq_ExtractJsonNumber(reqJson, "sl", -1.0);
+   double newTP = Zmq_ExtractJsonNumber(reqJson, "tp", -1.0);
+   
+   if(ticket == 0 && StringToInteger(symbol) > 0)
+   {
+      ticket = (int)StringToInteger(symbol);
+      symbol = "";
+   }
+   
+   int modified = 0;
+   int lastErr = 0;
+   int total = OrdersTotal();
+   
+   for(int i = 0; i < total; i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(ticket > 0 && OrderTicket() != ticket) continue;
+      if(symbol != "" && !Zmq_SymbolsMatch(OrderSymbol(), symbol)) continue;
+      
+      int digits = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
+      if(digits <= 0) digits = Digits;
+      
+      double setSL = (newSL >= 0.0) ? NormalizeDouble(newSL, digits) : OrderStopLoss();
+      double setTP = (newTP >= 0.0) ? NormalizeDouble(newTP, digits) : OrderTakeProfit();
+      
+      ResetLastError();
+      if(OrderModify(OrderTicket(), OrderOpenPrice(), setSL, setTP, 0, clrGold))
+         modified++;
+      else
+         lastErr = GetLastError();
+   }
+   
+   if(ticket > 0 && modified == 0)
+   {
+      string desc = (lastErr != 0) ? Zmq_ErrorDescription(lastErr) : "Order not found or parameters unchanged";
+      return "{\"status\":\"error\",\"action\":\"MODIFY_ORDER\",\"modified_count\":0,\"error_code\":" + IntegerToString(lastErr) + ",\"message\":\"" + Zmq_JsonEscape(desc) + "\"}";
+   }
+   
+   return "{\"status\":\"ok\",\"action\":\"MODIFY_ORDER\",\"modified_count\":" + IntegerToString(modified) + ",\"new_sl\":" + DoubleToString(newSL, 5) + ",\"new_tp\":" + DoubleToString(newTP, 5) + "}";
 }
 
 string Zmq_HandleCloseHalf(const string reqJson)
@@ -605,31 +703,288 @@ string Zmq_HandleCloseHalf(const string reqJson)
    double minLot = MarketInfo(orderSym, MODE_MINLOT);
    double lotStep = MarketInfo(orderSym, MODE_LOTSTEP);
    if(lotStep <= 0.0) lotStep = 0.01;
+   if(minLot <= 0.0) minLot = 0.01;
    
-   double halfLots = MathFloor((totalLots / 2.0) / lotStep) * lotStep;
-   if(halfLots < minLot) halfLots = totalLots;
+   double reqLots = Zmq_ExtractJsonNumber(reqJson, "lots", 0.0);
+   double closeLots = 0.0;
+   if(reqLots > 0.0 && reqLots < totalLots)
+   {
+      closeLots = MathFloor(reqLots / lotStep) * lotStep;
+      if(closeLots < minLot) closeLots = minLot;
+   }
+   else
+   {
+      closeLots = MathFloor((totalLots / 2.0) / lotStep) * lotStep;
+      if(closeLots < minLot) closeLots = totalLots;
+   }
    
-   RefreshRates();
-   double closePrice = (type == OP_BUY) ? MarketInfo(orderSym, MODE_BID) : MarketInfo(orderSym, MODE_ASK);
-   double plRatio = (totalLots > 0.0) ? (halfLots / totalLots) : 1.0;
-   double estPL = (OrderProfit() + OrderSwap() + OrderCommission()) * plRatio;
+   int digits = (int)MarketInfo(orderSym, MODE_DIGITS);
+   if(digits <= 0) digits = Digits;
    
-   bool ok = OrderClose(ticket, halfLots, closePrice, 5, clrOrange);
+   bool ok = false;
+   int lastErr = 0;
+   for(int r = 0; r < 3; r++)
+   {
+      RefreshRates();
+      double closePrice = (type == OP_BUY) ? MarketInfo(orderSym, MODE_BID) : MarketInfo(orderSym, MODE_ASK);
+      closePrice = NormalizeDouble(closePrice, digits);
+      ResetLastError();
+      ok = OrderClose(ticket, closeLots, closePrice, 5, clrOrange);
+      if(ok) break;
+      lastErr = GetLastError();
+      if(lastErr != 135 && lastErr != 136 && lastErr != 137 && lastErr != 138 && lastErr != 146) break;
+   }
+   
    if(ok)
    {
+      double plRatio = (totalLots > 0.0) ? (closeLots / totalLots) : 1.0;
+      double estPL = (OrderProfit() + OrderSwap() + OrderCommission()) * plRatio;
       string json = "{";
       json += "\"status\":\"ok\",";
       json += "\"action\":\"CLOSE_HALF\",";
       json += "\"ticket\":" + IntegerToString(ticket) + ",";
-      json += "\"closed_lots\":" + DoubleToString(halfLots, 2) + ",";
-      json += "\"remaining_lots\":" + DoubleToString(totalLots - halfLots, 2) + ",";
+      json += "\"closed_lots\":" + DoubleToString(closeLots, 2) + ",";
+      json += "\"remaining_lots\":" + DoubleToString(totalLots - closeLots, 2) + ",";
       json += "\"realized_pl\":" + DoubleToString(estPL, 2);
       json += "}";
       return json;
    }
    else
    {
-      return "{\"status\":\"error\",\"message\":\"OrderClose failed: Error " + IntegerToString(GetLastError()) + "\"}";
+      string desc = Zmq_ErrorDescription(lastErr);
+      return "{\"status\":\"error\",\"action\":\"CLOSE_HALF\",\"ticket\":" + IntegerToString(ticket) + ",\"error_code\":" + IntegerToString(lastErr) + ",\"message\":\"OrderClose failed: " + Zmq_JsonEscape(desc) + "\"}";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Zmq_ErrorDescription: Human-readable error dictionary           |
+//+------------------------------------------------------------------+
+string Zmq_ErrorDescription(int err)
+{
+   switch(err)
+   {
+      case 0:    return "No error";
+      case 1:    return "No error, but trade result unknown";
+      case 2:    return "Common error";
+      case 3:    return "Invalid trade parameters";
+      case 4:    return "Trade server is busy. Retrying...";
+      case 5:    return "Old version of client terminal";
+      case 6:    return "No connection with trade server";
+      case 7:    return "Not enough rights";
+      case 8:    return "Too frequent requests";
+      case 9:    return "Malfunctional trade operation";
+      case 64:   return "Account disabled";
+      case 65:   return "Invalid account";
+      case 128:  return "Trade timeout";
+      case 129:  return "Invalid price";
+      case 130:  return "Invalid stops (SL/TP distance too close or invalid for broker)";
+      case 131:  return "Invalid trade volume / lot size";
+      case 132:  return "Market is closed (Weekend / Holiday). FX pairs trade Mon-Fri";
+      case 133:  return "Trade is disabled by broker";
+      case 134:  return "Not enough money / margin to complete trade";
+      case 135:  return "Price changed (requote)";
+      case 136:  return "Off quotes";
+      case 137:  return "Broker is busy";
+      case 138:  return "Requote";
+      case 139:  return "Order is locked";
+      case 140:  return "Long positions only allowed";
+      case 141:  return "Too many requests";
+      case 145:  return "Modification denied: order is too close to market";
+      case 146:  return "Trade context is busy";
+      case 147:  return "Expirations are denied by broker";
+      case 148:  return "Amount of open and pending orders reached broker limit";
+      case 4051: return "Invalid function parameter value";
+      case 4062: return "Cannot open file";
+      case 4106: return "Unknown symbol";
+      case 4107: return "Invalid price parameter for trade function";
+      case 4108: return "Invalid ticket";
+      case 4109: return "Trade not allowed! Enable 'AutoTrading' button in MT4 toolbar and F7 'Allow live trading'";
+      case 4110: return "Longs not allowed";
+      case 4111: return "Shorts not allowed";
+      default:   return "Broker error code " + IntegerToString(err);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Zmq_HandleOpenOrder: Market & Pending Order Execution            |
+//+------------------------------------------------------------------+
+string Zmq_HandleOpenOrder(const string reqJson)
+{
+   if(!IsExpertEnabled())
+   {
+      return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":4109,\"message\":\"MT4 AutoTrading is OFF! Click the 'AutoTrading' button in the MT4 toolbar.\"}";
+   }
+   if(!IsTradeAllowed())
+   {
+      return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":4109,\"message\":\"Live trading not allowed! Press F7 -> Common -> Check 'Allow live trading'.\"}";
+   }
+
+   string rawSym = Zmq_ExtractJsonString(reqJson, "symbol");
+   if(rawSym == "" || rawSym == "CURRENT") rawSym = Symbol();
+   string sym = Zmq_ResolveSymbol(rawSym);
+   
+   // Ensure symbol is active in Market Watch
+   SymbolSelect(sym, true);
+   
+   string cmdStr = Zmq_ExtractJsonString(reqJson, "cmd");
+   StringToUpper(cmdStr);
+   int cmd = OP_BUY;
+   if(cmdStr == "SELL" || cmdStr == "1" || cmdStr == "OP_SELL")
+      cmd = OP_SELL;
+   else if(cmdStr == "BUY" || cmdStr == "0" || cmdStr == "OP_BUY")
+      cmd = OP_BUY;
+      
+   double lots = Zmq_ExtractJsonNumber(reqJson, "lots", 0.01);
+   if(lots <= 0.0) lots = 0.01;
+   
+   // Normalize lot size to broker specifications
+   double minLot  = MarketInfo(sym, MODE_MINLOT);
+   double maxLot  = MarketInfo(sym, MODE_MAXLOT);
+   double lotStep = MarketInfo(sym, MODE_LOTSTEP);
+   if(minLot <= 0.0) minLot = 0.01;
+   if(maxLot <= 0.0) maxLot = 100.0;
+   if(lotStep <= 0.0) lotStep = 0.01;
+   
+   lots = MathMax(minLot, MathMin(maxLot, lots));
+   lots = MathFloor(lots / lotStep) * lotStep;
+   int lotDecimals = (lotStep < 0.01) ? 3 : ((lotStep < 0.1) ? 2 : 1);
+   lots = NormalizeDouble(lots, lotDecimals);
+   
+   int digits = (int)MarketInfo(sym, MODE_DIGITS);
+   if(digits <= 0) digits = Digits;
+   
+   double sl = Zmq_ExtractJsonNumber(reqJson, "sl", 0.0);
+   double tp = Zmq_ExtractJsonNumber(reqJson, "tp", 0.0);
+   double slPips = Zmq_ExtractJsonNumber(reqJson, "sl_pips", 0.0);
+   double tpPips = Zmq_ExtractJsonNumber(reqJson, "tp_pips", 0.0);
+   
+   double point = MarketInfo(sym, MODE_POINT);
+   if(point <= 0.0) point = Point;
+   double pipPoint = (digits == 3 || digits == 5) ? point * 10.0 : point;
+   if(pipPoint <= 0.0) pipPoint = point;
+
+   int magic = (int)Zmq_ExtractJsonNumber(reqJson, "magic", 8882026);
+   int slippage = (int)Zmq_ExtractJsonNumber(reqJson, "slippage", 5);
+   string comment = Zmq_ExtractJsonString(reqJson, "comment");
+   if(comment == "") comment = "TelegramTrade";
+   
+   color arrowClr = (cmd == OP_BUY) ? clrLimeGreen : clrTomato;
+   
+   double reqPrice = Zmq_ExtractJsonNumber(reqJson, "price", 0.0);
+   
+   int attempts = 0;
+   int ticket = -1;
+   int lastErr = 0;
+   double fillPrice = 0.0;
+   double finalSL = sl;
+   double finalTP = tp;
+   
+   while(attempts < 3 && ticket < 0)
+   {
+      attempts++;
+      RefreshRates();
+      double ask = MarketInfo(sym, MODE_ASK);
+      double bid = MarketInfo(sym, MODE_BID);
+      
+      if(ask <= 0.0 || bid <= 0.0)
+      {
+         return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":132,\"message\":\"No live quotes for " + Zmq_JsonEscape(sym) + ". Market is Closed (Weekend / Holiday).\"}";
+      }
+      
+      double price = (cmd == OP_BUY) ? ask : bid;
+      if(reqPrice > 0.0) price = reqPrice;
+      price = NormalizeDouble(price, digits);
+      
+      // Calculate relative SL/TP if passed as pips
+      finalSL = sl;
+      finalTP = tp;
+      if(slPips > 0.0 && finalSL == 0.0)
+      {
+         finalSL = (cmd == OP_BUY) ? (price - (slPips * pipPoint)) : (price + (slPips * pipPoint));
+      }
+      if(tpPips > 0.0 && finalTP == 0.0)
+      {
+         finalTP = (cmd == OP_BUY) ? (price + (tpPips * pipPoint)) : (price - (tpPips * pipPoint));
+      }
+      // Auto-detect small pip distances if entered as small integer (e.g. sl=20 on EURUSD 1.08)
+      if(finalSL > 0.0 && finalSL < 500.0)
+      {
+         if((cmd == OP_BUY && finalSL > price) || (price > 0.1 && finalSL < price * 0.2))
+         {
+            finalSL = (cmd == OP_BUY) ? (price - (finalSL * pipPoint)) : (price + (finalSL * pipPoint));
+         }
+      }
+      if(finalTP > 0.0 && finalTP < 500.0)
+      {
+         if((cmd == OP_SELL && finalTP > price) || (price > 0.1 && finalTP < price * 0.2))
+         {
+            finalTP = (cmd == OP_BUY) ? (price + (finalTP * pipPoint)) : (price - (finalTP * pipPoint));
+         }
+      }
+      if(finalSL > 0.0) finalSL = NormalizeDouble(finalSL, digits);
+      if(finalTP > 0.0) finalTP = NormalizeDouble(finalTP, digits);
+      
+      ResetLastError();
+      ticket = OrderSend(sym, cmd, lots, price, slippage, finalSL, finalTP, comment, magic, 0, arrowClr);
+      
+      if(ticket > 0)
+      {
+         fillPrice = price;
+         if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+            fillPrice = OrderOpenPrice();
+         break;
+      }
+      
+      lastErr = GetLastError();
+      
+      // ECN fallback: If initial OrderSend fails due to invalid stops (Error 130), send 0/0 then modify
+      if(lastErr == 130 && (finalSL > 0.0 || finalTP > 0.0))
+      {
+         RefreshRates();
+         price = (cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
+         ticket = OrderSend(sym, cmd, lots, price, slippage, 0, 0, comment, magic, 0, arrowClr);
+         if(ticket > 0)
+         {
+            fillPrice = price;
+            if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+               fillPrice = OrderOpenPrice();
+            bool modRes = OrderModify(ticket, fillPrice, finalSL, finalTP, 0, arrowClr);
+            if(!modRes) PrintFormat("[ZeroMQ ECN] OrderModify warning: %d", GetLastError());
+            break;
+         }
+         lastErr = GetLastError();
+      }
+      
+      // Temporary retryable conditions
+      if(lastErr == 4 || lastErr == 135 || lastErr == 136 || lastErr == 137 || lastErr == 138 || lastErr == 146)
+      {
+         RefreshRates();
+      }
+      else
+      {
+         break;
+      }
+   }
+   
+   if(ticket > 0)
+   {
+      string json = "{";
+      json += "\"status\":\"ok\",";
+      json += "\"action\":\"OPEN_ORDER\",";
+      json += "\"ticket\":" + IntegerToString(ticket) + ",";
+      json += "\"symbol\":\"" + Zmq_JsonEscape(sym) + "\",";
+      json += "\"cmd\":\"" + (cmd == OP_BUY ? "BUY" : "SELL") + "\",";
+      json += "\"lots\":" + DoubleToString(lots, lotDecimals) + ",";
+      json += "\"price\":" + DoubleToString(fillPrice, digits) + ",";
+      json += "\"sl\":" + DoubleToString(finalSL, digits) + ",";
+      json += "\"tp\":" + DoubleToString(finalTP, digits);
+      json += "}";
+      return json;
+   }
+   else
+   {
+      string desc = Zmq_ErrorDescription(lastErr);
+      return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":" + IntegerToString(lastErr) + ",\"message\":\"OrderSend failed: " + Zmq_JsonEscape(desc) + "\"}";
    }
 }
 
@@ -1309,8 +1664,10 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleCloseAll();
    if(action == "CLOSE_SYMBOL" || action == "CLOSE")
       return Zmq_HandleCloseSymbol(reqStr);
-   if(action == "CLOSE_HALF" || action == "HALF" || action == "CLOSEHALF")
+   if(action == "CLOSE_HALF" || action == "HALF" || action == "CLOSEHALF" || action == "CLOSE_PARTIAL")
       return Zmq_HandleCloseHalf(reqStr);
+   if(action == "MODIFY_ORDER" || action == "MODIFY_STOPS")
+      return Zmq_HandleModifyOrder(reqStr);
    if(action == "MODIFY_SL")
       return Zmq_HandleModifySL(reqStr);
    if(action == "MODIFY_TP")
@@ -1337,10 +1694,53 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleGetBoost();
    if(action == "RESET_SAFEGUARDS" || action == "RESET_PROP" || action == "RESET")
       return Zmq_HandleResetSafeguards();
+   if(action == "OPEN_ORDER" || action == "ORDER_SEND" || action == "BUY" || action == "SELL")
+      return Zmq_HandleOpenOrder(reqStr);
+   if(action == "CLOSE_TICKET")
+      return Zmq_HandleCloseSymbol(reqStr);
+   if(action == "DEBUG_CHART")
+   {
+      string json = "{";
+      json += "\"status\":\"ok\",";
+      json += "\"dpi\":" + IntegerToString(TerminalInfoInteger(TERMINAL_SCREEN_DPI)) + ",";
+      json += "\"chart_w\":" + IntegerToString((int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS)) + ",";
+      json += "\"chart_h\":" + IntegerToString((int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS)) + ",";
+      json += "\"objects\":[";
+      int tot = ObjectsTotal();
+      int found = 0;
+      for(int i = 0; i < tot; i++)
+      {
+         string oName = ObjectName(0, i);
+         if(StringFind(oName, "SmartEA_HUD_") >= 0)
+         {
+            if(found > 0) json += ",";
+            json += "{\"name\":\"" + oName + "\",";
+            json += "\"type\":" + IntegerToString((int)ObjectGetInteger(0, oName, OBJPROP_TYPE)) + ",";
+            json += "\"x\":" + IntegerToString((int)ObjectGetInteger(0, oName, OBJPROP_XDISTANCE)) + ",";
+            json += "\"y\":" + IntegerToString((int)ObjectGetInteger(0, oName, OBJPROP_YDISTANCE)) + ",";
+            json += "\"w\":" + IntegerToString((int)ObjectGetInteger(0, oName, OBJPROP_XSIZE)) + ",";
+            json += "\"h\":" + IntegerToString((int)ObjectGetInteger(0, oName, OBJPROP_YSIZE)) + ",";
+            json += "\"font\":\"" + ObjectGetString(0, oName, OBJPROP_FONT) + "\",";
+            json += "\"fontsize\":" + IntegerToString((int)ObjectGetInteger(0, oName, OBJPROP_FONTSIZE)) + ",";
+            json += "\"text\":\"" + Zmq_JsonEscape(ObjectGetString(0, oName, OBJPROP_TEXT)) + "\"}";
+            found++;
+         }
+      }
+      json += "]}";
+      return json;
+   }
+   if(action == "PURGE_GUI")
+   {
+      ObjectsDeleteAll(ChartID(), "SmartEA_HUD_");
+      ChartRedraw(ChartID());
+      return "{\"status\":\"ok\",\"action\":\"PURGE_GUI\",\"message\":\"HUD objects purged\"}";
+   }
    if(action == "RELOAD_EA" || action == "RELOAD")
    {
-      ChartSetSymbolPeriod(0, Symbol(), (ENUM_TIMEFRAMES)Period());
-      return "{\"status\":\"ok\",\"action\":\"RELOAD_EA\",\"message\":\"EA reloaded from disk\"}";
+      ENUM_TIMEFRAMES curTf = (ENUM_TIMEFRAMES)Period();
+      ENUM_TIMEFRAMES tempTf = (curTf == PERIOD_H1) ? PERIOD_H4 : PERIOD_H1;
+      ChartSetSymbolPeriod(0, Symbol(), tempTf);
+      return "{\"status\":\"ok\",\"action\":\"RELOAD_EA\",\"message\":\"Chart timeframe toggled to force EA reload\"}";
    }
       
    return "{\"status\":\"error\",\"message\":\"Unknown action: " + Zmq_JsonEscape(action) + "\"}";
@@ -1402,19 +1802,24 @@ void ZeroMQ_Poll()
    for(int iter = 0; iter < 10; iter++)
    {
       uchar reqBuf[];
-      ArrayResize(reqBuf, 4096);
-      int bytesRecv = zmq_recv(g_zmqSocket.ref(), reqBuf, 4096, 1); // 1 = ZMQ_DONTWAIT
+      ArrayResize(reqBuf, 8192);
+      int bytesRecv = zmq_recv(g_zmqSocket.ref(), reqBuf, 8192, 1); // 1 = ZMQ_DONTWAIT
       if(bytesRecv <= 0) break;
       
       string reqStr = CharArrayToString(reqBuf, 0, bytesRecv, CP_UTF8);
       string replyStr = Zmq_ProcessRequest(reqStr);
+      if(replyStr == "") replyStr = "{\"status\":\"error\",\"message\":\"Empty response from EA\"}";
       
       uchar replyBuf[];
       StringToCharArray(replyStr, replyBuf, 0, WHOLE_ARRAY, CP_UTF8);
       int sendLen = ArraySize(replyBuf) - 1;
       if(sendLen < 0) sendLen = 0;
       
-      zmq_send(g_zmqSocket.ref(), replyBuf, sendLen, 0);
+      int bytesSent = zmq_send(g_zmqSocket.ref(), replyBuf, sendLen, 0);
+      if(bytesSent < 0)
+      {
+         PrintFormat("[ZeroMQ ERROR] Failed to send reply (Error: %d)", zmq_errno());
+      }
    }
 }
 //+------------------------------------------------------------------+

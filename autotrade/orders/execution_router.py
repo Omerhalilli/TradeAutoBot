@@ -94,8 +94,8 @@ class ExecutionRouter:
         try:
             from zmq_client import zmq_client
             loop = asyncio.get_running_loop()
-            if lots is not None:
-                res = await loop.run_in_executor(None, lambda: zmq_client.close_half(ticket=ticket))
+            if lots is not None and lots > 0.0:
+                res = await loop.run_in_executor(None, lambda: zmq_client.close_partial(ticket=ticket, lots=lots))
             else:
                 res = await loop.run_in_executor(
                     None,
@@ -128,10 +128,11 @@ class ExecutionRouter:
         try:
             from zmq_client import zmq_client
             loop = asyncio.get_running_loop()
-            res_sl = await loop.run_in_executor(None, lambda: zmq_client.modify_sl(ticket=ticket, sl=sl))
-            if tp > 0:
-                await loop.run_in_executor(None, lambda: zmq_client.modify_tp(ticket=ticket, tp=tp))
-            return res_sl
+            res = await loop.run_in_executor(
+                None,
+                lambda: zmq_client.modify_order(ticket=ticket, sl=sl, tp=tp)
+            )
+            return res
         except Exception as ex:
             logger.error(f"Failed to modify SL/TP on #{ticket}: {ex}")
             return {"status": "error", "message": str(ex)}

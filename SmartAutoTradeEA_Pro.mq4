@@ -293,7 +293,8 @@ input double             VolatilitySpikeATR_Ratio      = 2.8;               // B
 //--- [08. VISUAL DISPLAY & HUD PANEL]
 input string             Sec_Visuals                   = "=== [08] ON-CHART GUI & VISUALS ===";
 input bool               ShowDashboardPanel            = true;              // Render On-Chart Heads-Up Display (HUD)
-input ENUM_BASE_CORNER   HUD_Corner                    = CORNER_LEFT_UPPER; // HUD Display Corner Orientation// HUD Display Corner Orientation
+input double             HUD_Scale                     = 1.0;               // HUD Scaling Factor (0.7 - 2.5, 0 = Auto-Scale)
+input ENUM_BASE_CORNER   HUD_Corner                    = CORNER_LEFT_UPPER; // HUD Display Corner Orientation
 input int                HUD_X_Offset                  = 15;                // Horizontal Margin from Corner                // Horizontal Pixel Margin
 input int                HUD_Y_Offset                  = 25;                // Vertical Margin from Top                // Vertical Pixel Margin
 input color              HUD_BgColor                   = C'22,25,32';       // HUD Panel Canvas Background Color
@@ -378,8 +379,8 @@ input bool               EnableEmailNotifications      = false;             // D
 input bool               EnableDiskFileAuditLogging    = true;              // Maintain Local CSV Trading Audit Log
 input string             AuditLogFilename              = "SmartEA_Audit.csv";// Audit CSV Filename
 input bool               EnableTelegramAlerts          = true;              // Send Real-Time Telegram Notifications
-input string             TelegramBotToken              = "";                // Telegram Bot Token (from @BotFather)
-input string             TelegramChatID                = "";                // Telegram Chat ID (from @userinfobot)
+input string             TelegramBotToken              = "your_telegram_bot_token_here"; // Telegram Bot Token (from @BotFather)
+input string             TelegramChatID                = "123456789";                                      // Telegram Chat ID (from @userinfobot)
 input bool               EnableTelegramCommands        = true;              // Enable Two-Way Remote Bot Commands (/status, /positions, etc)
 input bool               TelegramSendScreenshots       = true;              // Send Chart Screenshot on Trade Entry
 input bool               TelegramNotifyOpen            = true;              // Notify on Trade Open
@@ -2878,13 +2879,137 @@ void RenderHUDDashboard()
 {
    if(!ShowDashboardPanel) return;
 
+   // 1. Chart Resolution & DPI Scaling Engine
+   int chartWidth  = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int chartHeight = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   if(chartWidth <= 0)  chartWidth  = 1280;
+   if(chartHeight <= 0) chartHeight = 800;
 
-   int startX = HUD_X_Offset;
-   int startY = HUD_Y_Offset;
-   int rowHeight = 18;
-   int panelWidth = 285;
-   int panelHeight = 260;
+   int dpi = (int)TerminalInfoInteger(TERMINAL_SCREEN_DPI);
+   if(dpi <= 0) dpi = 96;
 
+   double dpiScale = (double)dpi / 96.0;
+   if(dpiScale < 0.75) dpiScale = 0.75;
+   if(dpiScale > 3.00) dpiScale = 3.00;
+
+   // Base design dimensions (calibrated for 96 DPI baseline)
+   double basePanelWidth = 305.0;
+   double baseRowHeight  = 17.0;
+   double basePadX       = 8.0;
+   double basePadY       = 6.0;
+
+   // Pre-evaluate lock reason notice to compute exact row count and height
+   int myOrders = 0;
+   for(int k = OrdersTotal() - 1; k >= 0; k--)
+   {
+      if(OrderSelect(k, SELECT_BY_POS, MODE_TRADES))
+      {
+         if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber) myOrders++;
+      }
+   }
+   string autoTradeStatus = "";
+   color autoTradeClr = clrRed;
+   string lockReasonNotice = "";
+   
+   if(!IsExpertEnabled())
+   {
+      autoTradeStatus = "LOCKED (AutoTrading OFF)";
+      autoTradeClr = clrRed;
+      lockReasonNotice = "ACTION: Click MT4 'AutoTrading' button in toolbar";
+   }
+   else if(!IsTradeAllowed())
+   {
+      autoTradeStatus = "LOCKED (No Live Trade)";
+      autoTradeClr = clrRed;
+      lockReasonNotice = "ACTION: F7 -> Common -> Check 'Allow live trading'";
+   }
+   else if(g_PropLockoutActive || g_DailyLossCircuitTripped)
+   {
+      autoTradeStatus = "LOCKED (Risk Limit)";
+      autoTradeClr = clrRed;
+      lockReasonNotice = "PROTECTION: Drawdown limit reached";
+   }
+   else if(!g_AutoTradingRuntimeActive)
+   {
+      autoTradeStatus = "PAUSED";
+      autoTradeClr = clrOrange;
+   }
+   else
+   {
+      autoTradeStatus = "ACTIVE [RUNNING]";
+      autoTradeClr = clrLime;
+   }
+
+   int totalRows = (lockReasonNotice != "" ? 14 : 13);
+   double baseTotalHeight = (2.0 * basePadY) + (totalRows * baseRowHeight) + 30.0;
+
+   // User-defined scale override (0 = Auto-Scale)
+   double userScale = 1.0;
+   if(HUD_Scale > 0.01)
+   {
+      userScale = HUD_Scale;
+   }
+   else
+   {
+      // Auto-scale based on chart resolution
+      if(chartWidth >= 2560 && chartHeight >= 1440)      userScale = 1.25;
+      else if(chartWidth >= 1920 && chartHeight >= 1080) userScale = 1.10;
+      else if(chartWidth < 900 || chartHeight < 550)     userScale = 0.85;
+      else if(chartWidth < 650 || chartHeight < 400)     userScale = 0.75;
+   }
+
+   // Constrain pixel scale so panel never overflows chart boundaries.
+   // When chart height is compact (< 520), MTF matrix cannot stack vertically without clipping,
+   // so horizontal scale accounts for both panels side-by-side.
+   double totalRequiredBaseWidth = basePanelWidth;
+   if(ShowDashboardPanel && chartHeight < 520)
+   {
+      totalRequiredBaseWidth = basePanelWidth + 250.0 + 10.0;
+   }
+   double maxScaleW = (double)(chartWidth - 30) / totalRequiredBaseWidth;
+   double maxScaleH = (double)(chartHeight - 35) / baseTotalHeight;
+   double maxSafeScale = MathMin(maxScaleW, maxScaleH);
+   if(maxSafeScale < 0.65) maxSafeScale = 0.65;
+
+   // Final visual pixel scale
+   double finalScale = MathMin(dpiScale * userScale, maxSafeScale);
+   if(finalScale < 0.65) finalScale = 0.65;
+   if(finalScale > 2.50) finalScale = 2.50;
+
+   int startX = (int)MathRound(HUD_X_Offset * (dpiScale > 1.2 ? 1.2 : 1.0));
+   int startY = (int)MathRound(HUD_Y_Offset * (dpiScale > 1.2 ? 1.2 : 1.0));
+
+   int panelWidth = (int)MathRound(basePanelWidth * finalScale);
+   int padX       = (int)MathMax(8, MathRound(basePadX * finalScale));
+   int padY       = (int)MathMax(6, MathRound(basePadY * finalScale));
+
+   // Crucial: OBJPROP_FONTSIZE is in points. GDI automatically multiplies points by (DPI / 72).
+   // So font points must ONLY scale by (finalScale / dpiScale) to avoid double-DPI inflation.
+   double fontScaleFactor = finalScale / dpiScale;
+   if(fontScaleFactor < 0.50) fontScaleFactor = 0.50;
+
+   int fontNormal = (int)MathRound(8.0 * fontScaleFactor);
+   if(fontNormal < 5) fontNormal = 5;
+   if(fontNormal > 11) fontNormal = 11;
+
+   // Guarantee zero horizontal clipping for a 42-character line
+   double ptToPx = (double)dpi / 72.0;
+   int availWidth = panelWidth - (2 * padX) - 4;
+   while(fontNormal > 4 && (int)MathRound(42.0 * (fontNormal * ptToPx * 0.50)) > availWidth)
+   {
+      fontNormal--;
+   }
+   int fontTitle = fontNormal;
+   while(fontTitle > 4 && (int)MathRound(29.0 * (fontTitle * ptToPx * 0.56)) > availWidth)
+   {
+      fontTitle--;
+   }
+   int fontSmall = MathMax(4, fontNormal - 1);
+
+   // Row height in pixels must comfortably exceed glyph height: (fontNormal * ptToPx)
+   int glyphHeightPx = (int)MathRound(fontNormal * ptToPx);
+   int rowHeight = (int)MathMax(glyphHeightPx + 4, MathRound(baseRowHeight * finalScale));
+   int panelHeight = padY + (totalRows * rowHeight) + padY;
 
    // 1. Dashboard Backdrop Canvas Panel
    string bgName = PREFIX_GUI + "Backdrop";
@@ -2902,15 +3027,12 @@ void RenderHUDDashboard()
    ObjectSetInteger(ChartID(), bgName, OBJPROP_BGCOLOR, HUD_BgColor);
    ObjectSetInteger(ChartID(), bgName, OBJPROP_BORDER_COLOR, HUD_BorderColor);
 
-
-   int textX = startX + 12;
-   int y = startY + 10;
-
+   int textX = startX + padX;
+   int y = startY + padY;
 
    // Header
-   RenderHUDLabel("00_Title", "=== SMARTAUTOTRADE EA HUD ===", textX, y, HUD_HeaderTextColor, 9, true);
-   y += rowHeight + 2;
-
+   RenderHUDLabel("00_Title", "=== SMARTAUTOTRADE EA HUD ===", textX, y, HUD_HeaderTextColor, fontTitle, true);
+   y += rowHeight;
 
    // Trend & Momentum Metrics
    string trendDesc = (g_ActiveTrendRegime == TREND_STRONG_BULLISH ? "STRONG BULLISH" :
@@ -2918,18 +3040,15 @@ void RenderHUDDashboard()
                       (g_ActiveTrendRegime == TREND_STRONG_BEARISH ? "STRONG BEARISH" :
                       (g_ActiveTrendRegime == TREND_WEAK_BEARISH   ? "WEAK BEARISH" : "SIDEWAYS"))));
    color trendColor = (StringFind(trendDesc, "BULLISH") >= 0) ? clrLime : ((StringFind(trendDesc, "BEARISH") >= 0) ? clrTomato : clrWheat);
-   RenderHUDLabel("01_Trend", "Trend Regime: " + trendDesc, textX, y, trendColor, 8, true);
+   RenderHUDLabel("01_Trend", "Trend Regime: " + trendDesc, textX, y, trendColor, fontNormal, true);
    y += rowHeight;
-
 
    // Signal Scores Breakdown & Live Evaluation Progress
    int liveBuyScore  = g_ScoreTrendBuy + g_ScoreMomBuy + g_ScoreSRBuy + g_ScoreCandleBuy;
    int liveSellScore = g_ScoreTrendSell + g_ScoreMomSell + g_ScoreSRSell + g_ScoreCandleSell;
 
-
    string signalSummary = "";
    color sigColor = clrWhite;
-
 
    if(g_LastSignalVerdict != "NONE")
    {
@@ -2943,23 +3062,20 @@ void RenderHUDDashboard()
       signalSummary = StringFormat("Evaluating: %s (Need: %d)", biasStr, MinRequiredScore);
       sigColor = (liveSellScore > liveBuyScore) ? clrLightSalmon : ((liveBuyScore > liveSellScore) ? clrPaleGreen : clrSilver);
    }
-   RenderHUDLabel("02_Signal", signalSummary, textX, y, sigColor, 8, true);
+   RenderHUDLabel("02_Signal", signalSummary, textX, y, sigColor, fontNormal, true);
    y += rowHeight;
-
 
    // Confluence Breakdown Details
    string scoreBreakdown = StringFormat("Pts: Trend(%d/%d) Mom(%d/%d) SR(%d/%d) Cndl(%d/%d)",
                                          g_ScoreTrendBuy, g_ScoreTrendSell, g_ScoreMomBuy, g_ScoreMomSell,
                                          g_ScoreSRBuy, g_ScoreSRSell, g_ScoreCandleBuy, g_ScoreCandleSell);
-   RenderHUDLabel("03_Points", scoreBreakdown, textX, y, HUD_LabelTextColor, 7, false);
+   RenderHUDLabel("03_Points", scoreBreakdown, textX, y, HUD_LabelTextColor, fontSmall, false);
    y += rowHeight;
-
 
    // Technical Oscillators Data
    string oscSummary = StringFormat("RSI: %.1f | MACD: %.5f | ADX: %.1f", g_CalculatedRSI, g_CalculatedMACDMain, g_CalculatedADX);
-   RenderHUDLabel("04_Osc", oscSummary, textX, y, HUD_ValueTextColor, 8, false);
+   RenderHUDLabel("04_Osc", oscSummary, textX, y, HUD_ValueTextColor, fontNormal, false);
    y += rowHeight;
-
 
    // Market Session & Broker Time
    g_CurrentSession = IdentifyMarketSession(TimeCurrent() - (BrokerGMT_Offset * 3600));
@@ -2967,83 +3083,40 @@ void RenderHUDDashboard()
                        (g_CurrentSession == SESSION_LONDON ? "London" :
                        (g_CurrentSession == SESSION_LONDON_NY_OVERLAP ? "London/NY Overlap" :
                        (g_CurrentSession == SESSION_NEWYORK ? "New York" : "Off-Hours"))));
-   RenderHUDLabel("05_Session", "Session: " + sessionStr, textX, y, clrSkyBlue, 8, false);
+   RenderHUDLabel("05_Session", "Session: " + sessionStr, textX, y, clrSkyBlue, fontNormal, false);
    y += rowHeight;
-
 
    // Spread & Volatility ATR
    int spread = (int)MarketInfo(Symbol(), MODE_SPREAD);
-   string spreadStr = StringFormat("Spread: %d pts (Max: %d) | ATR: %f", spread, MaxSpreadPoints, iATR(Symbol(), Period(), 14, 1));
+   double curAtr = iATR(Symbol(), Period(), 14, 1);
+   int atrDig = (Digits == 3 || Digits == 5) ? Digits - 1 : MathMin(Digits, 4);
+   string spreadStr = StringFormat("Spread: %d pts (Max: %d) | ATR: %s", spread, MaxSpreadPoints, DoubleToString(curAtr, atrDig));
    color spreadColor = (spread <= MaxSpreadPoints) ? clrLime : clrRed;
-   RenderHUDLabel("06_Spread", spreadStr, textX, y, spreadColor, 8, false);
+   RenderHUDLabel("06_Spread", spreadStr, textX, y, spreadColor, fontNormal, false);
    y += rowHeight;
-
 
    // Account Financial Overview
    string finStr = StringFormat("Balance: $%.2f | Equity: $%.2f", AccountBalance(), AccountEquity());
-   RenderHUDLabel("07_Fin", finStr, textX, y, HUD_ValueTextColor, 8, false);
+   RenderHUDLabel("07_Fin", finStr, textX, y, HUD_ValueTextColor, fontNormal, false);
    y += rowHeight;
-
 
    // Daily Performance P&L
    double dayPnL = AccountEquity() - g_StartingDayEquity;
    double dayPnLPercent = (g_StartingDayEquity > 0.0) ? (dayPnL / g_StartingDayEquity) * 100.0 : 0.0;
    string pnlStr = StringFormat("Daily P&L: %s$%.2f (%.2f%%)", (dayPnL >= 0.0 ? "+" : ""), dayPnL, dayPnLPercent);
    color pnlColor = (dayPnL >= 0.0) ? clrLime : clrTomato;
-   RenderHUDLabel("08_PnL", pnlStr, textX, y, pnlColor, 8, true);
+   RenderHUDLabel("08_PnL", pnlStr, textX, y, pnlColor, fontNormal, true);
    y += rowHeight;
 
-
    // Position Concurrency
-   int myOrders = 0;
-   for(int k = OrdersTotal() - 1; k >= 0; k--)
-   {
-      if(OrderSelect(k, SELECT_BY_POS, MODE_TRADES))
-      {
-         if(OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber) myOrders++;
-      }
-   }
-   string autoTradeStatus = "";
-   color autoTradeClr = clrRed;
-   string lockReasonNotice = "";
-   
-   if(!IsExpertEnabled())
-   {
-      autoTradeStatus = "LOCKED (AutoTrading Button OFF)";
-      autoTradeClr = clrRed;
-      lockReasonNotice = "ACTION: Click MT4 'AutoTrading' button in top toolbar (make green)";
-   }
-   else if(!IsTradeAllowed())
-   {
-      autoTradeStatus = "LOCKED (Allow Live Trading Unchecked)";
-      autoTradeClr = clrRed;
-      lockReasonNotice = "ACTION: Press F7 -> Common tab -> Check 'Allow live trading'";
-   }
-   else if(g_PropLockoutActive || g_DailyLossCircuitTripped)
-   {
-      autoTradeStatus = "LOCKED (Daily Drawdown Tripped)";
-      autoTradeClr = clrRed;
-      lockReasonNotice = "PROTECTION: Risk limit reached. Safe until reset/rollover";
-   }
-   else if(!g_AutoTradingRuntimeActive)
-   {
-      autoTradeStatus = "PAUSED";
-      autoTradeClr = clrOrange;
-   }
-   else
-   {
-      autoTradeStatus = "ACTIVE [RUNNING]";
-      autoTradeClr = clrLime;
-   }
-   
-   string posStr = StringFormat("Open Positions: %d / %d | Bot: %s",
+   string posStr = StringFormat("Pos: %d/%d | Bot: %s",
                                 myOrders, MaxOpenPositionsPerSymbol, autoTradeStatus);
-   RenderHUDLabel("09_Positions", posStr, textX, y, autoTradeClr, 8, true);
+   RenderHUDLabel("09_Positions", posStr, textX, y, autoTradeClr, fontNormal, true);
    y += rowHeight;
    
    if(lockReasonNotice != "")
    {
-      RenderHUDLabel("09_ActionNotice", lockReasonNotice, textX, y, clrYellow, 8, true);
+      RenderHUDLabel("09_ActionNotice", lockReasonNotice, textX, y, clrYellow, fontNormal, true);
       y += rowHeight;
    }
    else
@@ -3051,10 +3124,7 @@ void RenderHUDDashboard()
       ObjectDelete(ChartID(), PREFIX_GUI + "09_ActionNotice");
    }
 
-
    // ── PERF: Heavy indicator calculations throttled to every 5 seconds ─────────
-   // CCI, Bollinger %B, VSA, KER and TTM Squeeze are expensive cross-period calls.
-   // We cache results and only recalculate every 5s, not on every 2s HUD render.
    uint hudNow = GetTickCount();
    if(hudNow - g_LastHeavyIndicatorTick >= 5000)
    {
@@ -3068,15 +3138,13 @@ void RenderHUDDashboard()
       AnalyzeVolumeSpreadEngine(_vsaBuy, _vsaSell);
       EvaluateTTMSqueezeMomentum(g_TTMSqueezeArmed, g_TTMSqueezeFiring);
    }
-   // ─────────────────────────────────────────────────────────────────────────
 
-   // Ultra Quant Metrics (KER & Squeeze) — use cached values
+   // Ultra Quant Metrics (KER & Squeeze)
    string sqzStr = (g_TTMSqueezeArmed ? "ARMED (Compressing)" : (g_TTMSqueezeFiring ? "FIRING (Expansion)" : "None"));
    color sqzColor = (g_TTMSqueezeFiring ? clrLime : (g_TTMSqueezeArmed ? clrGold : clrLightGray));
    string quantStr = StringFormat("KER: %.2f | Squeeze: %s", g_CalculatedKER, sqzStr);
-   RenderHUDLabel("09_Quant", quantStr, textX, y, sqzColor, 8, true);
+   RenderHUDLabel("09_Quant", quantStr, textX, y, sqzColor, fontNormal, true);
    y += rowHeight;
-
 
    // Pattern Detected
    string patternDesc = (g_LastCandlePattern == CANDLE_BULLISH_ENGULFING ? "Bullish Engulfing" :
@@ -3086,29 +3154,24 @@ void RenderHUDDashboard()
                         (g_LastCandlePattern == CANDLE_DOJI_REGULAR ? "Doji" :
                         (g_LastCandlePattern == CANDLE_MORNING_STAR ? "Morning Star" :
                         (g_LastCandlePattern == CANDLE_EVENING_STAR ? "Evening Star" : "None")))))));
-   RenderHUDLabel("10_Pattern", "Pattern: " + patternDesc, textX, y, clrGold, 8, false);
+   RenderHUDLabel("10_Pattern", "Pattern: " + patternDesc, textX, y, clrGold, fontNormal, false);
    y += rowHeight;
 
-
-   // Extended Indicator Metrics — values already refreshed by 5s throttle above
+   // Extended Indicator Metrics
    string extStr = StringFormat("CCI: %.1f | %%B: %.2f | VSA: %s",
                                 g_CalculatedCCI, g_CalculatedPercentB,
                                 (g_VSA_StoppingVolume ? "Stopping Vol" : (g_VSA_AbsorptionVolume ? "Absorption" : "Normal")));
-   RenderHUDLabel("11_ExtInd", extStr, textX, y, clrMediumSpringGreen, 8, false);
-
+   RenderHUDLabel("11_ExtInd", extStr, textX, y, clrMediumSpringGreen, fontSmall, false);
 
    // Render On-Chart Action Buttons directly below HUD
-   RenderInteractiveButtons();
-
+   RenderInteractiveButtons(startX, startY + panelHeight + (int)MathRound(6.0 * finalScale), panelWidth, finalScale, fontNormal);
 
    // ── PERF: MTF Matrix throttled to every 10 seconds ───────────────────────
-   // iMA/iRSI calls across 6 different timeframes are expensive; 10s is plenty.
    if(GetTickCount() - g_LastMTFMatrixTick >= 10000)
    {
       g_LastMTFMatrixTick = GetTickCount();
-      RenderMultiTimeframeMatrix();
+      RenderMultiTimeframeMatrix(startX, startY, panelWidth, panelHeight, finalScale, chartWidth, fontNormal);
    }
-   // ─────────────────────────────────────────────────────────────────────────
 }
 
 
@@ -3119,8 +3182,8 @@ void RenderHUDLabel(const string id, const string text, const int x, const int y
    {
       ObjectCreate(ChartID(), objName, OBJ_LABEL, 0, 0, 0);
       ObjectSetInteger(ChartID(), objName, OBJPROP_SELECTABLE, false);
-      ObjectSetString(ChartID(), objName, OBJPROP_FONT, isBold ? "Segoe UI Bold" : "Segoe UI");
    }
+   ObjectSetString(ChartID(), objName, OBJPROP_FONT, isBold ? "Arial Bold" : "Arial");
    ObjectSetInteger(ChartID(), objName, OBJPROP_CORNER, HUD_Corner);
    ObjectSetInteger(ChartID(), objName, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(ChartID(), objName, OBJPROP_YDISTANCE, y);
@@ -4396,6 +4459,7 @@ void Telegram_SendDailyReport()
 void Telegram_PollCommands()
 {
    if(!EnableTelegramCommands) return;
+   if(g_zmqReady) return; // External Python Telegram Bot handles polling; prevent HTTP 409 Conflict
    
    // Coordinate master polling across multiple open chart instances of EA
    string gvName = "TG_POLLING_MASTER_CHART";
@@ -4713,19 +4777,6 @@ void Telegram_InitTradeTracker()
       g_tgActiveTrades[sz].tp        = OrderTakeProfit();
       g_tgActiveTrades[sz].openTime  = OrderOpenTime();
       g_tgActiveTrades[sz].magic     = OrderMagicNumber();
-   }
-   
-   // Advance update_id to latest pending to avoid executing old offline commands
-   string initResp = "";
-   if(Telegram_GetUpdates(TelegramBotToken, 0, initResp) == 200)
-   {
-      TelegramUpdateMessage tempUpdates[];
-      int uCount = Telegram_ParseUpdates(initResp, tempUpdates);
-      for(int u = 0; u < uCount; u++)
-      {
-         if(tempUpdates[u].update_id > g_tgLastUpdateId)
-            g_tgLastUpdateId = tempUpdates[u].update_id;
-      }
    }
    
    // Send startup notification with command hints
@@ -5882,50 +5933,50 @@ void SaveChartTradeScreenshot(const string signalName)
 //+------------------------------------------------------------------+
 //| INTERACTIVE ON-CHART GUI BUTTONS BUILDER                         |
 //+------------------------------------------------------------------+
-void RenderInteractiveButtons()
+void RenderInteractiveButtons(int startX = -1, int startY = -1, int panelWidth = -1, double scale = 1.0, int fontSize = 8)
 {
    if(!ShowInteractiveButtons) return;
 
-
-   int startX = Buttons_X_Offset;
-   int startY = Buttons_Y_Offset;
-   int gapX   = 6;
-   int btnW   = ButtonWidth;
-   int btnH   = ButtonHeight;
-
+   int sX     = (startX >= 0) ? startX : HUD_X_Offset;
+   int sY     = (startY >= 0) ? startY : HUD_Y_Offset;
+   int pW     = (panelWidth > 0) ? panelWidth : (int)MathRound(340.0 * scale);
+   int padX   = (int)MathMax(8, MathRound(10.0 * scale));
+   int gapX   = (int)MathMax(3, MathRound(5.0 * scale));
+   int btnW   = (int)MathRound((pW - (2 * padX) - (2 * gapX)) / 3.0);
+   int btnH   = (int)MathMax(18, MathRound(22.0 * scale));
+   int btnFont= MathMax(6, fontSize);
+   int curX   = sX + padX;
 
    // Button 1: Close All Orders
    string btnCloseName = PREFIX_GUI + "BTN_CloseAll";
-   CreateActionButton(btnCloseName, "CLOSE ALL", startX, startY, btnW, btnH, ColorBtnCloseAll, clrWhite);
-
+   CreateActionButton(btnCloseName, "CLOSE ALL", curX, sY, btnW, btnH, ColorBtnCloseAll, clrWhite, btnFont);
 
    // Button 2: Break-Even All Orders
    string btnBEName = PREFIX_GUI + "BTN_BreakEven";
-   CreateActionButton(btnBEName, "BE ALL", startX + btnW + gapX, startY, btnW, btnH, ColorBtnBreakEven, clrWhite);
-
+   CreateActionButton(btnBEName, "BE ALL", curX + btnW + gapX, sY, btnW, btnH, ColorBtnBreakEven, clrWhite, btnFont);
 
    // Button 3: Toggle AutoTrading
    string btnToggleName = PREFIX_GUI + "BTN_Toggle";
    string toggleText = g_AutoTradingRuntimeActive ? "PAUSE EA" : "RESUME EA";
    color toggleColor = g_AutoTradingRuntimeActive ? ColorBtnToggleTrade : C'150,80,20';
-   CreateActionButton(btnToggleName, toggleText, startX + (2 * (btnW + gapX)), startY, btnW, btnH, toggleColor, clrWhite);
+   CreateActionButton(btnToggleName, toggleText, curX + (2 * (btnW + gapX)), sY, btnW, btnH, toggleColor, clrWhite, btnFont);
 }
 
 
-void CreateActionButton(const string name, const string caption, const int x, const int y, const int w, const int h, const color bgColor, const color textColor)
+void CreateActionButton(const string name, const string caption, const int x, const int y, const int w, const int h, const color bgColor, const color textColor, const int fontSize = 8)
 {
    if(ObjectFind(ChartID(), name) < 0)
    {
       ObjectCreate(ChartID(), name, OBJ_BUTTON, 0, 0, 0);
       ObjectSetInteger(ChartID(), name, OBJPROP_SELECTABLE, false);
-      ObjectSetString(ChartID(), name, OBJPROP_FONT, "Segoe UI Bold");
-      ObjectSetInteger(ChartID(), name, OBJPROP_FONTSIZE, 8);
    }
+   ObjectSetString(ChartID(), name, OBJPROP_FONT, "Arial Bold");
    ObjectSetInteger(ChartID(), name, OBJPROP_CORNER, HUD_Corner);
    ObjectSetInteger(ChartID(), name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(ChartID(), name, OBJPROP_YDISTANCE, y);
    ObjectSetInteger(ChartID(), name, OBJPROP_XSIZE, w);
    ObjectSetInteger(ChartID(), name, OBJPROP_YSIZE, h);
+   ObjectSetInteger(ChartID(), name, OBJPROP_FONTSIZE, fontSize);
    ObjectSetInteger(ChartID(), name, OBJPROP_BGCOLOR, bgColor);
    ObjectSetInteger(ChartID(), name, OBJPROP_COLOR, textColor);
    ObjectSetString(ChartID(), name, OBJPROP_TEXT, caption);
@@ -5937,6 +5988,15 @@ void CreateActionButton(const string name, const string caption, const int x, co
 //+------------------------------------------------------------------+
 void OnChartEvent(const int id, const long &lparam, const double &dparam, const string &sparam)
 {
+   // Dynamically handle window resize, DPI, or scale changes immediately
+   if(id == CHARTEVENT_CHART_CHANGE)
+   {
+      g_LastMTFMatrixTick = 0;
+      RenderHUDDashboard();
+      ChartRedraw(ChartID());
+      return;
+   }
+
    if(id != CHARTEVENT_OBJECT_CLICK) return;
 
    // 1. Close All Orders Button Clicked
@@ -6019,19 +6079,90 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 //+------------------------------------------------------------------+
 //| SECTION 14: MULTI-TIMEFRAME (MTF) CONFLUENCE MATRIX & DASHBOARD  |
 //+------------------------------------------------------------------+
-void RenderMultiTimeframeMatrix()
+void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudPanelWidth = -1, int hudPanelHeight = -1, double scale = 1.0, int chartWidth = -1, int fontNormal = 8)
 {
    if(!ShowDashboardPanel) return;
 
+   int cWidth  = (chartWidth > 0) ? chartWidth : (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
+   int cHeight = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
+   if(cWidth <= 0)  cWidth  = 1280;
+   if(cHeight <= 0) cHeight = 800;
 
-   int startX = HUD_X_Offset + 295;
-   int startY = HUD_Y_Offset;
-   int cellW  = 40;
-   int cellH  = 20;
-   int gap    = 4;
-   int panelWidth  = 280;
-   int panelHeight = 150;
+   int baseStartX = (hudStartX >= 0) ? hudStartX : HUD_X_Offset;
+   int baseStartY = (hudStartY >= 0) ? hudStartY : HUD_Y_Offset;
+   int pW         = (hudPanelWidth > 0) ? hudPanelWidth : (int)MathRound(320.0 * scale);
+   int pH         = (hudPanelHeight > 0) ? hudPanelHeight : (int)MathRound(250.0 * scale);
 
+   int dpi = (int)TerminalInfoInteger(TERMINAL_SCREEN_DPI);
+   if(dpi <= 0) dpi = 96;
+   double ptToPx = (double)dpi / 72.0;
+
+   // MTF Matrix width is independently sized for 6 buttons (approx 250 px at baseline)
+   int mtfPanelWidth = (int)MathRound(250.0 * scale);
+   int padX          = (int)MathMax(6, MathRound(8.0 * scale));
+   int padY          = (int)MathMax(5, MathRound(6.0 * scale));
+   int gap           = (int)MathMax(2, MathRound(3.0 * scale));
+
+   int availCellW    = mtfPanelWidth - (2 * padX) - (5 * gap);
+   int cellW         = MathMax(34, availCellW / 6);
+   padX              = MathMax(4, (mtfPanelWidth - (6 * cellW) - (5 * gap)) / 2);
+   int cellH         = (int)MathMax(18, MathRound(20.0 * scale));
+
+   int fontCell = MathMax(4, fontNormal - 1);
+   while(fontCell > 4 && (int)MathRound(5.0 * (fontCell * ptToPx * 0.55)) > (cellW - 4))
+   {
+      fontCell--;
+   }
+
+   int fontTitle = fontNormal;
+   while(fontTitle > 4 && (int)MathRound(23.0 * (fontTitle * ptToPx * 0.56)) > (mtfPanelWidth - 2 * padX - 4))
+   {
+      fontTitle--;
+   }
+   int fontSmall = MathMax(4, fontNormal - 1);
+
+   int rowHeight = (int)MathMax((int)MathRound(fontNormal * ptToPx) + 4, MathRound(17.0 * scale));
+
+   int startX = baseStartX + pW + (int)MathRound(8.0 * scale);
+   int startY = baseStartY;
+
+   // Positioning: Check side-by-side vs stacked
+   int btnH = (int)MathMax(18, MathRound(22.0 * scale));
+   int estimatedMtfH = padY + rowHeight + (int)MathRound(3.0 * scale) + cellH + (int)MathRound(6.0 * scale) + (3 * rowHeight) + padY;
+
+   bool canFitSideBySide = (startX + mtfPanelWidth <= cWidth - 8);
+   bool canFitStacked    = (baseStartY + pH + btnH + (int)MathRound(8.0 * scale) + estimatedMtfH <= cHeight - 5);
+
+   if(!canFitSideBySide)
+   {
+      if(canFitStacked)
+      {
+         startX = baseStartX;
+         startY = baseStartY + pH + btnH + (int)MathRound(8.0 * scale);
+      }
+      else
+      {
+         // Stacking would push MTF panel off-screen vertically!
+         // Adapt side-by-side: shrink mtfPanelWidth or reposition so it fits within chart width
+         startX = baseStartX + pW + (int)MathRound(6.0 * scale);
+         if(startX + mtfPanelWidth > cWidth - 6)
+         {
+            mtfPanelWidth = MathMax(220, cWidth - startX - 6);
+            availCellW    = mtfPanelWidth - (2 * padX) - (5 * gap);
+            cellW         = MathMax(30, availCellW / 6);
+            padX          = MathMax(4, (mtfPanelWidth - (6 * cellW) - (5 * gap)) / 2);
+         }
+         startY = baseStartY;
+      }
+   }
+
+   int textX = startX + padX;
+   int headerY = startY + padY;
+   int cellsY = headerY + rowHeight + (int)MathRound(3.0 * scale);
+   int meterY = cellsY + cellH + (int)MathRound(6.0 * scale);
+   int gaugeValY = meterY + rowHeight;
+   int adviceY = gaugeValY + rowHeight;
+   int mtfPanelHeight = (adviceY + rowHeight + padY) - startY;
 
    // MTF Matrix Backdrop
    string bgName = PREFIX_GUI + "MTF_Backdrop";
@@ -6044,23 +6175,17 @@ void RenderMultiTimeframeMatrix()
    ObjectSetInteger(ChartID(), bgName, OBJPROP_CORNER, HUD_Corner);
    ObjectSetInteger(ChartID(), bgName, OBJPROP_XDISTANCE, startX);
    ObjectSetInteger(ChartID(), bgName, OBJPROP_YDISTANCE, startY);
-   ObjectSetInteger(ChartID(), bgName, OBJPROP_XSIZE, panelWidth);
-   ObjectSetInteger(ChartID(), bgName, OBJPROP_YSIZE, panelHeight);
+   ObjectSetInteger(ChartID(), bgName, OBJPROP_XSIZE, mtfPanelWidth);
+   ObjectSetInteger(ChartID(), bgName, OBJPROP_YSIZE, mtfPanelHeight);
    ObjectSetInteger(ChartID(), bgName, OBJPROP_BGCOLOR, HUD_BgColor);
    ObjectSetInteger(ChartID(), bgName, OBJPROP_BORDER_COLOR, HUD_BorderColor);
 
-
-   int textX = startX + 12;
-   RenderHUDLabel("MTF_Header", "=== MULTI-TIMEFRAME CONFLUENCE ===", textX, startY + 10, HUD_HeaderTextColor, 8, true);
-
+   RenderHUDLabel("MTF_Header", "=== MTF CONFLUENCE ===", textX, headerY, HUD_HeaderTextColor, fontTitle, true);
 
    ENUM_TIMEFRAMES tfs[6] = {PERIOD_M5, PERIOD_M15, PERIOD_M30, PERIOD_H1, PERIOD_H4, PERIOD_D1};
    string tfNames[6]     = {"M5", "M15", "M30", "H1", "H4", "D1"};
 
-
-   int currentY = startY + 34;
-
-
+   int currentY = cellsY;
    int bullCount = 0;
 
    for(int i = 0; i < 6; i++)
@@ -6071,55 +6196,50 @@ void RenderMultiTimeframeMatrix()
 
       if(emaFast > emaMed) bullCount++;
 
-      string trendTag = "FLAT";
+      string trendTag = "--";
       color blockClr  = clrWheat;
 
       if(emaFast > emaMed && rsiVal > 50.0)
       {
-         trendTag = "BULL";
+         trendTag = "UP";
          blockClr = clrLimeGreen;
       }
       else if(emaFast < emaMed && rsiVal < 50.0)
       {
-         trendTag = "BEAR";
+         trendTag = "DN";
          blockClr = clrCrimson;
       }
 
-      int blockX = (startX + 10) + (i * (cellW + gap));
+      int blockX = (startX + padX) + (i * (cellW + gap));
       string cellObj = PREFIX_GUI + "MTF_" + tfNames[i];
 
       if(ObjectFind(ChartID(), cellObj) < 0)
       {
          ObjectCreate(ChartID(), cellObj, OBJ_BUTTON, 0, 0, 0);
          ObjectSetInteger(ChartID(), cellObj, OBJPROP_SELECTABLE, false);
-         ObjectSetString(ChartID(), cellObj, OBJPROP_FONT, "Segoe UI Bold");
-         ObjectSetInteger(ChartID(), cellObj, OBJPROP_FONTSIZE, 7);
-         ObjectSetInteger(ChartID(), cellObj, OBJPROP_XSIZE, cellW);
-         ObjectSetInteger(ChartID(), cellObj, OBJPROP_YSIZE, cellH);
       }
-
+      ObjectSetString(ChartID(), cellObj, OBJPROP_FONT, "Arial Bold");
       ObjectSetInteger(ChartID(), cellObj, OBJPROP_CORNER, HUD_Corner);
       ObjectSetInteger(ChartID(), cellObj, OBJPROP_XDISTANCE, blockX);
       ObjectSetInteger(ChartID(), cellObj, OBJPROP_YDISTANCE, currentY);
+      ObjectSetInteger(ChartID(), cellObj, OBJPROP_XSIZE, cellW);
+      ObjectSetInteger(ChartID(), cellObj, OBJPROP_YSIZE, cellH);
+      ObjectSetInteger(ChartID(), cellObj, OBJPROP_FONTSIZE, fontCell);
       ObjectSetInteger(ChartID(), cellObj, OBJPROP_BGCOLOR, blockClr);
-      ObjectSetInteger(ChartID(), cellObj, OBJPROP_COLOR, clrBlack);
-      ObjectSetString(ChartID(), cellObj, OBJPROP_TEXT, tfNames[i] + ":" + trendTag);
+      ObjectSetInteger(ChartID(), cellObj, OBJPROP_COLOR, (trendTag == "--" ? clrBlack : clrWhite));
+      ObjectSetString(ChartID(), cellObj, OBJPROP_TEXT, tfNames[i] + " " + trendTag);
    }
-
 
    double confluencePct = ((double)bullCount / 6.0) * 100.0;
    string gaugeText = StringFormat("Bullish Power: %.1f%% (%d/6 TFs)", confluencePct, bullCount);
    color gaugeColor = (confluencePct >= 66.0 ? clrLime : (confluencePct <= 33.0 ? clrTomato : clrGold));
 
-
-   int meterY = startY + 66;
-   RenderHUDLabel("Gauge_Title", "Trend Confluence Index:", textX, meterY, HUD_LabelTextColor, 8, false);
-   RenderHUDLabel("Gauge_Value", gaugeText, textX, meterY + 18, gaugeColor, 8, true);
-
+   RenderHUDLabel("Gauge_Title", "Trend Confluence Index:", textX, meterY, HUD_LabelTextColor, fontNormal, false);
+   RenderHUDLabel("Gauge_Value", gaugeText, textX, gaugeValY, gaugeColor, fontNormal, true);
 
    string adviceStr = (confluencePct >= 66.0 ? "Action: Strong Long Alignment Active" :
                       (confluencePct <= 33.0 ? "Action: Strong Short Alignment Active" : "Action: Range-Bound / Caution Advised"));
-   RenderHUDLabel("Gauge_Advice", adviceStr, textX, meterY + 36, HUD_ValueTextColor, 7, false);
+   RenderHUDLabel("Gauge_Advice", adviceStr, textX, adviceY, HUD_ValueTextColor, fontSmall, false);
 }
 
 
@@ -6276,11 +6396,8 @@ int OnInit()
    // Clean previous signal arrows for fast timeframe switch
    ClearChartSignalMarkers();
 
-   // On full load/reload, purge GUI objects for a fresh start
-   if(!isTimeframeChange)
-   {
-      PurgeAllChartObjects();
-   }
+   // On load/reload or timeframe switch, purge GUI objects for clean recalculation
+   PurgeAllChartObjects();
 
    // === STEP 2: RUNTIME FLAG INITIALIZATION ===
    g_AutoTradingRuntimeActive = UseAutoTrading;
@@ -6361,8 +6478,8 @@ int OnInit()
       GlobalVariableSet("Prop_Starting_Day_Equity", AccountEquity());
    }
 
-   // === STEP 8: START SYSTEM TIMER (1-second GUI/telemetry updates) ===
-   EventSetTimer(1);
+   // === STEP 8: START SYSTEM TIMER (high-precision 100ms timer for sub-50ms ZeroMQ responses) ===
+   EventSetMillisecondTimer(100);
 
    // === STEP 9: IMMEDIATE TIMEFRAME COMPUTATION & VISUAL REFRESH ===
    // 1. Immediately evaluate confluence scoring for the new timeframe
@@ -6418,6 +6535,11 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    ZeroMQ_Poll();
+
+   static uint s_lastEATimerTick = 0;
+   uint nowTimerTick = GetTickCount();
+   if(nowTimerTick - s_lastEATimerTick < 1000) return;
+   s_lastEATimerTick = nowTimerTick;
 
    // --- Dynamic Account Switch & Safeguard Sanity Recalibration ---
    static int s_lastEAAccountNumber = 0;

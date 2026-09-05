@@ -5,26 +5,31 @@ Runs python-telegram-bot v20+ with background economic news reminder tasks,
 and 24/7 automatic reconnect loops.
 """
 import asyncio
+import json
 import logging
+import os
 import socket
 import sys
 import time
-from telegram import BotCommand
+from telegram import BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
 from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
     ContextTypes
 )
 
-from config import TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_IDS, NEWS_REMINDER_LEAD_MINUTES, setup_logging
+from config import TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_IDS, NEWS_REMINDER_LEAD_MINUTES, MT4_FILES_DIR, setup_logging
 from news_service import news_service, CURRENCY_FLAGS
 import handlers
 
 # Configure root logger to output to both console and rotating logs/bot.log
 logger = logging.getLogger("MT4BridgeBot")
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 # Resilient DNS fallback hook for 24/7 network stability
 _orig_getaddrinfo = socket.getaddrinfo
@@ -42,6 +47,9 @@ async def post_init(application) -> None:
     """Synchronize Telegram native Menu button commands."""
     try:
         commands = [
+            BotCommand("buy", "🟢 Quick BUY Market Order (e.g. /buy GBPUSD 0.01)"),
+            BotCommand("sell", "🔴 Quick SELL Market Order (e.g. /sell GBPUSD 0.01)"),
+            BotCommand("trade", "⚡ Remote Order Execution Wizard"),
             BotCommand("boost", "⚡ Institutional Turbo Boost & Diagnostics"),
             BotCommand("accounts", "👥 Switch Accounts & Inspect BUY/SELL"),
             BotCommand("status", "📊 Account Balance, Equity & Health"),
@@ -69,12 +77,77 @@ async def post_init(application) -> None:
     try:
         from zmq_client import zmq_client
         from account_manager import account_manager
-        acc_data = zmq_client.get_account()
+        acc_data = await asyncio.to_thread(zmq_client.get_account)
         if acc_data and acc_data.get("status") == "ok":
             synced_acc = account_manager.sync_with_live_terminal(acc_data)
             logger.info(f"Synchronized with live MT4 terminal: Account #{synced_acc.account_number} ({synced_acc.name})")
     except Exception as e:
         logger.debug(f"Could not synchronize active account with live terminal on startup: {e}")
+
+async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Dispatches any trade events written to telegram_outbox.json or tg_out_*.json by MT4 EA."""
+    if not os.path.exists(MT4_FILES_DIR):
+        return
+
+    targets = []
+    try:
+        main_out = os.path.join(MT4_FILES_DIR, "telegram_outbox.json")
+        if os.path.exists(main_out):
+            targets.append(main_out)
+
+        for entry in sorted(os.listdir(MT4_FILES_DIR)):
+            if entry.startswith("tg_out_") and entry.endswith(".json"):
+                targets.append(os.path.join(MT4_FILES_DIR, entry))
+    except Exception as e:
+        logger.debug(f"Error scanning outbox files: {e}")
+        return
+
+    for target_file in targets:
+        try:
+            with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read().strip()
+            if not content:
+                try:
+                    os.remove(target_file)
+                except Exception:
+                    pass
+                continue
+
+            data = json.loads(content)
+            chat_id = data.get("chat_id")
+            text = data.get("text", "")
+            parse_mode = data.get("parse_mode", "HTML")
+            reply_markup = None
+            if "reply_markup" in data:
+                kb_rows = []
+                for row in data["reply_markup"].get("inline_keyboard", []):
+                    kb_rows.append([InlineKeyboardButton(btn.get("text", ""), callback_data=btn.get("callback_data")) for btn in row])
+                if kb_rows:
+                    reply_markup = InlineKeyboardMarkup(kb_rows)
+
+            target_chats = [chat_id] if chat_id else ALLOWED_CHAT_IDS
+            for cid in target_chats:
+                try:
+                    await context.bot.send_message(
+                        chat_id=cid,
+                        text=text,
+                        parse_mode=ParseMode.HTML if parse_mode == "HTML" else None,
+                        reply_markup=reply_markup,
+                        disable_web_page_preview=True
+                    )
+                except Exception as e:
+                    logger.error(f"Error sending outbox alert to chat {cid}: {e}")
+
+            try:
+                os.remove(target_file)
+            except Exception:
+                pass
+        except Exception as ex:
+            logger.error(f"Error processing outbox file {target_file}: {ex}")
+            try:
+                os.remove(target_file)
+            except Exception:
+                pass
 
 async def news_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Background recurring task to check and broadcast high-impact news reminders."""
@@ -123,6 +196,9 @@ def create_application():
 
     # Command Handlers (Supporting exact Menu commands + aliases)
     app.add_handler(CommandHandler(["start", "help"], handlers.cmd_help))
+    app.add_handler(CommandHandler(["buy"], handlers.cmd_buy))
+    app.add_handler(CommandHandler(["sell"], handlers.cmd_sell))
+    app.add_handler(CommandHandler(["trade", "order"], handlers.cmd_trade))
     app.add_handler(CommandHandler(["boost", "turbo"], handlers.cmd_boost))
     app.add_handler(CommandHandler(["accounts", "switch"], handlers.cmd_accounts))
     app.add_handler(CommandHandler(["status", "account"], handlers.cmd_account))
@@ -143,7 +219,11 @@ def create_application():
     app.add_handler(CommandHandler(["resume", "resume_bot"], handlers.cmd_resume_bot))
     app.add_handler(CommandHandler(["news", "calendar"], handlers.cmd_news))
 
+    # Slash text commands from EA messages: /close_12345, /half_12345, /be_12345, /shot_SYM_TF
+    app.add_handler(MessageHandler(filters.Regex(r"^/(close|half|be|shot)_\w+"), handlers.handle_slash_action))
+
     # Callback Query Handlers
+    app.add_handler(CallbackQueryHandler(handlers.cb_quick_trade, pattern=r"^trade:(buy|sell):"))
     app.add_handler(CallbackQueryHandler(handlers.cb_switch_account, pattern=r"^switch_acc:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^(nav_|boost_colors)"))
     app.add_handler(CallbackQueryHandler(handlers.cb_reset_safeguards, pattern=r"^recalibrate_safeguards$"))
@@ -162,17 +242,18 @@ def create_application():
         from autotrade.telegram_interface.command_router import command_router
         app.add_handler(CommandHandler(["menu"], command_router.cmd_start))
         app.add_handler(CommandHandler(["strategies", "strat"], command_router.cmd_strategies))
-        app.add_handler(CallbackQueryHandler(command_router.handle_callback_query, pattern=r"^(nav_|shotsym:|shottf:)"))
+        app.add_handler(CallbackQueryHandler(command_router.handle_callback_query, pattern=r"^(strat_|set_risk_|set_dd_|set_pt_|act_panic)"))
     except Exception as ex:
         logger.warning(f"Could not register modern command router handlers: {ex}")
 
     # Error Handler
     app.add_error_handler(error_handler)
 
-    # Schedule background news alerts every 60 seconds
+    # Schedule background news alerts and MT4 outbox poller
     if app.job_queue:
         app.job_queue.run_repeating(news_alert_job, interval=60, first=10)
-        logger.info(f"News alert background scheduler registered (every 60s, lead: {NEWS_REMINDER_LEAD_MINUTES}m)")
+        app.job_queue.run_repeating(outbox_alert_job, interval=2, first=3)
+        logger.info(f"News alert (60s) and MT4 outbox (2s) background schedulers registered")
 
     return app
 

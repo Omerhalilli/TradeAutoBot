@@ -449,6 +449,158 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         asyncio.run(run_reset_cmd())
         print("  [PASS] /reset_risk command & callback verification completed.")
 
+    def test_20_parse_trade_args(self):
+        """Tests parsing of various user formats for buy/sell/trade commands."""
+        p1 = handlers._parse_trade_args(["GBPUSD", "0.01"], default_action="BUY")
+        self.assertEqual(p1["action"], "BUY")
+        self.assertEqual(p1["symbol"], "GBPUSD")
+        self.assertEqual(p1["lots"], 0.01)
+
+        p2 = handlers._parse_trade_args(["0.05", "EURUSD", "sl=1.0800", "tp=1.0950"], default_action="SELL")
+        self.assertEqual(p2["action"], "SELL")
+        self.assertEqual(p2["symbol"], "EURUSD")
+        self.assertEqual(p2["lots"], 0.05)
+        self.assertEqual(p2["sl"], 1.0800)
+        self.assertEqual(p2["tp"], 1.0950)
+
+        p3 = handlers._parse_trade_args(["buy", "GOLD", "0.02"])
+        self.assertEqual(p3["action"], "BUY")
+        self.assertEqual(p3["symbol"], "XAUUSD")
+        self.assertEqual(p3["lots"], 0.02)
+
+        p4 = handlers._parse_trade_args([])
+        self.assertEqual(p4["action"], "BUY")
+        self.assertEqual(p4["symbol"], "GBPUSD")
+        self.assertEqual(p4["lots"], 0.01)
+        print("  [PASS] Trade argument parsing (_parse_trade_args) verified.")
+
+    def test_21_cmd_buy_sell_trade_handlers(self):
+        """Verifies cmd_buy, cmd_sell, and cmd_trade execution with mocks."""
+        import asyncio
+        from telegram import Chat, User, Update, Message
+        from unittest.mock import patch
+
+        async def run_cmds():
+            test_chat_id = ALLOWED_CHAT_IDS[0] if ALLOWED_CHAT_IDS else 123456789
+            user = User(id=test_chat_id, is_bot=False, first_name="Trader")
+            chat = Chat(id=test_chat_id, type="private")
+
+            msg = MagicMock(spec=Message)
+            msg.from_user = user
+            msg.chat = chat
+            msg.reply_text = AsyncMock()
+            update = Update(update_id=50, message=msg)
+            context = MagicMock()
+            context.args = []
+
+            await handlers.cmd_buy(update, context)
+            self.assertIn("QUICK BUY EXECUTION WIZARD", msg.reply_text.call_args[0][0])
+
+            await handlers.cmd_sell(update, context)
+            self.assertIn("QUICK SELL EXECUTION WIZARD", msg.reply_text.call_args[0][0])
+
+            context.args = ["GBPUSD", "0.02"]
+            status_msg = MagicMock(spec=Message)
+            status_msg.edit_text = AsyncMock()
+            msg.reply_text = AsyncMock(return_value=status_msg)
+
+            mock_res = {"status": "ok", "action": "OPEN_ORDER", "ticket": 987654, "price": 1.25000, "lots": 0.02}
+            with patch.object(zmq_client, "open_order", return_value=mock_res):
+                await handlers.cmd_buy(update, context)
+                self.assertIn("ORDER EXECUTED ON MT4 TERMINAL", status_msg.edit_text.call_args[0][0])
+                self.assertIn("#987654", status_msg.edit_text.call_args[0][0])
+
+        asyncio.run(run_cmds())
+        print("  [PASS] /buy, /sell, /trade command handlers verified.")
+
+    def test_22_quick_trade_callback(self):
+        """Verifies 1-tap trade button callback handler (cb_quick_trade)."""
+        import asyncio
+        from telegram import Chat, User, Update, CallbackQuery, Message
+        from unittest.mock import patch
+
+        async def run_cb():
+            test_chat_id = ALLOWED_CHAT_IDS[0] if ALLOWED_CHAT_IDS else 123456789
+            user = User(id=test_chat_id, is_bot=False, first_name="Trader")
+            chat = Chat(id=test_chat_id, type="private")
+            query = MagicMock(spec=CallbackQuery)
+            query.from_user = user
+            query.data = "trade:buy:EURUSD:0.01"
+            msg = MagicMock(spec=Message)
+            msg.from_user = user
+            msg.chat = chat
+            msg.reply_text = AsyncMock()
+            query.message = msg
+            query.answer = AsyncMock()
+            update = Update(update_id=51, callback_query=query)
+            context = MagicMock()
+
+            mock_res = {"status": "ok", "action": "OPEN_ORDER", "ticket": 123456, "price": 1.08500, "lots": 0.01}
+            with patch.object(zmq_client, "open_order", return_value=mock_res):
+                await handlers.cb_quick_trade(update, context)
+                query.answer.assert_called()
+
+        asyncio.run(run_cb())
+        print("  [PASS] Quick trade callback query verified.")
+
+    def test_23_slash_actions(self):
+        """Verifies text messages for slash commands /close_123, /half_123, /be_123."""
+        import asyncio
+        from telegram import Chat, User, Update, Message
+        from unittest.mock import patch
+
+        async def run_slash():
+            test_chat_id = ALLOWED_CHAT_IDS[0] if ALLOWED_CHAT_IDS else 123456789
+            user = User(id=test_chat_id, is_bot=False, first_name="Trader")
+            chat = Chat(id=test_chat_id, type="private")
+            context = MagicMock()
+
+            # Test /close_12345
+            msg = MagicMock(spec=Message)
+            msg.from_user = user
+            msg.chat = chat
+            msg.text = "/close_12345"
+            msg.reply_text = AsyncMock()
+            update = Update(update_id=52, message=msg)
+            mock_res = {"status": "ok", "closed_count": 1, "realized_pl": 25.50}
+            with patch.object(zmq_client, "close_symbol", return_value=mock_res):
+                await handlers.handle_slash_action(update, context)
+                self.assertIn("POSITION LIQUIDATED", msg.reply_text.call_args[0][0])
+                self.assertIn("#12345", msg.reply_text.call_args[0][0])
+
+            # Test /half_12345
+            msg.text = "/half_12345"
+            mock_half = {"status": "ok", "closed_lots": 0.05, "remaining_lots": 0.05, "realized_pl": 12.0}
+            with patch.object(zmq_client, "close_half", return_value=mock_half):
+                await handlers.handle_slash_action(update, context)
+                self.assertIn("PARTIAL CLOSE COMPLETED", msg.reply_text.call_args[0][0])
+
+            # Test /be_12345
+            msg.text = "/be_12345"
+            mock_be = {"status": "ok", "modified_count": 1}
+            with patch.object(zmq_client, "set_breakeven", return_value=mock_be):
+                await handlers.handle_slash_action(update, context)
+                self.assertIn("BREAK-EVEN SYNCHRONIZED", msg.reply_text.call_args[0][0])
+
+        asyncio.run(run_slash())
+        print("  [PASS] Slash command text action handler verified.")
+
+    def test_24_live_open_order_zmq(self):
+        """Verifies live ZeroMQ OPEN_ORDER dispatch to running MT4 terminal."""
+        if not self.mt4_online:
+            self.skipTest("MT4 offline")
+
+        res = zmq_client.open_order(symbol="GBPUSD", cmd="BUY", lots=0.01)
+        self.assertIn("status", res)
+        # On weekends, error 132 is returned with human-readable description
+        if res.get("status") == "error":
+            self.assertEqual(res.get("error_code"), 132)
+            self.assertIn("Market is closed", res.get("message"))
+            print(f"  [PASS] Live MT4 OPEN_ORDER verified (Returned Error 132 with clear text: '{res.get('message')}')")
+        else:
+            self.assertEqual(res.get("status"), "ok")
+            print(f"  [PASS] Live MT4 OPEN_ORDER executed successfully (Ticket: #{res.get('ticket')})")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

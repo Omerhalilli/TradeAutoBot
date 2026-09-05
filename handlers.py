@@ -3,6 +3,7 @@ Telegram Command Handlers for MT4 ZeroMQ Bridge Bot.
 Institutional Trading Terminal styling, robust validation, pagination,
 inline quick navigation, and full remote MT4 control.
 """
+import asyncio
 import functools
 import logging
 import os
@@ -18,6 +19,22 @@ from news_service import news_service, CURRENCY_FLAGS
 from account_manager import account_manager, AccountProfile
 
 logger = logging.getLogger(__name__)
+
+async def zmq_async(func: Callable, *args, **kwargs) -> Any:
+    """Dispatches blocking ZeroMQ socket I/O to a worker thread so the asyncio event loop never stalls."""
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+async def safe_answer(query: Any, text: str = "", show_alert: bool = False) -> None:
+    """Safely answers a Telegram callback query without crashing if already answered."""
+    if not query:
+        return
+    try:
+        if text:
+            await query.answer(text, show_alert=show_alert)
+        else:
+            await query.answer()
+    except Exception:
+        pass
 
 # ==============================================================================
 # Authorization Decorator
@@ -58,8 +75,8 @@ def format_progress_bar(current: float, max_val: float, bar_len: int = 10) -> st
     return f"[{bar}] {int(round(ratio * 100))}%"
 
 def clean_symbol(symbol: str) -> str:
-    """Normalizes financial instrument aliases and removes whitespace."""
-    s = symbol.strip().upper()
+    """Normalizes financial instrument aliases and removes separators/whitespace."""
+    s = symbol.strip().upper().replace("/", "").replace("\\", "").replace("-", "").replace(".", "").replace(" ", "")
     aliases = {
         "GOLD": "XAUUSD",
         "SILVER": "XAGUSD",
@@ -235,7 +252,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 @restricted
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        acc_data = zmq_client.get_account()
+        acc_data = await zmq_async(zmq_client.get_account)
         if acc_data and acc_data.get("status") == "ok":
             account_manager.sync_with_live_terminal(acc_data)
     except Exception:
@@ -248,7 +265,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"👤 <b>Active Account:</b> <code>#{active_acc.id} • {active_acc.name}</code> ({mode_badge})\n"
         f"🌐 <b>Server:</b> <code>{active_acc.server}</code> | <b>Endpoint:</b> <code>{active_acc.zmq_url}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "⚡ <b>TURBO & SYSTEM PERFORMANCE</b>\n"
+        "⚡ <b>TURBO & ORDER EXECUTION</b>\n"
+        "• /buy <code>[SYM] [LOTS] [SL] [TP]</code> — Execute live market BUY order on MT4\n"
+        "• /sell <code>[SYM] [LOTS] [SL] [TP]</code> — Execute live market SELL order on MT4\n"
+        "• /trade or /order — Interactive 1-click Quick Trade panel\n"
         "• /boost — Instant latency diagnostics, live spreads & engine health\n"
         "• /status or /account — Account overview, equity, margin health & telemetry\n"
         "• /accounts or /switch — Multi-account switcher & BUY/SELL diagnostics\n\n"
@@ -279,7 +299,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @restricted
 async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = zmq_client.get_account()
+    data = await zmq_async(zmq_client.get_account)
     if data.get("status") != "ok":
         card, kb = get_offline_card("status")
         await send_or_edit(update, context, card, reply_markup=kb)
@@ -360,7 +380,7 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 @restricted
 async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = zmq_client.get_positions()
+    data = await zmq_async(zmq_client.get_positions)
     if data.get("status") != "ok":
         card, kb = get_offline_card("positions")
         await send_or_edit(update, context, card, reply_markup=kb)
@@ -395,6 +415,10 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     total_pages = (count + chunk_size - 1) // chunk_size
 
     pos_action_kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🟢 Quick BUY 0.01", callback_data="trade:buy:GBPUSD:0.01"),
+            InlineKeyboardButton("🔴 Quick SELL 0.01", callback_data="trade:sell:GBPUSD:0.01")
+        ],
         [
             InlineKeyboardButton("📸 Active Screenshot", callback_data="shotsym:CURRENT"),
             InlineKeyboardButton("📅 Economic News", callback_data="news_filter:today")
@@ -446,8 +470,8 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 @restricted
 async def cmd_boost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Turbo Boost Command: Rapid diagnostics, live latency test, spreads and engine health."""
-    latency = zmq_client.ping_latency_ms()
-    boost_data = zmq_client.get_boost()
+    latency = await zmq_async(zmq_client.ping_latency_ms)
+    boost_data = await zmq_async(zmq_client.get_boost)
     active_acc = account_manager.get_active_account()
 
     is_online = (boost_data.get("status") == "ok") or (latency > 0)
@@ -556,7 +580,7 @@ async def cmd_boost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 @restricted
 async def cmd_prop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = zmq_client.get_prop()
+    data = await zmq_async(zmq_client.get_prop)
     if data.get("status") != "ok":
         card, kb = get_offline_card("prop")
         await send_or_edit(update, context, card, reply_markup=kb)
@@ -616,7 +640,7 @@ async def cmd_prop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 @restricted
 async def cmd_reset_safeguards(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Recalibrates prop firm daily anchors, peak equity, and trips to live account equity."""
-    data = zmq_client.reset_safeguards()
+    data = await zmq_async(zmq_client.reset_safeguards)
     if data.get("status") != "ok":
         err_msg = (
             f"❌ <b>Recalibration Failed:</b>\n"
@@ -654,7 +678,7 @@ async def cb_reset_safeguards(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 @restricted
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = zmq_client.get_report()
+    data = await zmq_async(zmq_client.get_report)
     if data.get("status") != "ok":
         card, kb = get_offline_card("report")
         await send_or_edit(update, context, card, reply_markup=kb)
@@ -739,7 +763,7 @@ async def cmd_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
             return
 
-    data = zmq_client.get_history(limit=limit, filter_type=filter_type)
+    data = await zmq_async(zmq_client.get_history, limit=limit, filter_type=filter_type)
     if data.get("status") != "ok":
         card, kb = get_offline_card("history")
         await send_or_edit(update, context, card, reply_markup=kb)
@@ -839,7 +863,7 @@ async def cmd_breakeven(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except ValueError:
             lock_pips = 1
 
-    data = zmq_client.set_breakeven(symbol=target_sym, ticket=ticket_num, lock_pips=lock_pips)
+    data = await zmq_async(zmq_client.set_breakeven, symbol=target_sym, ticket=ticket_num, lock_pips=lock_pips)
     if data.get("status") != "ok":
         err_msg = (
             f"❌ <b>Break-Even Execution Failed:</b>\n"
@@ -921,7 +945,7 @@ async def cmd_trailing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except ValueError:
             trail_pips = 20
 
-    data = zmq_client.set_trailing(symbol=target_sym, ticket=ticket_num, trail_pips=trail_pips)
+    data = await zmq_async(zmq_client.set_trailing, symbol=target_sym, ticket=ticket_num, trail_pips=trail_pips)
     if data.get("status") != "ok":
         err_msg = (
             f"❌ <b>Trailing Stop Execution Failed:</b>\n"
@@ -989,7 +1013,7 @@ async def cmd_close_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     target = clean_symbol(args[0])
-    data = zmq_client.close_symbol(target)
+    data = await zmq_async(zmq_client.close_symbol, target)
     if data.get("status") != "ok":
         await send_or_edit(update, context, f"❌ <b>Execution Error:</b> {data.get('message')}")
         return
@@ -1054,9 +1078,9 @@ async def cmd_modify_sl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if target.isdigit():
-        data = zmq_client.modify_sl(ticket=int(target), sl=sl_price)
+        data = await zmq_async(zmq_client.modify_sl, ticket=int(target), sl=sl_price)
     else:
-        data = zmq_client.modify_sl(symbol=target, sl=sl_price)
+        data = await zmq_async(zmq_client.modify_sl, symbol=target, sl=sl_price)
 
     if data.get("status") != "ok":
         await send_or_edit(update, context, f"❌ <b>Error Modifying SL:</b> {data.get('message')}")
@@ -1105,9 +1129,9 @@ async def cmd_modify_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if target.isdigit():
-        data = zmq_client.modify_tp(ticket=int(target), tp=tp_price)
+        data = await zmq_async(zmq_client.modify_tp, ticket=int(target), tp=tp_price)
     else:
-        data = zmq_client.modify_tp(symbol=target, tp=tp_price)
+        data = await zmq_async(zmq_client.modify_tp, symbol=target, tp=tp_price)
 
     if data.get("status") != "ok":
         await send_or_edit(update, context, f"❌ <b>Error Modifying TP:</b> {data.get('message')}")
@@ -1135,7 +1159,7 @@ async def cmd_modify_tp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 @restricted
 async def cmd_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Prompts for confirmation before closing all open trades."""
-    pos_data = zmq_client.get_positions()
+    pos_data = await zmq_async(zmq_client.get_positions)
     count = pos_data.get("count", 0)
     
     keyboard = [
@@ -1161,7 +1185,7 @@ async def callback_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
 
     if query.data == "confirm_close_all":
-        data = zmq_client.close_all()
+        data = await zmq_async(zmq_client.close_all)
         if data.get("status") != "ok":
             await query.edit_message_text(f"❌ <b>Error:</b> {data.get('message', 'Failed to close orders')}", parse_mode=ParseMode.HTML)
             return
@@ -1188,7 +1212,7 @@ async def callback_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 @restricted
 async def cmd_pause_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     write_autotrade_flag("PAUSED")
-    data = zmq_client.pause_bot()
+    data = await zmq_async(zmq_client.pause_bot)
     conn_note = "" if data.get("status") == "ok" else " (Note: MT4 bridge offline; flag will apply upon restart)"
 
     msg = (
@@ -1203,7 +1227,7 @@ async def cmd_pause_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 @restricted
 async def cmd_resume_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     write_autotrade_flag("ACTIVE")
-    data = zmq_client.resume_bot()
+    data = await zmq_async(zmq_client.resume_bot)
     conn_note = "" if data.get("status") == "ok" else " (Note: MT4 bridge offline; flag will apply upon restart)"
 
     msg = (
@@ -1217,7 +1241,7 @@ async def cmd_resume_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 @restricted
 async def cmd_colors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    data = zmq_client.apply_colors()
+    data = await zmq_async(zmq_client.apply_colors)
     if data.get("status") != "ok":
         await send_or_edit(update, context, f"⚠️ <b>MT4 Error:</b> {data.get('message', 'Failed to apply colors')}")
         return
@@ -1392,7 +1416,7 @@ async def cb_screenshot_tf(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
 
 async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAULT_TYPE, symbol: str, timeframe: str) -> bool:
-    data = zmq_client.get_screenshot(symbol=symbol, timeframe=timeframe)
+    data = await zmq_async(zmq_client.get_screenshot, symbol=symbol, timeframe=timeframe)
     if data.get("status") != "ok":
         return False
 
@@ -1624,6 +1648,10 @@ def inspect_account_trades(account: AccountProfile) -> Tuple[str, InlineKeyboard
 
     keyboard = [
         [
+            InlineKeyboardButton("🟢 Quick BUY 0.01", callback_data="trade:buy:GBPUSD:0.01"),
+            InlineKeyboardButton("🔴 Quick SELL 0.01", callback_data="trade:sell:GBPUSD:0.01")
+        ],
+        [
             InlineKeyboardButton("💼 Open Positions", callback_data="nav_pos"),
             InlineKeyboardButton("📸 Screenshot", callback_data="nav_shot")
         ],
@@ -1637,7 +1665,7 @@ def inspect_account_trades(account: AccountProfile) -> Tuple[str, InlineKeyboard
 @restricted
 async def cmd_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
-        acc_data = zmq_client.get_account()
+        acc_data = await zmq_async(zmq_client.get_account)
         if acc_data and acc_data.get("status") == "ok":
             account_manager.sync_with_live_terminal(acc_data)
     except Exception:
@@ -1664,10 +1692,10 @@ async def cmd_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 @restricted
 async def cb_switch_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
     data = query.data or ""
 
     if data in ["switch_acc:refresh", "switch_acc:panel"]:
+        await safe_answer(query)
         await cmd_accounts(update, context)
         return
 
@@ -1675,16 +1703,16 @@ async def cb_switch_account(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         target_id = data.split(":", 1)[1]
         acc = account_manager.set_active_account(target_id)
         if not acc:
-            await query.answer("❌ Account ID not found", show_alert=True)
+            await safe_answer(query, "❌ Account ID not found", show_alert=True)
             return
 
-        report_text, markup = inspect_account_trades(acc)
+        report_text, markup = await zmq_async(inspect_account_trades, acc)
         try:
             await query.edit_message_text(report_text, reply_markup=markup, parse_mode=ParseMode.HTML)
         except Exception as e:
             if "Message is not modified" not in str(e):
                 logger.error(f"Error editing message in cb_switch_account: {e}")
-        await query.answer(f"✅ Switched to Account #{acc.id}: {acc.name}", show_alert=False)
+        await safe_answer(query, f"✅ Switched to Account #{acc.id}: {acc.name}", show_alert=False)
 
 @restricted
 async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1711,13 +1739,19 @@ async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard())
     elif data == "boost_colors":
-        res = zmq_client.apply_colors()
+        res = await zmq_async(zmq_client.apply_colors)
         count = res.get("synced_count", 0)
         await query.answer(f"🎨 Synchronized {count} charts to GBPUSD scheme!", show_alert=True)
     elif data == "nav_panic":
         await cmd_closeall(update, context)
     elif data in ["recalibrate_safeguards", "nav_reset_risk"]:
         await cmd_reset_safeguards(update, context)
+    elif data in ["nav_strategies", "nav_chart", "nav_menu"]:
+        try:
+            from autotrade.telegram_interface.command_router import command_router
+            await command_router.handle_callback_query(update, context)
+        except Exception as e:
+            logger.error(f"Error delegating {data} to command_router: {e}")
 
 @restricted
 async def cb_history_filter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1744,17 +1778,17 @@ async def cb_ea_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """Handles 1-tap trade liquidation from EA notification buttons (e.g. /close_12345)."""
     query = update.callback_query
     data = query.data or ""
-    ticket_str = data.lstrip("/").split("_", 1)[1] if "_" in data else ""
+    raw_ticket = data.lstrip("/").split("_", 1)[1] if "_" in data else ""
+    ticket_str = raw_ticket.split("@", 1)[0].strip()
     if not ticket_str.isdigit():
-        await query.answer("❌ Invalid ticket parameter", show_alert=True)
+        await safe_answer(query, "❌ Invalid ticket parameter", show_alert=True)
         return
 
-    await query.answer(f"Liquidating order #{ticket_str}...", show_alert=False)
-    res = zmq_client.close_symbol(ticket_str)
+    res = await zmq_async(zmq_client.close_symbol, ticket_str)
     if res.get("status") == "ok" and res.get("closed_count", 0) > 0:
         r_pl = float(res.get("realized_pl", 0.0))
         sign = "+" if r_pl >= 0 else ""
-        await query.answer(f"✅ Order #{ticket_str} Liquidated ({sign}${r_pl:,.2f})", show_alert=True)
+        await safe_answer(query, f"✅ Order #{ticket_str} Liquidated ({sign}${r_pl:,.2f})", show_alert=True)
         msg = (
             "🏁 <b>POSITION LIQUIDATED BY REMOTE COMMAND</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1765,26 +1799,26 @@ async def cb_ea_close(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("status"))
     else:
         err = res.get("message", "Order already closed or MT4 offline")
-        await query.answer(f"❌ Failed: {err}", show_alert=True)
+        await safe_answer(query, f"❌ Failed: {err}", show_alert=True)
 
 @restricted
 async def cb_ea_half(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles 50% partial close from EA notification buttons (e.g. /half_12345)."""
     query = update.callback_query
     data = query.data or ""
-    ticket_str = data.lstrip("/").split("_", 1)[1] if "_" in data else ""
+    raw_ticket = data.lstrip("/").split("_", 1)[1] if "_" in data else ""
+    ticket_str = raw_ticket.split("@", 1)[0].strip()
     if not ticket_str.isdigit():
-        await query.answer("❌ Invalid ticket parameter", show_alert=True)
+        await safe_answer(query, "❌ Invalid ticket parameter", show_alert=True)
         return
 
-    await query.answer("Executing 50% partial close...", show_alert=False)
-    res = zmq_client.close_half(int(ticket_str))
+    res = await zmq_async(zmq_client.close_half, int(ticket_str))
     if res.get("status") == "ok":
         closed_lots = float(res.get("closed_lots", 0.0))
         rem_lots = float(res.get("remaining_lots", 0.0))
         r_pl = float(res.get("realized_pl", 0.0))
         sign = "+" if r_pl >= 0 else ""
-        await query.answer(f"✂️ Closed {closed_lots:.2f}L on #{ticket_str} ({sign}${r_pl:,.2f})", show_alert=True)
+        await safe_answer(query, f"✂️ Closed {closed_lots:.2f}L on #{ticket_str} ({sign}${r_pl:,.2f})", show_alert=True)
         msg = (
             "✂️ <b>50% PARTIAL CLOSE COMPLETED</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1796,22 +1830,22 @@ async def cb_ea_half(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("positions"))
     else:
         err = res.get("message", "MT4 offline or position unavailable")
-        await query.answer(f"❌ Partial close failed: {err}", show_alert=True)
+        await safe_answer(query, f"❌ Partial close failed: {err}", show_alert=True)
 
 @restricted
 async def cb_ea_be(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles 1-tap Break-Even from EA notification buttons (e.g. /be_12345)."""
     query = update.callback_query
     data = query.data or ""
-    ticket_str = data.lstrip("/").split("_", 1)[1] if "_" in data else ""
+    raw_ticket = data.lstrip("/").split("_", 1)[1] if "_" in data else ""
+    ticket_str = raw_ticket.split("@", 1)[0].strip()
     if not ticket_str.isdigit():
-        await query.answer("❌ Invalid ticket parameter", show_alert=True)
+        await safe_answer(query, "❌ Invalid ticket parameter", show_alert=True)
         return
 
-    await query.answer("Locking Break-Even...", show_alert=False)
-    res = zmq_client.set_breakeven(ticket=int(ticket_str), lock_pips=1)
+    res = await zmq_async(zmq_client.set_breakeven, ticket=int(ticket_str), lock_pips=1)
     if res.get("status") == "ok" and res.get("modified_count", 0) > 0:
-        await query.answer(f"🛡️ Break-Even active for #{ticket_str} (+1 pip locked)!", show_alert=True)
+        await safe_answer(query, f"🛡️ Break-Even active for #{ticket_str} (+1 pip locked)!", show_alert=True)
         msg = (
             "🛡️ <b>BREAK-EVEN SYNCHRONIZED</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1821,10 +1855,10 @@ async def cb_ea_be(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("positions"))
     elif res.get("skipped_count", 0) > 0:
-        await query.answer(f"⚠️ Position #{ticket_str} is not in profit yet (+1 pip threshold).", show_alert=True)
+        await safe_answer(query, f"⚠️ Position #{ticket_str} is not in profit yet (+1 pip threshold).", show_alert=True)
     else:
         err = res.get("message", "Order not found or already closed")
-        await query.answer(f"❌ Failed: {err}", show_alert=True)
+        await safe_answer(query, f"❌ Failed: {err}", show_alert=True)
 
 @restricted
 async def cb_ea_shot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1840,6 +1874,434 @@ async def cb_ea_shot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not success:
         await send_or_edit(update, context, f"⚠️ Failed to capture chart for {sym} ({tf}).")
 
+def _parse_trade_args(args: list[str], default_action: str = "") -> dict:
+    """
+    Parses command arguments for trade execution:
+    /buy 0.01
+    /buy EURGBP 0.01
+    /sell EURUSD 0.05 sl=20p tp=40p
+    /trade buy GBPUSD 0.1
+    /order sell XAUUSD 0.02
+    """
+    action = default_action.upper()
+    symbol = ""
+    lots = 0.01
+    sl = 0.0
+    tp = 0.0
+    sl_pips = 0.0
+    tp_pips = 0.0
+    magic = 8882026
+    comment = "TelegramTrade"
+
+    for arg in args:
+        arg_clean = arg.strip()
+        if not arg_clean:
+            continue
+
+        if "=" in arg_clean:
+            k, v = arg_clean.split("=", 1)
+            k = k.lower().strip()
+            v_low = v.strip().lower()
+            try:
+                if v_low.endswith("pips") or v_low.endswith("pip") or v_low.endswith("p"):
+                    num_val = float(v_low.rstrip("pips").rstrip("pip").rstrip("p").strip())
+                    if k in ["sl", "stoploss", "stop", "sl_pips"]:
+                        sl_pips = num_val
+                    elif k in ["tp", "takeprofit", "take", "tp_pips"]:
+                        tp_pips = num_val
+                elif k in ["sl", "stoploss", "stop"]:
+                    sl = float(v)
+                elif k in ["tp", "takeprofit", "take"]:
+                    tp = float(v)
+                elif k in ["sl_pips", "slpips"]:
+                    sl_pips = float(v)
+                elif k in ["tp_pips", "tppips"]:
+                    tp_pips = float(v)
+                elif k in ["lots", "lot", "vol", "volume"]:
+                    lots = float(v)
+                elif k in ["magic", "id"]:
+                    magic = int(v)
+                elif k in ["comment", "com"]:
+                    comment = v
+            except ValueError:
+                pass
+            continue
+
+        upper_token = arg_clean.upper()
+        if upper_token in ["BUY", "SELL"] and not action:
+            action = upper_token
+            continue
+
+        try:
+            val = float(arg_clean)
+            lots = val
+            continue
+        except ValueError:
+            pass
+
+        if not symbol and len(arg_clean) >= 2:
+            symbol = clean_symbol(arg_clean)
+
+    if not symbol:
+        symbol = "GBPUSD"
+
+    if not action:
+        action = "BUY"
+
+    lots = max(0.01, min(100.0, round(lots, 2)))
+
+    return {
+        "action": action,
+        "symbol": symbol,
+        "lots": lots,
+        "sl": sl,
+        "tp": tp,
+        "sl_pips": sl_pips,
+        "tp_pips": tp_pips,
+        "magic": magic,
+        "comment": comment
+    }
+
+async def _execute_and_report_order(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    parsed: dict
+) -> None:
+    sym = parsed["symbol"]
+    act = parsed["action"]
+    lots = parsed["lots"]
+    sl = parsed["sl"]
+    tp = parsed["tp"]
+    sl_p = parsed.get("sl_pips", 0.0)
+    tp_p = parsed.get("tp_pips", 0.0)
+    magic = parsed["magic"]
+    comment = parsed["comment"]
+
+    if not sym:
+        try:
+            acc = await zmq_async(zmq_client.get_account)
+            sym = acc.get("chart_symbol", "")
+        except Exception:
+            sym = ""
+        if not sym:
+            sym = "EURGBP"
+
+    reply_target = update.message or (update.callback_query.message if update.callback_query else None)
+    status_msg = None
+    if reply_target:
+        try:
+            status_msg = await reply_target.reply_text(
+                f"⏳ <i>Dispatching {act} {lots:.2f} {sym} to MetaTrader 4 via ZeroMQ...</i>",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+
+    res = await zmq_async(
+        zmq_client.open_order,
+        symbol=sym,
+        cmd=act,
+        lots=lots,
+        sl=sl,
+        tp=tp,
+        sl_pips=sl_p,
+        tp_pips=tp_p,
+        magic=magic,
+        comment=comment
+    )
+
+    if res.get("status") == "ok":
+        ticket = res.get("ticket", 0)
+        open_price = float(res.get("price", 0.0))
+        exec_lots = float(res.get("lots", lots))
+        res_sym = res.get("symbol", sym)
+        res_sl = float(res.get("sl", sl))
+        res_tp = float(res.get("tp", tp))
+        retries = res.get("retries", 0)
+
+        icon = "🟢 BUY" if act == "BUY" else "🔴 SELL"
+        sl_text = f"<code>{res_sl}</code>" if res_sl > 0 else "<i>None</i>"
+        tp_text = f"<code>{res_tp}</code>" if res_tp > 0 else "<i>None</i>"
+
+        msg = (
+            f"✅ <b>ORDER EXECUTED ON MT4 TERMINAL</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Ticket:</b> <code>#{ticket}</code>\n"
+            f"• <b>Order:</b> <b>{icon} {exec_lots:.2f} {res_sym}</b>\n"
+            f"• <b>Fill Price:</b> <code>{open_price:.5f}</code>\n"
+            f"• <b>Stop Loss:</b> {sl_text} | <b>Take Profit:</b> {tp_text}\n"
+            f"• <b>Execution:</b> ZeroMQ Bridge (retries: {retries})\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Quick Actions for this position:</i>"
+        )
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🛡️ Set Break-Even", callback_data=f"/be_{ticket}"),
+                InlineKeyboardButton("✂️ Close 50%", callback_data=f"/half_{ticket}")
+            ],
+            [
+                InlineKeyboardButton("📸 Chart Snapshot", callback_data=f"shotsym:{res_sym}"),
+                InlineKeyboardButton("🏁 Close Order", callback_data=f"/close_{ticket}")
+            ],
+            [
+                InlineKeyboardButton("💼 Open Positions", callback_data="nav_pos"),
+                InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+            ]
+        ])
+        if status_msg:
+            try:
+                await status_msg.edit_text(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
+                return
+            except Exception:
+                pass
+        if reply_target:
+            await reply_target.reply_text(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
+    else:
+        err_msg = res.get("message", "Unknown execution error")
+        code = res.get("error_code", "")
+        code_str = f" [Code: {code}]" if code else ""
+        icon = "🟢 BUY" if act == "BUY" else "🔴 SELL"
+
+        msg = (
+            f"❌ <b>MT4 ORDER REJECTED{code_str}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Attempted:</b> {icon} {lots:.2f} {sym}\n"
+            f"• <b>Reason:</b> <i>{err_msg}</i>\n\n"
+            "💡 <b>Troubleshooting:</b>\n"
+            "1. Make sure MT4 'AutoTrading' toolbar button is green.\n"
+            "2. Make sure EA has 'Allow live trading' checked (F7 -> Common).\n"
+            "3. If error 132: Market is closed (FX pairs trade Mon-Fri)."
+        )
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 Re-Check Account", callback_data="nav_status"),
+                InlineKeyboardButton("💼 Positions", callback_data="nav_pos")
+            ]
+        ])
+        if status_msg:
+            try:
+                await status_msg.edit_text(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
+                return
+            except Exception:
+                pass
+        if reply_target:
+            await reply_target.reply_text(msg, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+@restricted
+async def cmd_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Executes a BUY market order on MT4."""
+    args = context.args or []
+    if not args:
+        guide_msg = (
+            "🟢 <b>QUICK BUY EXECUTION WIZARD</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "• <code>/buy GBPUSD 0.01</code>\n"
+            "• <code>/buy EURUSD 0.05 sl=1.0800 tp=1.0950</code>\n"
+            "• <code>/buy GOLD 0.02</code>\n\n"
+            "👇 <i>Or tap a quick 1-tap trade button below:</i>"
+        )
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🟢 BUY GBPUSD 0.01", callback_data="trade:buy:GBPUSD:0.01"),
+                InlineKeyboardButton("🟢 BUY EURUSD 0.01", callback_data="trade:buy:EURUSD:0.01")
+            ],
+            [
+                InlineKeyboardButton("🟢 BUY XAUUSD 0.01", callback_data="trade:buy:XAUUSD:0.01"),
+                InlineKeyboardButton("🟢 BUY BTCUSD 0.01", callback_data="trade:buy:BTCUSD:0.01")
+            ],
+            [
+                InlineKeyboardButton("💼 View Positions", callback_data="nav_pos"),
+                InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+            ]
+        ])
+        await send_or_edit(update, context, guide_msg, reply_markup=kb)
+        return
+
+    parsed = _parse_trade_args(args, default_action="BUY")
+    await _execute_and_report_order(update, context, parsed)
+
+@restricted
+async def cmd_sell(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Executes a SELL market order on MT4."""
+    args = context.args or []
+    if not args:
+        guide_msg = (
+            "🔴 <b>QUICK SELL EXECUTION WIZARD</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "• <code>/sell GBPUSD 0.01</code>\n"
+            "• <code>/sell EURUSD 0.05 sl=1.0950 tp=1.0800</code>\n"
+            "• <code>/sell GOLD 0.02</code>\n\n"
+            "👇 <i>Or tap a quick 1-tap trade button below:</i>"
+        )
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔴 SELL GBPUSD 0.01", callback_data="trade:sell:GBPUSD:0.01"),
+                InlineKeyboardButton("🔴 SELL EURUSD 0.01", callback_data="trade:sell:EURUSD:0.01")
+            ],
+            [
+                InlineKeyboardButton("🔴 SELL XAUUSD 0.01", callback_data="trade:sell:XAUUSD:0.01"),
+                InlineKeyboardButton("🔴 SELL BTCUSD 0.01", callback_data="trade:sell:BTCUSD:0.01")
+            ],
+            [
+                InlineKeyboardButton("💼 View Positions", callback_data="nav_pos"),
+                InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+            ]
+        ])
+        await send_or_edit(update, context, guide_msg, reply_markup=kb)
+        return
+
+    parsed = _parse_trade_args(args, default_action="SELL")
+    await _execute_and_report_order(update, context, parsed)
+
+@restricted
+async def cmd_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Universal trade command: /trade buy/sell SYMBOL LOTS [sl=X tp=Y]."""
+    args = context.args or []
+    if not args:
+        guide_msg = (
+            "⚡ <b>REMOTE MT4 ORDER EXECUTION</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<b>Usage:</b>\n"
+            "• <code>/trade buy GBPUSD 0.01</code>\n"
+            "• <code>/trade sell EURUSD 0.05 sl=1.0950 tp=1.0820</code>\n"
+            "• <code>/order buy GOLD 0.02</code>"
+        )
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🟢 Quick BUY 0.01", callback_data="trade:buy:GBPUSD:0.01"),
+                InlineKeyboardButton("🔴 Quick SELL 0.01", callback_data="trade:sell:GBPUSD:0.01")
+            ],
+            [
+                InlineKeyboardButton("💼 View Positions", callback_data="nav_pos"),
+                InlineKeyboardButton("📊 Account Status", callback_data="nav_status")
+            ]
+        ])
+        await send_or_edit(update, context, guide_msg, reply_markup=kb)
+        return
+
+    parsed = _parse_trade_args(args)
+    await _execute_and_report_order(update, context, parsed)
+
+@restricted
+async def cb_quick_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles 1-tap quick trade execution buttons (pattern: ^trade:(buy|sell):)."""
+    query = update.callback_query
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) < 4:
+        await safe_answer(query, "❌ Invalid trade callback format", show_alert=True)
+        return
+
+    act = parts[1].upper()
+    sym = parts[2].upper()
+    try:
+        lots = float(parts[3])
+    except ValueError:
+        lots = 0.01
+
+    await safe_answer(query, f"Submitting {act} {lots:.2f} on {sym} to MT4...", show_alert=False)
+
+    parsed = {
+        "action": act,
+        "symbol": sym,
+        "lots": lots,
+        "sl": 0.0,
+        "tp": 0.0,
+        "magic": 8882026,
+        "comment": "QuickTelegram"
+    }
+    await _execute_and_report_order(update, context, parsed)
+
+@restricted
+async def handle_slash_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles slash commands sent as text messages: /close_12345, /half_12345, /be_12345, /shot_SYM_TF."""
+    if not update.message or not update.message.text:
+        return
+
+    text = update.message.text.strip()
+    chat_id = update.effective_chat.id
+
+    if text.startswith("/close_"):
+        raw_ticket = text.split("_", 1)[1] if "_" in text else ""
+        ticket_str = raw_ticket.split("@", 1)[0].strip()
+        if not ticket_str.isdigit():
+            await update.message.reply_text("❌ Invalid ticket parameter.")
+            return
+
+        res = await zmq_async(zmq_client.close_symbol, ticket_str)
+        if res.get("status") == "ok" and res.get("closed_count", 0) > 0:
+            r_pl = float(res.get("realized_pl", 0.0))
+            sign = "+" if r_pl >= 0 else ""
+            msg = (
+                "🏁 <b>POSITION LIQUIDATED BY REMOTE COMMAND</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Ticket:</b> <code>#{ticket_str}</code>\n"
+                f"• <b>Realized P/L:</b> <b>{sign}${r_pl:,.2f}</b>\n"
+                "• <i>Closed successfully on MT4 terminal.</i>"
+            )
+            await update.message.reply_text(msg, reply_markup=get_nav_keyboard("positions"), parse_mode=ParseMode.HTML)
+        else:
+            err = res.get("message", "Order already closed or MT4 offline")
+            await update.message.reply_text(f"❌ Failed to close #{ticket_str}: {err}")
+
+    elif text.startswith("/half_"):
+        raw_ticket = text.split("_", 1)[1] if "_" in text else ""
+        ticket_str = raw_ticket.split("@", 1)[0].strip()
+        if not ticket_str.isdigit():
+            await update.message.reply_text("❌ Invalid ticket parameter.")
+            return
+
+        res = await zmq_async(zmq_client.close_half, int(ticket_str))
+        if res.get("status") == "ok":
+            closed_lots = float(res.get("closed_lots", 0.0))
+            rem_lots = float(res.get("remaining_lots", 0.0))
+            r_pl = float(res.get("realized_pl", 0.0))
+            sign = "+" if r_pl >= 0 else ""
+            msg = (
+                "✂️ <b>50% PARTIAL CLOSE COMPLETED</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Ticket:</b> <code>#{ticket_str}</code>\n"
+                f"• <b>Closed Volume:</b> <code>{closed_lots:.2f} lots</code>\n"
+                f"• <b>Remaining Volume:</b> <code>{rem_lots:.2f} lots</code>\n"
+                f"• <b>Realized P/L:</b> <b>{sign}${r_pl:,.2f}</b>"
+            )
+            await update.message.reply_text(msg, reply_markup=get_nav_keyboard("positions"), parse_mode=ParseMode.HTML)
+        else:
+            err = res.get("message", "MT4 offline or position unavailable")
+            await update.message.reply_text(f"❌ Partial close failed: {err}")
+
+    elif text.startswith("/be_"):
+        raw_ticket = text.split("_", 1)[1] if "_" in text else ""
+        ticket_str = raw_ticket.split("@", 1)[0].strip()
+        if not ticket_str.isdigit():
+            await update.message.reply_text("❌ Invalid ticket parameter.")
+            return
+
+        res = await zmq_async(zmq_client.set_breakeven, ticket=int(ticket_str), lock_pips=1)
+        if res.get("status") == "ok" and res.get("modified_count", 0) > 0:
+            msg = (
+                "🛡️ <b>BREAK-EVEN SYNCHRONIZED</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Ticket:</b> <code>#{ticket_str}</code>\n"
+                "• <b>Status:</b> <b>Risk-Free (Profit Protected)</b>\n"
+                "• <b>Locked Buffer:</b> +1 pip above entry"
+            )
+            await update.message.reply_text(msg, reply_markup=get_nav_keyboard("positions"), parse_mode=ParseMode.HTML)
+        elif res.get("skipped_count", 0) > 0:
+            await update.message.reply_text(f"⚠️ Position #{ticket_str} is not in profit yet (+1 pip threshold).")
+        else:
+            err = res.get("message", "Order not found or already closed")
+            await update.message.reply_text(f"❌ Failed: {err}")
+
+    elif text.startswith("/shot_"):
+        parts = text.lstrip("/").split("_")
+        sym = parts[1] if len(parts) > 1 else "CURRENT"
+        tf = parts[2] if len(parts) > 2 else "H1"
+        await update.message.reply_text(f"📸 Capturing chart for {sym} ({tf})...")
+        success = await execute_screenshot_delivery(chat_id, context, sym, tf)
+        if not success:
+            await update.message.reply_text(f"⚠️ Failed to capture chart for {sym} ({tf}).")
+
 # Command Aliases
 cmd_switch = cmd_accounts
 cmd_panic = cmd_closeall
@@ -1851,3 +2313,5 @@ cmd_trail = cmd_trailing
 cmd_calendar = cmd_news
 cmd_reset_risk = cmd_reset_safeguards
 cmd_reset_prop = cmd_reset_safeguards
+cmd_order = cmd_trade
+

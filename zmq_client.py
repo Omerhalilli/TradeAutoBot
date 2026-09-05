@@ -82,19 +82,25 @@ class MT4ZmqClient:
                 self.is_connected = False
                 logger.debug(f"Heartbeat check error: {ex}")
 
-    def send_command(self, action: str, **kwargs) -> Dict[str, Any]:
+    def send_command(self, action: str, timeout_ms: Optional[int] = None, **kwargs) -> Dict[str, Any]:
         """
         Sends a JSON-encoded command to the MT4 ZeroMQ Bridge EA and returns the parsed response.
         If MT4 is closed or times out, safely resets socket and returns "MT4 not connected".
+        Supports per-command timeout_ms override.
         """
         payload = {"action": action, **kwargs}
         req_bytes = json.dumps(payload).encode("utf-8")
+        eff_timeout = timeout_ms if timeout_ms is not None else self.timeout_ms
 
         with self._lock:
             try:
                 if self.socket is None:
                     self._init_socket()
                 
+                if eff_timeout != self.timeout_ms and self.socket is not None:
+                    self.socket.setsockopt(zmq.RCVTIMEO, eff_timeout)
+                    self.socket.setsockopt(zmq.SNDTIMEO, eff_timeout)
+
                 self.socket.send(req_bytes)
                 reply_bytes = self.socket.recv()
                 reply_str = reply_bytes.decode("utf-8", errors="replace")
@@ -102,7 +108,10 @@ class MT4ZmqClient:
                 self.is_connected = True
                 return res
             except zmq.Again:
-                logger.warning(f"Timeout ({self.timeout_ms}ms) waiting for MT4 ZeroMQ response for action '{action}'")
+                if self.is_connected:
+                    logger.warning(f"Timeout ({eff_timeout}ms) waiting for MT4 ZeroMQ response for action '{action}'")
+                else:
+                    logger.debug(f"ZeroMQ socket timeout ({eff_timeout}ms) for action '{action}'")
                 self.is_connected = False
                 self._init_socket() # Reset socket to clear EFSM state
                 return {
@@ -119,6 +128,50 @@ class MT4ZmqClient:
                     "connected": False,
                     "message": "⚠️ MT4 not connected"
                 }
+            finally:
+                if eff_timeout != self.timeout_ms and self.socket is not None:
+                    try:
+                        self.socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+                        self.socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
+                    except Exception:
+                        pass
+
+    def open_order(
+        self,
+        symbol: str,
+        cmd: str,
+        lots: float = 0.01,
+        price: float = 0.0,
+        sl: float = 0.0,
+        tp: float = 0.0,
+        sl_pips: float = 0.0,
+        tp_pips: float = 0.0,
+        slippage: int = 5,
+        magic: int = 8882026,
+        comment: str = "TelegramTrade",
+        timeout_ms: int = 8000
+    ) -> Dict[str, Any]:
+        return self.send_command(
+            "OPEN_ORDER",
+            symbol=symbol,
+            cmd=cmd,
+            lots=lots,
+            price=price,
+            sl=sl,
+            tp=tp,
+            sl_pips=sl_pips,
+            tp_pips=tp_pips,
+            slippage=slippage,
+            magic=magic,
+            comment=comment,
+            timeout_ms=timeout_ms
+        )
+
+    def close_ticket(self, ticket: int, timeout_ms: int = 6000) -> Dict[str, Any]:
+        return self.send_command("CLOSE_TICKET", ticket=ticket, timeout_ms=timeout_ms)
+
+    def close_partial(self, ticket: int, lots: float, timeout_ms: int = 6000) -> Dict[str, Any]:
+        return self.send_command("CLOSE_PARTIAL", ticket=ticket, lots=lots, timeout_ms=timeout_ms)
 
     def get_account(self) -> Dict[str, Any]:
         return self.send_command("GET_ACCOUNT")
@@ -130,13 +183,16 @@ class MT4ZmqClient:
         return self.send_command("GET_HISTORY", limit=limit, filter=filter_type)
 
     def close_all(self) -> Dict[str, Any]:
-        return self.send_command("CLOSE_ALL")
+        return self.send_command("CLOSE_ALL", timeout_ms=8000)
 
     def close_symbol(self, symbol: str) -> Dict[str, Any]:
         return self.send_command("CLOSE_SYMBOL", symbol=symbol)
 
-    def close_half(self, ticket: int) -> Dict[str, Any]:
-        return self.send_command("CLOSE_HALF", ticket=ticket)
+    def close_half(self, ticket: int, timeout_ms: int = 6000) -> Dict[str, Any]:
+        return self.send_command("CLOSE_HALF", ticket=ticket, timeout_ms=timeout_ms)
+
+    def modify_order(self, ticket: int = 0, symbol: str = "", sl: float = -1.0, tp: float = -1.0, timeout_ms: int = 5000) -> Dict[str, Any]:
+        return self.send_command("MODIFY_ORDER", ticket=ticket, symbol=symbol, sl=sl, tp=tp, timeout_ms=timeout_ms)
 
     def modify_sl(self, symbol: str = "", ticket: int = 0, sl: float = 0.0) -> Dict[str, Any]:
         return self.send_command("MODIFY_SL", symbol=symbol, ticket=ticket, sl=sl)
@@ -168,8 +224,8 @@ class MT4ZmqClient:
     def apply_colors(self) -> Dict[str, Any]:
         return self.send_command("APPLY_COLORS")
 
-    def get_screenshot(self, symbol: str = "", timeframe: str = "", width: int = 1280, height: int = 720) -> Dict[str, Any]:
-        return self.send_command("SCREENSHOT", symbol=symbol, timeframe=timeframe, width=width, height=height)
+    def get_screenshot(self, symbol: str = "", timeframe: str = "", width: int = 1280, height: int = 720, timeout_ms: int = 10000) -> Dict[str, Any]:
+        return self.send_command("SCREENSHOT", symbol=symbol, timeframe=timeframe, width=width, height=height, timeout_ms=timeout_ms)
 
     def get_boost(self) -> Dict[str, Any]:
         return self.send_command("GET_BOOST")
