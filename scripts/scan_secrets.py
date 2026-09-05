@@ -148,27 +148,23 @@ def scan_git_history(root_dir: Path) -> int:
     """Scans Git commit history for sensitive tokens."""
     print("🔍 Scanning Git commit history for sensitive tokens...")
     history_violations = 0
+    token_regex = re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")
 
-    sensitive_tokens = [
-        "123456789:",
-        "123456789",
-    ]
-
-    for token in sensitive_tokens:
-        try:
-            res = subprocess.run(
-                ["git", "log", "--all", "-S", token, "--oneline"],
-                cwd=str(root_dir),
-                capture_output=True,
-                text=True
-            )
-            if res.stdout.strip():
-                print(f"❌ [ALERT] Git history contains commits referencing token/chat ID '{token}':")
-                for line in res.stdout.strip().splitlines():
-                    print(f"   • {line}")
-                history_violations += 1
-        except Exception as ex:
-            print(f"Warning: git log failed: {ex}", file=sys.stderr)
+    try:
+        res = subprocess.run(
+            ["git", "log", "-p", "-G", r"[0-9]{8,10}:[a-zA-Z0-9_-]{35}"],
+            cwd=str(root_dir),
+            capture_output=True,
+            text=True
+        )
+        for line in res.stdout.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                for m in token_regex.findall(line):
+                    if "your_telegram_bot_token_here" not in m and "dummy" not in m:
+                        print(f"❌ [ALERT] Unmasked bot token in commit: {m}")
+                        history_violations += 1
+    except Exception as ex:
+        print(f"Warning: git log failed: {ex}", file=sys.stderr)
 
     if history_violations == 0:
         print("🎉 No sensitive tokens detected in Git history!")
