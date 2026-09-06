@@ -138,6 +138,15 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         self.assertGreater(size, 1000, f"Screenshot file too small ({size} bytes)")
         print(f"  [PASS] Live MT4 Chart Screenshot OK (Saved {fn}, {size:,} bytes)")
 
+    def test_10b_zmq_get_symbols(self):
+        if not self.mt4_online:
+            self.skipTest("MT4 offline")
+        res = zmq_client.get_symbols()
+        self.assertEqual(res.get("status"), "ok")
+        self.assertIn("symbols", res)
+        self.assertGreater(len(res["symbols"]), 0)
+        print(f"  [PASS] Live MT4 Accessible Symbols OK ({len(res['symbols'])} symbols detected: {res['symbols'][:5]})")
+
     def test_11_format_helpers(self):
         bar0 = handlers.format_progress_bar(0, 100)
         self.assertIn("0%", bar0)

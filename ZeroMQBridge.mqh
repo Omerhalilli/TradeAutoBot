@@ -364,30 +364,37 @@ bool Zmq_SymbolsMatch(string orderSym, string targetSym)
 string Zmq_ResolveSymbol(string genericName)
 {
    string base = genericName;
-   StringToUpper(base);
    StringTrimLeft(base);
    StringTrimRight(base);
-   StringReplace(base, "/", "");
-   StringReplace(base, "\\", "");
-   StringReplace(base, "-", "");
-   StringReplace(base, ".", "");
-   StringReplace(base, " ", "");
+   StringToUpper(base);
    
    if(base == "CURRENT" || base == "") return Symbol();
-   if(base == "GOLD") base = "XAUUSD";
-   if(base == "SILVER") base = "XAGUSD";
-   if(base == "OIL" || base == "CRUDE" || base == "WTI") base = "USOIL";
-   if(base == "BRENT") base = "UKOIL";
-   if(base == "BITCOIN" || base == "CRYPTO") base = "BTCUSD";
    
-   // 1. Direct match if broker supports exact name
+   // 0. Direct match if broker supports exact name as-is (e.g. EURUSD.az, GOLD#)
    if(MarketInfo(base, MODE_POINT) > 0.0) return base;
+   if(SymbolInfoInteger(base, SYMBOL_SELECT) == 1) return base;
+   
+   if(base == "GOLD") base = "XAUUSD";
+   else if(base == "SILVER") base = "XAGUSD";
+   else if(base == "OIL" || base == "CRUDE" || base == "WTI") base = "USOIL";
+   else if(base == "BRENT") base = "UKOIL";
+   else if(base == "BITCOIN" || base == "CRYPTO") base = "BTCUSD";
+   
+   // 1. Direct match if broker supports alias name
+   if(MarketInfo(base, MODE_POINT) > 0.0) return base;
+   
+   // Remove slashes/backslashes/spaces
+   string cleanBase = base;
+   StringReplace(cleanBase, "/", "");
+   StringReplace(cleanBase, "\\", "");
+   StringReplace(cleanBase, " ", "");
+   if(MarketInfo(cleanBase, MODE_POINT) > 0.0) return cleanBase;
    
    // 2. Check if active chart matches base
    string chartSym = Symbol();
    string upperChart = chartSym;
    StringToUpper(upperChart);
-   if(StringFind(upperChart, base) >= 0) return chartSym;
+   if(StringFind(upperChart, cleanBase) >= 0) return chartSym;
    
    // 3. Check active market orders
    for(int k = 0; k < OrdersTotal(); k++)
@@ -397,11 +404,11 @@ string Zmq_ResolveSymbol(string genericName)
          string oSym = OrderSymbol();
          string upperOSym = oSym;
          StringToUpper(upperOSym);
-         if(StringFind(upperOSym, base) >= 0) return oSym;
+         if(StringFind(upperOSym, cleanBase) >= 0) return oSym;
       }
    }
    
-   // 4. Derive broker prefix/suffix from chart Symbol() (e.g. "_min", ".pro", "m")
+   // 4. Derive broker prefix/suffix from chart Symbol() (e.g. "_min", ".az", ".pro", "m")
    string standards[4];
    standards[0] = "GBPUSD";
    standards[1] = "EURUSD";
@@ -415,7 +422,7 @@ string Zmq_ResolveSymbol(string genericName)
       {
          string prefix = StringSubstr(chartSym, 0, pos);
          string suffix = StringSubstr(chartSym, pos + StringLen(standards[s]));
-         string candidate = prefix + base + suffix;
+         string candidate = prefix + cleanBase + suffix;
          if(MarketInfo(candidate, MODE_POINT) > 0.0) return candidate;
          SymbolSelect(candidate, true);
          if(MarketInfo(candidate, MODE_POINT) > 0.0) return candidate;
@@ -427,10 +434,10 @@ string Zmq_ResolveSymbol(string genericName)
    int total = SymbolsTotal(true);
    for(int i = 0; i < total; i++)
    {
-      string s = SymbolName(i, true);
-      string upperS = s;
-      StringToUpper(upperS);
-      if(StringFind(upperS, base) >= 0) return s;
+      string ms = SymbolName(i, true);
+      string upperMS = ms;
+      StringToUpper(upperMS);
+      if(StringFind(upperMS, cleanBase) >= 0) return ms;
    }
    
    // 6. Search full broker symbol catalog and add to Market Watch
@@ -440,14 +447,14 @@ string Zmq_ResolveSymbol(string genericName)
       string sAll = SymbolName(j, false);
       string upperSAll = sAll;
       StringToUpper(upperSAll);
-      if(StringFind(upperSAll, base) >= 0)
+      if(StringFind(upperSAll, cleanBase) >= 0)
       {
          SymbolSelect(sAll, true);
          return sAll;
       }
    }
    
-   return base;
+   return cleanBase;
 }
 
 double Zmq_GetSpreadPoints(string sym)
@@ -1565,21 +1572,25 @@ string Zmq_HandleScreenshot(const string reqJson)
    string matchedSymbol = Zmq_ResolveSymbol(targetSymbol);
    
    ENUM_TIMEFRAMES tf = Zmq_StringToTimeframe(tfParam);
+   if(tf == 0) tf = (ENUM_TIMEFRAMES)Period();
    string tfStr = EnumToString(tf);
    string cleanTfStr = tfStr;
    StringReplace(cleanTfStr, "PERIOD_", "");
    
-   string filename = "snap_" + matchedSymbol + "_" + cleanTfStr + ".png";
+   string filename = "snap_" + matchedSymbol + "_" + cleanTfStr + "_" + IntegerToString((int)TimeCurrent()) + ".png";
    
    long targetChartId = -1;
    bool tempChartOpened = false;
+   long originalChartId = ChartID();
    
+   // 1. If symbol and timeframe match current chart, use current chart ID directly without modifying chart
    if(matchedSymbol == Symbol() && tf == (ENUM_TIMEFRAMES)Period())
    {
-      targetChartId = 0;
+      targetChartId = ChartID();
    }
    else
    {
+      // 2. Iterate all open charts to find an existing chart with matching symbol and timeframe
       long cid = ChartFirst();
       while(cid >= 0)
       {
@@ -1591,33 +1602,43 @@ string Zmq_HandleScreenshot(const string reqJson)
          cid = ChartNext(cid);
       }
       
-      if(targetChartId < 0)
+      // 3. If no matching chart is open, open a temporary background chart
+      if(targetChartId <= 0)
       {
          targetChartId = ChartOpen(matchedSymbol, tf);
          if(targetChartId > 0)
          {
             tempChartOpened = true;
             ChartRedraw(targetChartId);
-            Sleep(80);
+            Sleep(100);
          }
       }
    }
    
-   if(targetChartId < 0)
-      targetChartId = 0;
+   // Never fallback to Chart 0! Return error if chart cannot be opened or located
+   if(targetChartId <= 0)
+   {
+      return "{\"status\":\"error\",\"message\":\"Could not open or locate chart for symbol " + Zmq_JsonEscape(matchedSymbol) + " (" + cleanTfStr + "). Please check Market Watch.\"}";
+   }
       
+   if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, width, height, ALIGN_RIGHT);
    
    if(tempChartOpened)
    {
       // Allow MT4 graphics engine to render and flush PNG to disk before closing temporary chart
-      for(int w = 0; w < 15; w++)
+      for(int w = 0; w < 25; w++)
       {
          if(FileIsExist(filename)) break;
          Sleep(50);
       }
       ChartClose(targetChartId);
+      // Immediately restore focus to the user's primary/active chart so display remains undisturbed
+      if(originalChartId > 0)
+      {
+         ChartSetInteger(originalChartId, CHART_BRING_TO_TOP, true);
+      }
    }
    
    if(!shotOk)
@@ -1642,6 +1663,136 @@ string Zmq_HandleScreenshot(const string reqJson)
    json += "\"ask\":" + DoubleToString(ask, symDig) + ",";
    json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"";
    json += "}";
+   return json;
+}
+
+string Zmq_HandleGetSymbols()
+{
+   string symbols[];
+   ArrayResize(symbols, 0);
+   
+   // 1. Current active chart symbol first
+   string curSym = Symbol();
+   if(StringLen(curSym) > 0)
+   {
+      int sz = ArraySize(symbols);
+      ArrayResize(symbols, sz + 1);
+      symbols[sz] = curSym;
+   }
+   
+   // 2. Open chart windows symbols
+   long cid = ChartFirst();
+   while(cid >= 0)
+   {
+      string csym = ChartSymbol(cid);
+      if(StringLen(csym) > 0)
+      {
+         bool exists = false;
+         for(int k = 0; k < ArraySize(symbols); k++)
+         {
+            if(symbols[k] == csym) { exists = true; break; }
+         }
+         if(!exists)
+         {
+            int sz = ArraySize(symbols);
+            ArrayResize(symbols, sz + 1);
+            symbols[sz] = csym;
+         }
+      }
+      cid = ChartNext(cid);
+   }
+   
+   // 3. Open positions / orders symbols
+   for(int o = 0; o < OrdersTotal(); o++)
+   {
+      if(OrderSelect(o, SELECT_BY_POS, MODE_TRADES))
+      {
+         string osym = OrderSymbol();
+         if(StringLen(osym) > 0)
+         {
+            bool exists = false;
+            for(int k = 0; k < ArraySize(symbols); k++)
+            {
+               if(symbols[k] == osym) { exists = true; break; }
+            }
+            if(!exists)
+            {
+               int sz = ArraySize(symbols);
+               ArrayResize(symbols, sz + 1);
+               symbols[sz] = osym;
+            }
+         }
+      }
+   }
+   
+   // 4. Scan Market Watch symbols (selected in terminal for this account)
+   int totalSelected = SymbolsTotal(true);
+   for(int i = 0; i < totalSelected; i++)
+   {
+      string msym = SymbolName(i, true);
+      if(StringLen(msym) > 0)
+      {
+         bool exists = false;
+         for(int k = 0; k < ArraySize(symbols); k++)
+         {
+            if(symbols[k] == msym) { exists = true; break; }
+         }
+         if(!exists)
+         {
+            if(MarketInfo(msym, MODE_POINT) > 0.0 || MarketInfo(msym, MODE_BID) > 0.0)
+            {
+               int sz = ArraySize(symbols);
+               ArrayResize(symbols, sz + 1);
+               symbols[sz] = msym;
+            }
+         }
+      }
+   }
+   
+   // 5. If Market Watch has very few symbols, check full broker catalog for selected/tradable symbols
+   if(ArraySize(symbols) < 5)
+   {
+      int totalAll = SymbolsTotal(false);
+      int maxCatalogCheck = (totalAll > 300) ? 300 : totalAll;
+      for(int j = 0; j < maxCatalogCheck; j++)
+      {
+         string asym = SymbolName(j, false);
+         if(StringLen(asym) > 0)
+         {
+            bool exists = false;
+            for(int k = 0; k < ArraySize(symbols); k++)
+            {
+               if(symbols[k] == asym) { exists = true; break; }
+            }
+            if(!exists)
+            {
+               if(SymbolInfoInteger(asym, SYMBOL_SELECT) == 1 || MarketInfo(asym, MODE_TRADEALLOWED) > 0)
+               {
+                  int sz = ArraySize(symbols);
+                  ArrayResize(symbols, sz + 1);
+                  symbols[sz] = asym;
+                  if(ArraySize(symbols) >= 60) break;
+               }
+            }
+         }
+      }
+   }
+   
+   // Build JSON response
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_SYMBOLS\",";
+   json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"broker\":\"" + Zmq_JsonEscape(AccountCompany()) + "\",";
+   json += "\"server\":\"" + Zmq_JsonEscape(AccountServer()) + "\",";
+   json += "\"count\":" + IntegerToString(ArraySize(symbols)) + ",";
+   json += "\"symbols\":[";
+   for(int s = 0; s < ArraySize(symbols); s++)
+   {
+      if(s > 0) json += ",";
+      json += "\"" + Zmq_JsonEscape(symbols[s]) + "\"";
+   }
+   json += "]}";
    return json;
 }
 
@@ -1740,6 +1891,8 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleApplyColors();
    if(action == "SCREENSHOT" || action == "GET_SCREENSHOT")
       return Zmq_HandleScreenshot(reqStr);
+   if(action == "GET_SYMBOLS" || action == "SYMBOLS")
+      return Zmq_HandleGetSymbols();
    if(action == "GET_BOOST" || action == "BOOST")
       return Zmq_HandleGetBoost();
    if(action == "RESET_SAFEGUARDS" || action == "RESET_PROP" || action == "RESET")

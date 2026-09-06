@@ -75,8 +75,15 @@ def format_progress_bar(current: float, max_val: float, bar_len: int = 10) -> st
     return f"[{bar}] {int(round(ratio * 100))}%"
 
 def clean_symbol(symbol: str) -> str:
-    """Normalizes financial instrument aliases and removes separators/whitespace."""
-    s = symbol.strip().upper().replace("/", "").replace("\\", "").replace("-", "").replace(".", "").replace(" ", "")
+    """Normalizes financial instrument aliases and removes separators/whitespace while preserving broker suffixes like .az."""
+    raw = symbol.strip()
+    # Check if exact or case-insensitive match exists in cached account symbols
+    for acc in account_manager.get_all_accounts():
+        for sym in acc.symbols:
+            if sym.upper() == raw.upper():
+                return sym
+
+    s = raw.upper().replace("/", "").replace("\\", "").replace(" ", "")
     aliases = {
         "GOLD": "XAUUSD",
         "SILVER": "XAGUSD",
@@ -87,6 +94,20 @@ def clean_symbol(symbol: str) -> str:
         "BITCOIN": "BTCUSD",
         "CRYPTO": "BTCUSD"
     }
+    if s in aliases:
+        return aliases[s]
+    # Check if dot suffix exists (e.g. EURUSD.az or GOLD.az)
+    if "." in raw:
+        base, suffix = raw.replace("/", "").replace("\\", "").replace(" ", "").split(".", 1)
+        base_upper = base.upper()
+        base_clean = aliases.get(base_upper, base_upper)
+        return f"{base_clean}.{suffix}"
+    # Standard pair with hyphen (e.g. EUR-USD -> EURUSD)
+    if "-" in s:
+        parts = s.split("-")
+        if len(parts) == 2 and len(parts[0]) == 3 and len(parts[1]) == 3:
+            return f"{parts[0]}{parts[1]}"
+        return s.replace("-", "")
     return aliases.get(s, s)
 
 async def send_or_edit(
@@ -109,6 +130,10 @@ async def send_or_edit(
             if "Message is not modified" in str(e):
                 return
             logger.debug(f"send_or_edit edit_message_text error: {e}")
+            try:
+                await update.callback_query.delete_message()
+            except Exception:
+                pass
     if update.message:
         await update.message.reply_text(
             text,
@@ -1288,25 +1313,140 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ==============================================================================
 # Interactive Screenshot Panel
 # ==============================================================================
-def get_symbol_keyboard() -> InlineKeyboardMarkup:
-    """Generates the Step 1 symbol selection keyboard."""
-    keyboard = [
-        [
-            InlineKeyboardButton("🇬🇧 GBPUSD", callback_data="shotsym:GBPUSD"),
-            InlineKeyboardButton("🇪🇺 EURUSD", callback_data="shotsym:EURUSD")
-        ],
-        [
-            InlineKeyboardButton("🪙 XAUUSD (Gold)", callback_data="shotsym:XAUUSD"),
-            InlineKeyboardButton("🇯🇵 USDJPY", callback_data="shotsym:USDJPY")
-        ],
-        [
-            InlineKeyboardButton("₿ BTCUSD", callback_data="shotsym:BTCUSD"),
-            InlineKeyboardButton("🛢️ USOIL", callback_data="shotsym:USOIL")
-        ],
-        [
-            InlineKeyboardButton("📊 Active Chart Window", callback_data="shotsym:CURRENT")
-        ]
-    ]
+DEFAULT_FALLBACK_SYMBOLS = [
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
+    "AUDUSD", "NZDUSD", "USDCAD", "XAUUSD", "USOIL", "BTCUSD"
+]
+
+def get_symbol_display_name(symbol: str) -> str:
+    """Returns formatted symbol name with appropriate flag/commodity emoji."""
+    s = symbol.upper()
+    prefix = ""
+    if "GBP" in s:
+        prefix = "🇬🇧 "
+    elif "EUR" in s:
+        prefix = "🇪🇺 "
+    elif "XAU" in s or "GOLD" in s:
+        prefix = "🪙 "
+    elif "XAG" in s or "SILV" in s:
+        prefix = "🥈 "
+    elif "JPY" in s:
+        prefix = "🇯🇵 "
+    elif "CHF" in s:
+        prefix = "🇨🇭 "
+    elif "AUD" in s:
+        prefix = "🇦🇺 "
+    elif "NZD" in s:
+        prefix = "🇳🇿 "
+    elif "CAD" in s:
+        prefix = "🇨🇦 "
+    elif "BTC" in s or "ETH" in s or "CRYPTO" in s:
+        prefix = "₿ "
+    elif "OIL" in s or "BRENT" in s or "CRUDE" in s:
+        prefix = "🛢️ "
+    elif any(idx in s for idx in ["US30", "SPX", "NAS", "DAX", "GER", "DOW"]):
+        prefix = "📈 "
+    elif "USD" in s:
+        prefix = "🇺🇸 "
+    else:
+        prefix = "📊 "
+    return f"{prefix}{symbol}"
+
+async def get_accessible_symbols(force_refresh: bool = False) -> List[str]:
+    """
+    Retrieves accessible trading symbols for the currently active broker account.
+    Uses account_manager cache if available, or queries live MT4 via GET_SYMBOLS.
+    Falls back gracefully to defaults if MT4 is offline.
+    """
+    active_acc = account_manager.get_active_account()
+    acc_id = active_acc.id if active_acc else "1"
+
+    if not force_refresh:
+        cached = account_manager.get_account_symbols(acc_id)
+        if cached:
+            return cached
+
+    # Query live MT4 ZeroMQ bridge
+    try:
+        data = await zmq_async(zmq_client.get_symbols, timeout_ms=3000)
+        if data.get("status") == "ok" and data.get("symbols"):
+            raw_syms = data["symbols"]
+            seen = set()
+            valid_syms = []
+            for sym in raw_syms:
+                s_clean = str(sym).strip()
+                if s_clean and s_clean not in seen:
+                    seen.add(s_clean)
+                    valid_syms.append(s_clean)
+            if valid_syms:
+                account_manager.set_account_symbols(valid_syms, acc_id)
+                return valid_syms
+    except Exception as ex:
+        logger.debug(f"Failed to fetch symbols from MT4: {ex}")
+
+    cached = account_manager.get_account_symbols(acc_id)
+    if cached:
+        return cached
+    return list(DEFAULT_FALLBACK_SYMBOLS)
+
+def format_screenshot_wizard_header(symbols_count: int = 0) -> str:
+    active_acc = account_manager.get_active_account()
+    acc_name = active_acc.name if active_acc else "Standard"
+    acc_num = active_acc.account_number if active_acc else "N/A"
+    count_str = f" ({symbols_count} symbols)" if symbols_count > 0 else ""
+    return (
+        "📸 <b>INSTITUTIONAL CHART SNAPSHOT WIZARD</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>Account:</b> <code>{acc_name} ({acc_num})</code>{count_str}\n"
+        "Select the accessible currency pair or asset to render:"
+    )
+
+def get_symbol_keyboard(symbols: Optional[List[str]] = None, page: int = 0, per_page: int = 8) -> InlineKeyboardMarkup:
+    """Generates the Step 1 symbol selection keyboard with pagination and account-specific symbols."""
+    sym_list = list(symbols) if symbols else list(DEFAULT_FALLBACK_SYMBOLS)
+    if not sym_list:
+        sym_list = list(DEFAULT_FALLBACK_SYMBOLS)
+
+    total_count = len(sym_list)
+    total_pages = max(1, (total_count + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+
+    start_idx = page * per_page
+    page_symbols = sym_list[start_idx : start_idx + per_page]
+
+    keyboard = []
+    # Build 2-column grid of symbol buttons
+    row = []
+    for sym in page_symbols:
+        btn_text = get_symbol_display_name(sym)
+        row.append(InlineKeyboardButton(btn_text, callback_data=f"shotsym:{sym}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    # Pagination navigation controls
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"shotsym:page:{page - 1}"))
+        else:
+            nav_row.append(InlineKeyboardButton("▪️", callback_data="shotsym:noop"))
+
+        nav_row.append(InlineKeyboardButton(f"📄 {page + 1}/{total_pages}", callback_data="shotsym:noop"))
+
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"shotsym:page:{page + 1}"))
+        else:
+            nav_row.append(InlineKeyboardButton("▪️", callback_data="shotsym:noop"))
+        keyboard.append(nav_row)
+
+    # Bottom action bar: Active Chart Window & Refresh
+    keyboard.append([
+        InlineKeyboardButton("📊 Active Chart Window", callback_data="shotsym:CURRENT"),
+        InlineKeyboardButton("🔄 Refresh Symbols", callback_data="shotsym:refresh")
+    ])
     return InlineKeyboardMarkup(keyboard)
 
 def get_timeframe_keyboard(symbol: str) -> InlineKeyboardMarkup:
@@ -1353,25 +1493,36 @@ async def cmd_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
         return
 
-    msg = (
-        "📸 <b>INSTITUTIONAL CHART SNAPSHOT WIZARD</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Select the currency pair or financial asset you wish to render:"
-    )
-    await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard())
+    symbols = await get_accessible_symbols()
+    msg = format_screenshot_wizard_header(len(symbols))
+    await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard(symbols, page=0))
 
 async def cb_screenshot_symbol(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
 
     data = query.data or ""
+    if data == "shotsym:noop":
+        return
+
     if data == "shotsym:BACK":
-        msg = (
-            "📸 <b>INSTITUTIONAL CHART SNAPSHOT WIZARD</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Select the currency pair or financial asset you wish to render:"
-        )
-        await query.edit_message_text(msg, reply_markup=get_symbol_keyboard(), parse_mode=ParseMode.HTML)
+        symbols = await get_accessible_symbols()
+        msg = format_screenshot_wizard_header(len(symbols))
+        await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard(symbols, page=0))
+        return
+
+    if data.startswith("shotsym:page:"):
+        page_str = data.split(":", 2)[2]
+        page = int(page_str) if page_str.isdigit() else 0
+        symbols = await get_accessible_symbols()
+        msg = format_screenshot_wizard_header(len(symbols))
+        await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard(symbols, page=page))
+        return
+
+    if data == "shotsym:refresh":
+        symbols = await get_accessible_symbols(force_refresh=True)
+        msg = format_screenshot_wizard_header(len(symbols))
+        await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard(symbols, page=0))
         return
 
     symbol = data.split(":", 1)[1] if ":" in data else "CURRENT"
@@ -1382,7 +1533,7 @@ async def cb_screenshot_symbol(update: Update, context: ContextTypes.DEFAULT_TYP
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "Select the chart timeframe to capture:"
     )
-    await query.edit_message_text(msg, reply_markup=get_timeframe_keyboard(symbol), parse_mode=ParseMode.HTML)
+    await send_or_edit(update, context, msg, reply_markup=get_timeframe_keyboard(symbol))
 
 async def cb_screenshot_tf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -1397,10 +1548,17 @@ async def cb_screenshot_tf(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     timeframe = parts[2]
     display_sym = "Current Chart" if symbol == "CURRENT" else symbol
 
-    await query.edit_message_text(
-        f"⏳ <i>Capturing {display_sym} ({timeframe}) from MetaTrader 4 engine...</i>",
-        parse_mode=ParseMode.HTML
-    )
+    status_text = f"⏳ <i>Capturing {display_sym} ({timeframe}) from MetaTrader 4 engine...</i>"
+    if query.message and query.message.photo:
+        try:
+            await query.edit_message_caption(caption=status_text, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    else:
+        try:
+            await query.edit_message_text(status_text, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
     chat_id = update.effective_chat.id
     success = await execute_screenshot_delivery(chat_id, context, symbol, timeframe)
@@ -1410,10 +1568,17 @@ async def cb_screenshot_tf(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except Exception:
             pass
     else:
-        await query.edit_message_text(
-            f"⚠️ <b>Capture Failed:</b> MT4 bridge unreachable or chart window unavailable.",
-            parse_mode=ParseMode.HTML
-        )
+        fail_text = f"⚠️ <b>Capture Failed:</b> MT4 bridge unreachable or chart window unavailable for <code>{display_sym}</code> ({timeframe})."
+        if query.message and query.message.photo:
+            try:
+                await query.edit_message_caption(caption=fail_text, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+        else:
+            try:
+                await query.edit_message_text(fail_text, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
 
 async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAULT_TYPE, symbol: str, timeframe: str) -> bool:
     data = await zmq_async(zmq_client.get_screenshot, symbol=symbol, timeframe=timeframe)
@@ -1732,12 +1897,9 @@ async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     elif data in ["nav_boost", "nav_refresh:boost"]:
         await cmd_boost(update, context)
     elif data == "nav_shot":
-        msg = (
-            "📸 <b>INSTITUTIONAL CHART SNAPSHOT WIZARD</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Select the currency pair or financial asset you wish to render:"
-        )
-        await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard())
+        symbols = await get_accessible_symbols()
+        msg = format_screenshot_wizard_header(len(symbols))
+        await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard(symbols, page=0))
     elif data == "boost_colors":
         res = await zmq_async(zmq_client.apply_colors)
         count = res.get("synced_count", 0)

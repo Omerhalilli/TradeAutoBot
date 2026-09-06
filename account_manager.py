@@ -6,7 +6,7 @@ and persistent storage.
 import json
 import logging
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import List, Dict, Optional, Any
 from config import DATA_DIR, ZMQ_SERVER_URL
 
@@ -23,6 +23,7 @@ class AccountProfile:
     profile_name: str
     server: str
     zmq_url: str
+    symbols: List[str] = field(default_factory=list)
 
 DEFAULT_ACCOUNTS: List[Dict[str, str]] = [
     {
@@ -123,6 +124,18 @@ class AccountManager:
             return acc
         return None
 
+    def get_account_symbols(self, account_id: Optional[str] = None) -> List[str]:
+        acc = self.get_account_by_id(account_id or self.active_id)
+        if acc and acc.symbols:
+            return list(acc.symbols)
+        return []
+
+    def set_account_symbols(self, symbols: List[str], account_id: Optional[str] = None) -> None:
+        acc = self.get_account_by_id(account_id or self.active_id)
+        if acc is not None:
+            acc.symbols = list(symbols) if symbols else []
+            self._save_accounts()
+
     def sync_with_live_terminal(self, acc_data: Dict[str, Any]) -> AccountProfile:
         """
         Dynamically synchronizes the active account profile with live MT4 terminal state.
@@ -159,14 +172,15 @@ class AccountManager:
 
         return self.get_active_account()
 
-    def add_or_update_account(self, id_str: str, number: str, name: str, profile: str, server: str, zmq_url: str) -> AccountProfile:
+    def add_or_update_account(self, id_str: str, number: str, name: str, profile: str, server: str, zmq_url: str, symbols: Optional[List[str]] = None) -> AccountProfile:
         for idx, acc in enumerate(self.accounts):
             if acc.id == id_str:
-                updated = AccountProfile(id_str, number, name, profile, server, zmq_url)
+                syms = symbols if symbols is not None else list(acc.symbols)
+                updated = AccountProfile(id_str, number, name, profile, server, zmq_url, syms)
                 self.accounts[idx] = updated
                 self._save_accounts()
                 return updated
-        new_acc = AccountProfile(id_str, number, name, profile, server, zmq_url)
+        new_acc = AccountProfile(id_str, number, name, profile, server, zmq_url, list(symbols) if symbols else [])
         self.accounts.append(new_acc)
         self._save_accounts()
         return new_acc

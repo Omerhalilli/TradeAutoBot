@@ -4121,21 +4121,51 @@ void Telegram_CmdScreenshotMenu()
       }
    }
    
-   // 4. Common watchlist symbols if available
-   string commonWatchlist[] = {"EURUSD", "GBPUSD", "XAUUSD", "USDJPY", "BTCUSD", "OILUSD"};
-   for(int w = 0; w < ArraySize(commonWatchlist); w++)
+   // 4. Accessible symbols from Market Watch for active account
+   int totalMW = SymbolsTotal(true);
+   for(int w = 0; w < totalMW; w++)
    {
-      string wsym = commonWatchlist[w];
+      string wsym = SymbolName(w, true);
       bool exists = false;
       for(int k = 0; k < ArraySize(symbols); k++)
       {
          if(symbols[k] == wsym) { exists = true; break; }
       }
-      if(!exists && MarketInfo(wsym, MODE_BID) > 0.0)
+      if(!exists && StringLen(wsym) > 0 && MarketInfo(wsym, MODE_POINT) > 0.0)
       {
          int s2 = ArraySize(symbols);
          ArrayResize(symbols, s2 + 1);
          symbols[s2] = wsym;
+         if(ArraySize(symbols) >= 30) break;
+      }
+   }
+   
+   // 5. If Market Watch has very few symbols, fallback to tradable broker catalog
+   if(ArraySize(symbols) < 5)
+   {
+      int totalAll = SymbolsTotal(false);
+      int maxCatalog = (totalAll > 200) ? 200 : totalAll;
+      for(int cat = 0; cat < maxCatalog; cat++)
+      {
+         string asym = SymbolName(cat, false);
+         if(StringLen(asym) > 0)
+         {
+            bool exists = false;
+            for(int k = 0; k < ArraySize(symbols); k++)
+            {
+               if(symbols[k] == asym) { exists = true; break; }
+            }
+            if(!exists)
+            {
+               if(SymbolInfoInteger(asym, SYMBOL_SELECT) == 1 || MarketInfo(asym, MODE_TRADEALLOWED) > 0)
+               {
+                  int sz2 = ArraySize(symbols);
+                  ArrayResize(symbols, sz2 + 1);
+                  symbols[sz2] = asym;
+                  if(ArraySize(symbols) >= 30) break;
+               }
+            }
+         }
       }
    }
    
@@ -4226,11 +4256,12 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
    
    long targetChartId = -1;
    bool tempChartOpened = false;
+   long originalChartId = ChartID();
    
-   // 1. If symbol and timeframe match current chart, use current chart (0)
+   // 1. If symbol and timeframe match current chart, use current chart ID directly
    if(sym == Symbol() && tf == (ENUM_TIMEFRAMES)Period())
    {
-      targetChartId = 0;
+      targetChartId = ChartID();
    }
    else
    {
@@ -4247,7 +4278,7 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
       }
       
       // 3. If not open, open temporary chart with that exact symbol and timeframe!
-      if(targetChartId < 0)
+      if(targetChartId <= 0)
       {
          targetChartId = ChartOpen(sym, tf);
          if(targetChartId > 0)
@@ -4259,7 +4290,7 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
       }
    }
    
-   if(targetChartId < 0)
+   if(targetChartId <= 0)
    {
       Telegram_SendMessage(TelegramBotToken, TelegramChatID, TG_CROSS + " Could not open chart for symbol: " + sym + " on " + tfStr + ". Please verify symbol name in Market Watch.", 2, 1);
       return;
@@ -4301,6 +4332,7 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
       }
    }
    
+   if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, 1280, 720, ALIGN_RIGHT);
    
@@ -4310,6 +4342,20 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
       ObjectDelete(targetChartId, annoSL);
       ObjectDelete(targetChartId, annoTP);
       ChartRedraw(targetChartId);
+   }
+   
+   if(tempChartOpened)
+   {
+      for(int w = 0; w < 25; w++)
+      {
+         if(FileIsExist(filename)) break;
+         Sleep(50);
+      }
+      ChartClose(targetChartId);
+      if(originalChartId > 0)
+      {
+         ChartSetInteger(originalChartId, CHART_BRING_TO_TOP, true);
+      }
    }
    
    if(!shotOk)
@@ -4346,16 +4392,6 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
    if(!Telegram_SendPhoto(TelegramBotToken, TelegramChatID, filename, caption, kbShot))
    {
       Telegram_SendMessage(TelegramBotToken, TelegramChatID, TG_CROSS + " Failed to send chart photo for " + sym + ".", 2, 1);
-   }
-   
-   if(tempChartOpened)
-   {
-      for(int w = 0; w < 15; w++)
-      {
-         if(FileIsExist(filename)) break;
-         Sleep(50);
-      }
-      ChartClose(targetChartId);
    }
 }
 

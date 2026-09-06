@@ -486,6 +486,300 @@ string HandlePing()
    return "{\"status\":\"ok\",\"action\":\"PING\",\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"}";
 }
 
+ENUM_TIMEFRAMES Bridge_StringToTimeframe(string tfStr)
+{
+   string tf = tfStr;
+   StringToUpper(tf);
+   StringTrimLeft(tf);
+   StringTrimRight(tf);
+   if(tf == "M1" || tf == "PERIOD_M1" || tf == "1") return PERIOD_M1;
+   if(tf == "M5" || tf == "PERIOD_M5" || tf == "5") return PERIOD_M5;
+   if(tf == "M15" || tf == "PERIOD_M15" || tf == "15") return PERIOD_M15;
+   if(tf == "M30" || tf == "PERIOD_M30" || tf == "30") return PERIOD_M30;
+   if(tf == "H1" || tf == "PERIOD_H1" || tf == "60") return PERIOD_H1;
+   if(tf == "H4" || tf == "PERIOD_H4" || tf == "240") return PERIOD_H4;
+   if(tf == "D1" || tf == "PERIOD_D1" || tf == "1440") return PERIOD_D1;
+   if(tf == "W1" || tf == "PERIOD_W1" || tf == "10080") return PERIOD_W1;
+   if(tf == "MN1" || tf == "PERIOD_MN1" || tf == "43200") return PERIOD_MN1;
+   return (ENUM_TIMEFRAMES)Period();
+}
+
+string Bridge_ResolveSymbol(string sym)
+{
+   string s = sym;
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   StringToUpper(s);
+   if(s == "" || s == "CURRENT") return Symbol();
+   if(s == "GOLD") s = "XAUUSD";
+   if(s == "SILVER") s = "XAGUSD";
+   if(s == "OIL" || s == "CRUDE") s = "USOIL";
+   if(s == "BRENT") s = "UKOIL";
+   if(s == "BITCOIN" || s == "CRYPTO") s = "BTCUSD";
+   
+   if(MarketInfo(s, MODE_POINT) > 0.0) return s;
+   
+   string chartSym = Symbol();
+   string upperChart = chartSym;
+   StringToUpper(upperChart);
+   if(StringFind(upperChart, s) >= 0) return chartSym;
+   
+   int total = SymbolsTotal(true);
+   for(int i = 0; i < total; i++)
+   {
+      string ms = SymbolName(i, true);
+      string upperMS = ms;
+      StringToUpper(upperMS);
+      if(StringFind(upperMS, s) >= 0) return ms;
+   }
+   
+   total = SymbolsTotal(false);
+   for(int j = 0; j < total; j++)
+   {
+      string asAll = SymbolName(j, false);
+      string upperAll = asAll;
+      StringToUpper(upperAll);
+      if(StringFind(upperAll, s) >= 0)
+      {
+         SymbolSelect(asAll, true);
+         return asAll;
+      }
+   }
+   
+   return s;
+}
+
+string HandleScreenshot(const string reqJson)
+{
+   string targetSymbol = ExtractJsonString(reqJson, "symbol");
+   string tfParam = ExtractJsonString(reqJson, "timeframe");
+   int width = (int)ExtractJsonNumber(reqJson, "width", 1280);
+   int height = (int)ExtractJsonNumber(reqJson, "height", 720);
+   if(width <= 0) width = 1280;
+   if(height <= 0) height = 720;
+   
+   StringTrimLeft(targetSymbol);
+   StringTrimRight(targetSymbol);
+   StringToUpper(targetSymbol);
+   
+   if(targetSymbol == "" || targetSymbol == "CURRENT")
+      targetSymbol = Symbol();
+      
+   string matchedSymbol = Bridge_ResolveSymbol(targetSymbol);
+   
+   ENUM_TIMEFRAMES tf = Bridge_StringToTimeframe(tfParam);
+   if(tf == 0) tf = (ENUM_TIMEFRAMES)Period();
+   string tfStr = EnumToString(tf);
+   string cleanTfStr = tfStr;
+   StringReplace(cleanTfStr, "PERIOD_", "");
+   
+   string filename = "snap_" + matchedSymbol + "_" + cleanTfStr + "_" + IntegerToString((int)TimeCurrent()) + ".png";
+   
+   long targetChartId = -1;
+   bool tempChartOpened = false;
+   long originalChartId = ChartID();
+   
+   if(matchedSymbol == Symbol() && tf == (ENUM_TIMEFRAMES)Period())
+   {
+      targetChartId = ChartID();
+   }
+   else
+   {
+      long cid = ChartFirst();
+      while(cid >= 0)
+      {
+         if(ChartSymbol(cid) == matchedSymbol && ChartPeriod(cid) == tf)
+         {
+            targetChartId = cid;
+            break;
+         }
+         cid = ChartNext(cid);
+      }
+      
+      if(targetChartId <= 0)
+      {
+         targetChartId = ChartOpen(matchedSymbol, tf);
+         if(targetChartId > 0)
+         {
+            tempChartOpened = true;
+            ChartRedraw(targetChartId);
+            Sleep(100);
+         }
+      }
+   }
+   
+   if(targetChartId <= 0)
+   {
+      return "{\"status\":\"error\",\"message\":\"Could not open or locate chart for symbol " + JsonEscape(matchedSymbol) + " (" + cleanTfStr + "). Please check Market Watch.\"}";
+   }
+      
+   if(FileIsExist(filename)) FileDelete(filename);
+   ChartRedraw(targetChartId);
+   bool shotOk = ChartScreenShot(targetChartId, filename, width, height, ALIGN_RIGHT);
+   
+   if(tempChartOpened)
+   {
+      for(int w = 0; w < 25; w++)
+      {
+         if(FileIsExist(filename)) break;
+         Sleep(50);
+      }
+      ChartClose(targetChartId);
+      if(originalChartId > 0)
+      {
+         ChartSetInteger(originalChartId, CHART_BRING_TO_TOP, true);
+      }
+   }
+   
+   if(!shotOk)
+   {
+      return "{\"status\":\"error\",\"message\":\"ChartScreenShot failed. Code: " + IntegerToString(GetLastError()) + "\"}";
+   }
+   
+   double bid = MarketInfo(matchedSymbol, MODE_BID);
+   double ask = MarketInfo(matchedSymbol, MODE_ASK);
+   if(bid == 0.0) bid = Bid;
+   if(ask == 0.0) ask = Ask;
+   int symDig = (int)MarketInfo(matchedSymbol, MODE_DIGITS);
+   if(symDig <= 0) symDig = Digits;
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"SCREENSHOT\",";
+   json += "\"filename\":\"" + filename + "\",";
+   json += "\"symbol\":\"" + matchedSymbol + "\",";
+   json += "\"timeframe\":\"" + cleanTfStr + "\",";
+   json += "\"bid\":" + DoubleToString(bid, symDig) + ",";
+   json += "\"ask\":" + DoubleToString(ask, symDig) + ",";
+   json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"";
+   json += "}";
+   return json;
+}
+
+string HandleGetSymbols()
+{
+   string symbols[];
+   ArrayResize(symbols, 0);
+   
+   string curSym = Symbol();
+   if(StringLen(curSym) > 0)
+   {
+      int sz = ArraySize(symbols);
+      ArrayResize(symbols, sz + 1);
+      symbols[sz] = curSym;
+   }
+   
+   long cid = ChartFirst();
+   while(cid >= 0)
+   {
+      string csym = ChartSymbol(cid);
+      if(StringLen(csym) > 0)
+      {
+         bool exists = false;
+         for(int k = 0; k < ArraySize(symbols); k++)
+         {
+            if(symbols[k] == csym) { exists = true; break; }
+         }
+         if(!exists)
+         {
+            int sz = ArraySize(symbols);
+            ArrayResize(symbols, sz + 1);
+            symbols[sz] = csym;
+         }
+      }
+      cid = ChartNext(cid);
+   }
+   
+   for(int o = 0; o < OrdersTotal(); o++)
+   {
+      if(OrderSelect(o, SELECT_BY_POS, MODE_TRADES))
+      {
+         string osym = OrderSymbol();
+         if(StringLen(osym) > 0)
+         {
+            bool exists = false;
+            for(int k = 0; k < ArraySize(symbols); k++)
+            {
+               if(symbols[k] == osym) { exists = true; break; }
+            }
+            if(!exists)
+            {
+               int sz = ArraySize(symbols);
+               ArrayResize(symbols, sz + 1);
+               symbols[sz] = osym;
+            }
+         }
+      }
+   }
+   
+   int totalSelected = SymbolsTotal(true);
+   for(int i = 0; i < totalSelected; i++)
+   {
+      string msym = SymbolName(i, true);
+      if(StringLen(msym) > 0)
+      {
+         bool exists = false;
+         for(int k = 0; k < ArraySize(symbols); k++)
+         {
+            if(symbols[k] == msym) { exists = true; break; }
+         }
+         if(!exists)
+         {
+            if(MarketInfo(msym, MODE_POINT) > 0.0 || MarketInfo(msym, MODE_BID) > 0.0)
+            {
+               int sz = ArraySize(symbols);
+               ArrayResize(symbols, sz + 1);
+               symbols[sz] = msym;
+            }
+         }
+      }
+   }
+   
+   if(ArraySize(symbols) < 5)
+   {
+      int totalAll = SymbolsTotal(false);
+      int maxCatalogCheck = (totalAll > 300) ? 300 : totalAll;
+      for(int j = 0; j < maxCatalogCheck; j++)
+      {
+         string asym = SymbolName(j, false);
+         if(StringLen(asym) > 0)
+         {
+            bool exists = false;
+            for(int k = 0; k < ArraySize(symbols); k++)
+            {
+               if(symbols[k] == asym) { exists = true; break; }
+            }
+            if(!exists)
+            {
+               if(SymbolInfoInteger(asym, SYMBOL_SELECT) == 1 || MarketInfo(asym, MODE_TRADEALLOWED) > 0)
+               {
+                  int sz = ArraySize(symbols);
+                  ArrayResize(symbols, sz + 1);
+                  symbols[sz] = asym;
+                  if(ArraySize(symbols) >= 60) break;
+               }
+            }
+         }
+      }
+   }
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_SYMBOLS\",";
+   json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"broker\":\"" + JsonEscape(AccountCompany()) + "\",";
+   json += "\"server\":\"" + JsonEscape(AccountServer()) + "\",";
+   json += "\"count\":" + IntegerToString(ArraySize(symbols)) + ",";
+   json += "\"symbols\":[";
+   for(int s = 0; s < ArraySize(symbols); s++)
+   {
+      if(s > 0) json += ",";
+      json += "\"" + JsonEscape(symbols[s]) + "\"";
+   }
+   json += "]}";
+   return json;
+}
+
 //+------------------------------------------------------------------+
 //| DISPATCH REQUEST                                                 |
 //+------------------------------------------------------------------+
@@ -521,6 +815,10 @@ string ProcessRequest(const string reqStr)
       return HandleResumeBot();
    if(action == "PING")
       return HandlePing();
+   if(action == "SCREENSHOT" || action == "GET_SCREENSHOT")
+      return HandleScreenshot(reqStr);
+   if(action == "GET_SYMBOLS" || action == "SYMBOLS")
+      return HandleGetSymbols();
       
    return "{\"status\":\"error\",\"message\":\"Unknown action: " + JsonEscape(action) + "\"}";
 }

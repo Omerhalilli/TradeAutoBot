@@ -227,6 +227,9 @@ class MT4ZmqClient:
     def get_screenshot(self, symbol: str = "", timeframe: str = "", width: int = 1280, height: int = 720, timeout_ms: int = 10000) -> Dict[str, Any]:
         return self.send_command("SCREENSHOT", symbol=symbol, timeframe=timeframe, width=width, height=height, timeout_ms=timeout_ms)
 
+    def get_symbols(self, timeout_ms: int = 5000) -> Dict[str, Any]:
+        return self.send_command("GET_SYMBOLS", timeout_ms=timeout_ms)
+
     def get_boost(self) -> Dict[str, Any]:
         return self.send_command("GET_BOOST")
 
