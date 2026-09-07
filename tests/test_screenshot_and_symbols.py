@@ -203,7 +203,7 @@ class TestScreenshotAndAccessibleSymbols(unittest.TestCase):
         self.assertIsNotNone(acc)
         # Update name or profile without passing symbols
         updated = account_manager.add_or_update_account(
-            "1", acc.account_number, "Invest-AZ Updated", acc.profile_name, acc.server, acc.zmq_url
+            "1", acc.account_number, "Broker Updated", acc.profile_name, acc.server, acc.zmq_url
         )
         self.assertEqual(updated.symbols, ["EURUSD.az", "GBPUSD.az"])
         self.assertEqual(account_manager.get_account_symbols("1"), ["EURUSD.az", "GBPUSD.az"])

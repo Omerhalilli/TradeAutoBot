@@ -120,6 +120,11 @@ TELEGRAM_ENABLE_2FA: bool = str(_get_setting(
     "false"
 )).lower() in ("true", "1", "yes")
 
+WEBHOOK_URL: str = str(_get_setting("WEBHOOK_URL", "TELEGRAM", "webhook_url", "")).strip()
+WEBHOOK_PORT: int = int(_get_setting("WEBHOOK_PORT", "TELEGRAM", "webhook_port", 8443))
+WEBHOOK_LISTEN: str = str(_get_setting("WEBHOOK_LISTEN", "TELEGRAM", "webhook_listen", "0.0.0.0")).strip()
+WEBHOOK_SECRET_TOKEN: str = str(_get_setting("WEBHOOK_SECRET_TOKEN", "TELEGRAM", "webhook_secret_token", "")).strip()
+
 # ------------------------------------------------------------------------------
 # ZeroMQ Settings
 # ------------------------------------------------------------------------------
@@ -169,14 +174,14 @@ USER_TIMEZONE: str = str(_get_setting(
     "USER_TIMEZONE",
     "NEWS",
     "user_timezone",
-    "Asia/Baku"
+    "UTC"
 )).strip()
 
 BROKER_GMT_OFFSET: int = int(_get_setting(
     "BROKER_GMT_OFFSET",
     "NEWS",
     "broker_gmt_offset",
-    3
+    2
 ))
 
 # Flag file for external EAs to check auto-trading state
@@ -185,12 +190,12 @@ AUTOTRADE_FLAG_FILE: str = str(BASE_DIR / "autotrade_state.flag")
 # ------------------------------------------------------------------------------
 # Multi-Account Broker Profiles (Optional)
 # ------------------------------------------------------------------------------
-DEMO_ACCOUNT_NAME: str = str(_get_setting("DEMO_ACCOUNT_NAME", "ACCOUNTS", "demo_account_name", "Invest-AZ Demo")).strip()
+DEMO_ACCOUNT_NAME: str = str(_get_setting("DEMO_ACCOUNT_NAME", "ACCOUNTS", "demo_account_name", "Broker Demo")).strip()
 DEMO_ACCOUNT_NUMBER: str = str(_get_setting("DEMO_ACCOUNT_NUMBER", "ACCOUNTS", "demo_account_number", "Demo Account")).strip()
-DEMO_ACCOUNT_SERVER: str = str(_get_setting("DEMO_ACCOUNT_SERVER", "ACCOUNTS", "demo_account_server", "InvestAZ-Demo")).strip()
-REAL_ACCOUNT_NAME: str = str(_get_setting("REAL_ACCOUNT_NAME", "ACCOUNTS", "real_account_name", "Invest-AZ Real")).strip()
+DEMO_ACCOUNT_SERVER: str = str(_get_setting("DEMO_ACCOUNT_SERVER", "ACCOUNTS", "demo_account_server", "Broker-Demo")).strip()
+REAL_ACCOUNT_NAME: str = str(_get_setting("REAL_ACCOUNT_NAME", "ACCOUNTS", "real_account_name", "Broker Real")).strip()
 REAL_ACCOUNT_NUMBER: str = str(_get_setting("REAL_ACCOUNT_NUMBER", "ACCOUNTS", "real_account_number", "Real Live")).strip()
-REAL_ACCOUNT_SERVER: str = str(_get_setting("REAL_ACCOUNT_SERVER", "ACCOUNTS", "real_account_server", "InvestAZ-Real")).strip()
+REAL_ACCOUNT_SERVER: str = str(_get_setting("REAL_ACCOUNT_SERVER", "ACCOUNTS", "real_account_server", "Broker-Real")).strip()
 
 # ------------------------------------------------------------------------------
 # Risk Management & Prop-Firm Safeguards

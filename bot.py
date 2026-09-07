@@ -24,7 +24,17 @@ from telegram.ext import (
     ContextTypes
 )
 
-from config import TELEGRAM_BOT_TOKEN, ALLOWED_CHAT_IDS, NEWS_REMINDER_LEAD_MINUTES, MT4_FILES_DIR, setup_logging
+from config import (
+    TELEGRAM_BOT_TOKEN,
+    ALLOWED_CHAT_IDS,
+    NEWS_REMINDER_LEAD_MINUTES,
+    MT4_FILES_DIR,
+    WEBHOOK_URL,
+    WEBHOOK_PORT,
+    WEBHOOK_LISTEN,
+    WEBHOOK_SECRET_TOKEN,
+    setup_logging
+)
 from news_service import news_service, CURRENCY_FLAGS
 import handlers
 
@@ -49,7 +59,9 @@ async def post_init(application) -> None:
     try:
         commands = [
             BotCommand("buy", "🟢 Quick BUY Market Order (e.g. /buy GBPUSD 0.01)"),
+            BotCommand("openbuy", "🟢 Quick BUY Market Order Alias"),
             BotCommand("sell", "🔴 Quick SELL Market Order (e.g. /sell GBPUSD 0.01)"),
+            BotCommand("opensell", "🔴 Quick SELL Market Order Alias"),
             BotCommand("trade", "⚡ Remote Order Execution Wizard"),
             BotCommand("boost", "⚡ Institutional Turbo Boost & Diagnostics"),
             BotCommand("accounts", "👥 Switch Accounts & Inspect BUY/SELL"),
@@ -57,13 +69,15 @@ async def post_init(application) -> None:
             BotCommand("positions", "💼 View & Manage Active Trades"),
             BotCommand("be", "🛡️ Move SL to Break-Even (+1 Pip Locked)"),
             BotCommand("trailing", "⚡ Dynamic Trailing Stop Management"),
+            BotCommand("setrisk", "🛡️ Configure Risk % and Daily Loss Limits"),
             BotCommand("history", "📜 Closed Trades History & Net P/L"),
             BotCommand("screenshot", "📸 Interactive Chart Screenshot"),
             BotCommand("prop", "🛡️ Prop-Firm Risk Guardian Scorecard"),
             BotCommand("reset_risk", "🔄 Recalibrate Prop Anchors & DD"),
-            BotCommand("report", "📈 24-Hour Performance & P/L Summary"),
-            BotCommand("panic", "🚨 Emergency Kill-Switch (Close All)"),
-            BotCommand("colors", "🎨 Apply GBPUSD Color Scheme to Charts"),
+            BotCommand("report", "📈 Performance & P/L Summary"),
+            BotCommand("closeall", "🚨 Emergency Kill-Switch (Close All)"),
+            BotCommand("panic", "🚨 Emergency Kill-Switch Alias"),
+            BotCommand("colors", "🎨 Apply Dark Theme Color Scheme to Charts"),
             BotCommand("news", "📅 High-Impact Economic Calendar"),
             BotCommand("pause", "⏸️ Pause Auto-Trading Entries"),
             BotCommand("resume", "▶️ Resume Auto-Trading Entries"),
@@ -228,8 +242,8 @@ def create_application():
 
     # Command Handlers (Supporting exact Menu commands + aliases)
     app.add_handler(CommandHandler(["start", "help"], handlers.cmd_help))
-    app.add_handler(CommandHandler(["buy"], handlers.cmd_buy))
-    app.add_handler(CommandHandler(["sell"], handlers.cmd_sell))
+    app.add_handler(CommandHandler(["buy", "openbuy"], handlers.cmd_buy))
+    app.add_handler(CommandHandler(["sell", "opensell"], handlers.cmd_sell))
     app.add_handler(CommandHandler(["trade", "order"], handlers.cmd_trade))
     app.add_handler(CommandHandler(["boost", "turbo"], handlers.cmd_boost))
     app.add_handler(CommandHandler(["accounts", "switch"], handlers.cmd_accounts))
@@ -237,12 +251,13 @@ def create_application():
     app.add_handler(CommandHandler("positions", handlers.cmd_positions))
     app.add_handler(CommandHandler(["be", "breakeven"], handlers.cmd_breakeven))
     app.add_handler(CommandHandler(["trailing", "trail"], handlers.cmd_trailing))
+    app.add_handler(CommandHandler(["setrisk", "risk_set"], handlers.cmd_setrisk))
     app.add_handler(CommandHandler(["prop", "risk"], handlers.cmd_prop))
     app.add_handler(CommandHandler(["reset_risk", "reset_prop", "reset_safeguards"], handlers.cmd_reset_safeguards))
     app.add_handler(CommandHandler("report", handlers.cmd_report))
     app.add_handler(CommandHandler(["screenshot", "screenphoto", "chart"], handlers.cmd_screenshot))
     app.add_handler(CommandHandler(["colors", "synccharts", "sync"], handlers.cmd_colors))
-    app.add_handler(CommandHandler(["panic", "closeall"], handlers.cmd_closeall))
+    app.add_handler(CommandHandler(["panic", "closeall", "close_all"], handlers.cmd_closeall))
     app.add_handler(CommandHandler("history", handlers.cmd_history))
     app.add_handler(CommandHandler("close", handlers.cmd_close_symbol))
     app.add_handler(CommandHandler("modify_sl", handlers.cmd_modify_sl))
@@ -258,6 +273,7 @@ def create_application():
     app.add_handler(CallbackQueryHandler(handlers.cb_quick_trade, pattern=r"^trade:(buy|sell):"))
     app.add_handler(CallbackQueryHandler(handlers.cb_switch_account, pattern=r"^switch_acc:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^(nav_|boost_colors)"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_setrisk, pattern=r"^setrisk:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_reset_safeguards, pattern=r"^recalibrate_safeguards$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_history_filter, pattern=r"^hist_filter:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_news_filter, pattern=r"^news_filter:"))
@@ -281,11 +297,11 @@ def create_application():
     # Error Handler
     app.add_error_handler(error_handler)
 
-    # Schedule background news alerts and MT4 outbox poller
+    # Schedule background news alerts and MT4 outbox poller (optimized 100ms ultra-low latency)
     if app.job_queue:
         app.job_queue.run_repeating(news_alert_job, interval=60, first=10)
-        app.job_queue.run_repeating(outbox_alert_job, interval=2, first=3)
-        logger.info(f"News alert (60s) and MT4 outbox (2s) background schedulers registered")
+        app.job_queue.run_repeating(outbox_alert_job, interval=0.1, first=1)
+        logger.info(f"News alert (60s) and MT4 outbox (100ms ultra-low latency) background schedulers registered")
 
     return app
 
@@ -341,19 +357,34 @@ def main():
     except Exception as ex:
         logger.warning(f"Startup self-compilation check exception: {ex}")
     
-    # Resilient 24/7 run loop
+    # Resilient 24/7 run loop supporting Webhooks and Ultra-Low Latency Polling
     while True:
         try:
             asyncio.set_event_loop(asyncio.new_event_loop())
             app = create_application()
-            logger.info("Bot application initialized. Starting polling...")
-            app.run_polling(drop_pending_updates=True)
+            if WEBHOOK_URL:
+                logger.info(f"Starting bot in WEBHOOK mode on {WEBHOOK_LISTEN}:{WEBHOOK_PORT} -> {WEBHOOK_URL}")
+                app.run_webhook(
+                    listen=WEBHOOK_LISTEN,
+                    port=WEBHOOK_PORT,
+                    webhook_url=WEBHOOK_URL,
+                    secret_token=WEBHOOK_SECRET_TOKEN or None,
+                    drop_pending_updates=True
+                )
+            else:
+                logger.info("Starting bot in ULTRA-LOW LATENCY POLLING mode (poll_interval=0.0s)...")
+                app.run_polling(
+                    drop_pending_updates=True,
+                    poll_interval=0.0,
+                    timeout=10,
+                    bootstrap_retries=5
+                )
             break
         except KeyboardInterrupt:
             logger.info("Bot stopped by user.")
             break
         except Exception as e:
-            logger.error(f"Connection or runtime error in bot polling loop: {e}. Auto-reconnecting in 5 seconds...")
+            logger.error(f"Connection or runtime error in bot run loop: {e}. Auto-reconnecting in 5 seconds...")
             time.sleep(5)
 
 if __name__ == "__main__":

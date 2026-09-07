@@ -1,4 +1,4 @@
-﻿# ☁️ Oracle Cloud Always Free 24/7 Hosting Guide for TradeAutoBot
+# ☁️ Oracle Cloud Always Free 24/7 Hosting Guide for TradeAutoBot
 
 Oracle Cloud provides an **Always Free Tier** that never expires, allowing you to run your MetaTrader 4 instance and the Telegram Bot **24 hours a day, 7 days a week for \/month**.
 
@@ -9,59 +9,56 @@ Oracle Cloud provides an **Always Free Tier** that never expires, allowing you t
 1. Go to: **[https://signup.cloud.oracle.com/](https://signup.cloud.oracle.com/)**
 2. Enter your Country, Name, and Email.
 3. **Select your Home Region**:
-   * Choose a European region close to Invest-AZ's servers (e.g. **Germany Central (Frankfurt)** or **UK South (London)**) for ultra-low 1-2 ms execution latency.
+   * Choose a region close to your broker's trade servers (e.g. **Germany Central (Frankfurt)** or **UK South (London)**) for ultra-low 1-2 ms execution latency.
 4. **Payment Verification**:
    * Oracle requires a valid debit/credit card to prevent duplicate accounts.
-   * They place a temporary ~\ hold and immediately release it. **You will never be charged as long as you select \"Always Free Eligible\" resources.**
+   * They place a temporary ~$1 hold and immediately release it. **You will never be charged as long as you select "Always Free Eligible" resources.**
 5. Complete account verification.
 
 ---
 
 ## 🖥️ Step 2: Create Your Free Cloud Instance
 
-1. In the Oracle Cloud Console, click **Create a VM instance**.
-2. **Name**: TradeAutoBot-VPS
-3. **Image and Shape**:
-   * **OS**: Click *Change Image* ➜ Select **Ubuntu 22.04 Minimal** or **Ubuntu 22.04**.
-   * **Shape**: Select **VM.Standard.E2.1.Micro** (AMD x86_64, 1 core, 1 GB RAM — *Always Free Eligible*).
-     *(Or VM.Standard.A1.Flex if you prefer ARM 4-core, 24GB RAM)*.
-4. **Networking**: Keep defaults (Create new Virtual Cloud Network).
-5. **Add SSH Keys**:
-   * Click **Save private key** and download ssh-key-....key to your computer.
-6. **Firewall / Ingress Rules**:
-   * In your Subnet's Security List, add an Ingress Rule for Port 3389 (TCP) to allow Remote Desktop (RDP).
-7. Click **Create** (takes ~60 seconds to provision).
+1. In the Oracle Cloud Console, navigate to **Compute > Instances**.
+2. Click **Create Instance**.
+3. Name your instance: `mt4-autotrade-vps`
+4. **Placement**: Default AD is fine.
+5. **Image and Shape**:
+   * Click **Change Image**: Select **Canonical Ubuntu 24.04** or **Ubuntu 22.04 Minimal**.
+   * Click **Change Shape**: Select **Ampere (ARM)**:
+     * OCPUs: **2**
+     * Memory (RAM): **12 GB** (Plenty of headroom for Wine + MT4 + Python Bot!)
+6. **Networking**:
+   * Choose standard Virtual Cloud Network (VCN).
+   * Ensure **Assign a public IPv4 address** is selected.
+7. **SSH Keys**:
+   * Choose **Generate a key pair for me** and click **Save Private Key** to your computer.
+8. Click **Create**. Your instance will be ready in 1-2 minutes!
 
 ---
 
-## ⚡ Step 3: Run the 1-Click Installer
+## ⚡ Step 3: Run the 1-Click Automated Setup
 
-Connect via SSH from your computer (using Windows Terminal or PowerShell):
-`cmd
-ssh -i "path\to\your-key.key" ubuntu@<YOUR_VM_PUBLIC_IP>
-`
-
-Run the automated installer script:
-`ash
-curl -sSL https://raw.githubusercontent.com/Omerhalilli/TradeAutoBot/main/service/oracle_cloud_setup.sh | bash
-`
-
-Set a password for Remote Desktop:
-`ash
-sudo passwd ubuntu
-`
-*(Enter a secure password for your desktop login)*.
+1. Open your terminal (Linux/macOS) or PowerShell (Windows).
+2. Connect to your instance:
+   ```bash
+   ssh -i /path/to/your/ssh-key.key ubuntu@<YOUR_INSTANCE_PUBLIC_IP>
+   ```
+3. Run the automated TradeAutoBot installer script:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Omerhalilli/TradeAutoBot/main/service/oracle_cloud_setup.sh | bash
+   ```
+   *This script automatically installs Wine-Staging, Python 3, MetaTrader dependencies, lightweight XFCE desktop, RDP server, and the TradeAutoBot daemon service!*
 
 ---
 
-## 💻 Step 4: Connect via Windows Remote Desktop
+## 🖥️ Step 4: Connect via Remote Desktop (RDP)
 
-1. On your Windows laptop, press Win + R, type **mstsc**, and press Enter.
-2. In **Computer**, enter your Oracle VM's **Public IP address**.
-3. Click **Connect**.
-4. Log in with:
-   * **Username**: ubuntu
-   * **Password**: *(The password you created in Step 3)*.
+1. On Windows, press `Win + R`, type `mstsc`, and press Enter.
+   *(On macOS/Linux, use Microsoft Remote Desktop or Remmina)*
+2. Computer: `<YOUR_INSTANCE_PUBLIC_IP>:3389`
+3. Username: `ubuntu`
+4. Password: The password you set during the setup script.
 5. You will see an XFCE graphical desktop!
 
 ---
@@ -69,13 +66,13 @@ sudo passwd ubuntu
 ## 📈 Step 5: Launch MT4 & TradeAutoBot
 
 Inside your Remote Desktop:
-1. Open the browser or terminal and download your Invest-AZ MT4 installer:
-   `ash
-   wine /path/to/investaz_mt4_setup.exe
-   `
-2. Log into your Invest-AZ demo account.
+1. Open the browser or terminal and download your broker MT4 installer:
+   ```bash
+   wine /path/to/broker_mt4_setup.exe
+   ```
+2. Log into your broker trading account.
 3. Open terminal and configure your .env:
-   `ash
+   ` ash
    cd /opt/TradeAutoBot
    sudo nano .env
    `

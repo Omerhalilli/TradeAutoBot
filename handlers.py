@@ -286,7 +286,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     mode_badge = "🔴 REAL (LIVE)" if "REAL" in active_acc.name.upper() else "🟡 DEMO"
     
     help_text = (
-        "🏛️ <b>INVEST-AZ INSTITUTIONAL COMMAND CENTER</b>\n"
+        "🏛️ <b>METATRADER 4 INSTITUTIONAL COMMAND CENTER</b>\n"
         f"👤 <b>Active Account:</b> <code>#{active_acc.id} • {active_acc.name}</code> ({mode_badge})\n"
         f"🌐 <b>Server:</b> <code>{active_acc.server}</code> | <b>Endpoint:</b> <code>{active_acc.zmq_url}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -339,7 +339,7 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     floating = float(data.get("floating_pl", 0.0))
     curr = data.get("currency", "USD")
     server_time = data.get("server_time", "-")
-    company = data.get("company", "Invest-AZ")
+    company = data.get("company", "MetaTrader 4 Broker")
     trade_mode = data.get("trade_mode", "DEMO").upper()
     leverage = data.get("leverage", 100)
     server = data.get("server", active_acc.server)
@@ -383,7 +383,7 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     msg = (
         "╔══════════════════════════════════╗\n"
-        "   🏛️ <b>INVEST-AZ INSTITUTIONAL TERMINAL</b>\n"
+        "   🏛️ <b>METATRADER 4 INSTITUTIONAL TERMINAL</b>\n"
         "╚══════════════════════════════════╝\n"
         f"<b>ACCOUNT:</b> <code>#{active_acc.id} • {active_acc.name}</code> [🟢 ACTIVE]\n"
         f"<b>LOGIN:</b>   <code>{data.get('account_number', active_acc.account_number)}</code> | <b>MODE:</b> {mode_badge}\n"
@@ -612,7 +612,7 @@ async def cmd_prop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     acc = data.get("account", "-")
-    comp = data.get("company", "Invest-AZ")
+    comp = data.get("company", "MetaTrader 4 Broker")
     curr = data.get("currency", "USD")
     eq = float(data.get("equity", 0.0))
     peak_eq = float(data.get("peak_equity", eq))
@@ -702,6 +702,141 @@ async def cb_reset_safeguards(update: Update, context: ContextTypes.DEFAULT_TYPE
     await cmd_reset_safeguards(update, context)
 
 @restricted
+async def cmd_setrisk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Configures or displays risk management and prop-firm parameters."""
+    args = context.args or []
+    try:
+        from autotrade.core.config_manager import get_config
+        cfg = get_config()
+    except Exception:
+        cfg = None
+
+    if not args:
+        risk_pct = getattr(cfg.risk, "max_account_risk_pct", getattr(cfg.risk, "risk_per_trade_pct", 1.0)) if cfg else 1.0
+        daily_loss = getattr(cfg.risk, "max_daily_loss_pct", 4.5) if cfg else 4.5
+        max_dd = getattr(cfg.risk, "max_total_drawdown_pct", 8.0) if cfg else 8.0
+        max_trades = getattr(cfg.risk, "max_open_positions", getattr(cfg.risk, "max_open_trades_total", 10)) if cfg else 10
+        trailing = getattr(cfg.risk, "default_trailing_pips", getattr(cfg.risk, "trailing_stop_pips", 20.0)) if cfg else 20.0
+        be_pips = getattr(cfg.risk, "breakeven_trigger_pips", getattr(cfg.risk, "break_even_trigger_pips", 15.0)) if cfg else 15.0
+        lock_pips = getattr(cfg.risk, "breakeven_lock_pips", getattr(cfg.risk, "break_even_lock_pips", 1.0)) if cfg else 1.0
+
+        msg = (
+            "🛡️ <b>RISK MANAGEMENT & SAFEGUARD CONFIGURATION</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Risk Per Trade:</b> <code>{risk_pct:.2f}%</code>\n"
+            f"• <b>Max Daily Loss Limit:</b> <code>{daily_loss:.2f}%</code>\n"
+            f"• <b>Max Total Drawdown:</b> <code>{max_dd:.2f}%</code>\n"
+            f"• <b>Max Concurrent Trades:</b> <code>{max_trades}</code>\n"
+            f"• <b>Trailing Stop:</b> <code>{trailing:.1f} pips</code>\n"
+            f"• <b>Break-Even Trigger:</b> <code>+{be_pips:.1f} pips (Lock {lock_pips:.1f} p)</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚙️ <b>Command Usage:</b>\n"
+            "• <code>/setrisk 1.5</code> — Set risk per trade to 1.5%\n"
+            "• <code>/setrisk trade 2.0</code> — Set risk per trade to 2.0%\n"
+            "• <code>/setrisk daily 4.5</code> — Set max daily loss to 4.5%\n"
+            "• <code>/setrisk max_trades 5</code> — Set max concurrent trades limit\n\n"
+            "👇 <i>Quick Risk Presets:</i>"
+        )
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🛡️ 0.5% Risk", callback_data="setrisk:trade:0.5"),
+                InlineKeyboardButton("🛡️ 1.0% Risk", callback_data="setrisk:trade:1.0"),
+                InlineKeyboardButton("🛡️ 2.0% Risk", callback_data="setrisk:trade:2.0")
+            ],
+            [
+                InlineKeyboardButton("🛑 3% Daily Max", callback_data="setrisk:daily:3.0"),
+                InlineKeyboardButton("🛑 5% Daily Max", callback_data="setrisk:daily:5.0")
+            ],
+            [
+                InlineKeyboardButton("📊 View Risk Dashboard", callback_data="nav_prop"),
+                InlineKeyboardButton("📈 Account Status", callback_data="nav_status")
+            ]
+        ])
+        await send_or_edit(update, context, msg, reply_markup=kb)
+        return
+
+    action = "trade"
+    val_str = args[0]
+    if len(args) >= 2:
+        action = args[0].lower()
+        val_str = args[1]
+    elif args[0].lower() in ["daily", "day", "loss"]:
+        action = "daily"
+        val_str = "4.5"
+    elif args[0].lower() in ["trades", "max_trades", "max_open"]:
+        action = "trades"
+        val_str = "10"
+
+    try:
+        val = float(val_str.replace("%", "").strip())
+    except ValueError:
+        await send_or_edit(
+            update, context,
+            f"❌ <b>Invalid value:</b> <code>{val_str}</code>. Please provide a valid numeric value (e.g. <code>/setrisk 1.5</code>)."
+        )
+        return
+
+    if action in ["trade", "risk", "per_trade"]:
+        if val <= 0.0 or val > 15.0:
+            await send_or_edit(update, context, "❌ <b>Out of range:</b> Risk per trade must be between <code>0.1%</code> and <code>15.0%</code>.")
+            return
+        if cfg:
+            if hasattr(cfg.risk, "max_account_risk_pct"):
+                cfg.risk.max_account_risk_pct = val
+            if hasattr(cfg.risk, "risk_per_trade_pct"):
+                cfg.risk.risk_per_trade_pct = val
+        confirm_msg = f"✅ <b>Risk per trade updated:</b> <code>{val:.2f}%</code> per position."
+    elif action in ["daily", "day", "loss"]:
+        if val <= 0.5 or val > 25.0:
+            await send_or_edit(update, context, "❌ <b>Out of range:</b> Daily loss limit must be between <code>1.0%</code> and <code>25.0%</code>.")
+            return
+        if cfg:
+            cfg.risk.max_daily_loss_pct = val
+        confirm_msg = f"✅ <b>Daily loss limit updated:</b> <code>{val:.2f}%</code> maximum daily drawdown."
+    elif action in ["trades", "max_trades", "max_open"]:
+        trades_int = int(val)
+        if trades_int < 1 or trades_int > 50:
+            await send_or_edit(update, context, "❌ <b>Out of range:</b> Max open trades must be between <code>1</code> and <code>50</code>.")
+            return
+        if cfg:
+            if hasattr(cfg.risk, "max_open_positions"):
+                cfg.risk.max_open_positions = trades_int
+            if hasattr(cfg.risk, "max_open_trades_total"):
+                cfg.risk.max_open_trades_total = trades_int
+        confirm_msg = f"✅ <b>Max concurrent trades updated:</b> <code>{trades_int}</code> positions."
+    else:
+        if val <= 0.0 or val > 15.0:
+            await send_or_edit(update, context, "❌ <b>Out of range:</b> Risk per trade must be between <code>0.1%</code> and <code>15.0%</code>.")
+            return
+        if cfg:
+            if hasattr(cfg.risk, "max_account_risk_pct"):
+                cfg.risk.max_account_risk_pct = val
+            if hasattr(cfg.risk, "risk_per_trade_pct"):
+                cfg.risk.risk_per_trade_pct = val
+        confirm_msg = f"✅ <b>Risk per trade updated:</b> <code>{val:.2f}%</code> per position."
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Prop & Risk Guardian", callback_data="nav_prop"),
+            InlineKeyboardButton("💼 Active Positions", callback_data="nav_pos")
+        ]
+    ])
+    await send_or_edit(update, context, confirm_msg, reply_markup=kb)
+
+@restricted
+async def cb_setrisk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles inline button clicks for setrisk presets."""
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+    data = query.data or ""
+    parts = data.split(":")
+    if len(parts) == 3:
+        context.args = [parts[1], parts[2]]
+    await cmd_setrisk(update, context)
+
+@restricted
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = await zmq_async(zmq_client.get_report)
     if data.get("status") != "ok":
@@ -711,7 +846,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     period = data.get("period", "Last 24 Hours")
     acc = data.get("account", "-")
-    comp = data.get("company", "Invest-AZ")
+    comp = data.get("company", "MetaTrader 4 Broker")
     curr = data.get("currency", "USD")
     total_trades = int(data.get("total_trades", 0))
     win_count = int(data.get("win_count", 0))
@@ -1205,6 +1340,7 @@ async def cmd_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         parse_mode=ParseMode.HTML
     )
 
+@restricted
 async def callback_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -1638,7 +1774,7 @@ async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAUL
 # Multi-Account Profile Switcher & BUY/SELL Function Inspection
 # ==============================================================================
 def get_accounts_keyboard() -> InlineKeyboardMarkup:
-    """Renders inline keyboard showing the 2 Invest-AZ accounts (Demo vs Real)."""
+    """Renders inline keyboard showing multi-account profiles (Demo vs Real)."""
     accounts = account_manager.get_all_accounts()
     active = account_manager.get_active_account()
     keyboard = []
@@ -1654,7 +1790,7 @@ def get_accounts_keyboard() -> InlineKeyboardMarkup:
 
 def inspect_account_trades(account: AccountProfile) -> Tuple[str, InlineKeyboardMarkup]:
     """
-    Performs deep inspection of the Invest-AZ account:
+    Performs deep inspection of the MetaTrader 4 account:
     Checks if the account has any active BUY or SELL functions/orders,
     computes exposure, volume, and floating profit, and formats a complete report.
     """
@@ -1675,9 +1811,9 @@ def inspect_account_trades(account: AccountProfile) -> Tuple[str, InlineKeyboard
             f"🌐 <b>Server:</b> <code>{account.server}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "⚠️ <b>CONNECTION STATUS: OFFLINE / UNREACHABLE</b>\n"
-            "<i>The Invest-AZ MetaTrader 4 terminal is currently closed or bridge EA is not attached.</i>\n\n"
+            "<i>The MetaTrader 4 terminal is currently closed or bridge EA is not attached.</i>\n\n"
             "📌 <b>To connect:</b>\n"
-            "1. Open your Invest-AZ MT4 terminal.\n"
+            "1. Open your MetaTrader 4 terminal.\n"
             "2. Ensure SmartAutoTradeEA_Pro is attached to an open chart (e.g. GBPUSD, H1).\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "⚡ <b>BUY / SELL FUNCTION DIAGNOSTICS:</b>\n\n"
@@ -1694,7 +1830,7 @@ def inspect_account_trades(account: AccountProfile) -> Tuple[str, InlineKeyboard
     live_num = str(acc_data.get("account_number", account.account_number))
     trade_mode = str(acc_data.get("trade_mode", "DEMO")).upper()
     server = str(acc_data.get("server", account.server))
-    company = str(acc_data.get("company", "Invest-AZ"))
+    company = str(acc_data.get("company", "MetaTrader 4 Broker"))
 
     target_is_real = (str(account.id) == "2" or "REAL" in account.name.upper())
     terminal_is_real = (trade_mode == "REAL" or "REAL" in server.upper())
@@ -1837,7 +1973,7 @@ async def cmd_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         pass
     active = account_manager.get_active_account()
     msg = (
-        "👥 <b>INVEST-AZ MULTI-ACCOUNT CONTROL & TRADE INSPECTION</b>\n"
+        "👥 <b>MULTI-ACCOUNT CONTROL & TRADE INSPECTION</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"🟢 <b>Current Active Target:</b> <b>{active.name}</b>\n"
         f"• <b>Number:</b> <code>{active.account_number}</code>\n"

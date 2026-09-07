@@ -136,11 +136,188 @@ bool Telegram_IsDuplicateMessage(const string text, const int debounceSeconds = 
 //+------------------------------------------------------------------+
 //| Send message via Telegram Bot API with retry mechanism           |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Asynchronous In-Memory Message Queue & Helpers                   |
+//+------------------------------------------------------------------+
+struct TelegramQueueItem
+{
+   string token;
+   string chat;
+   string textHtml;
+   string markupJson;
+   datetime queueTime;
+};
+
+#define TG_QUEUE_MAX_SIZE 64
+TelegramQueueItem g_tgMsgQueue[TG_QUEUE_MAX_SIZE];
+int g_tgQueueHead  = 0;
+int g_tgQueueTail  = 0;
+int g_tgQueueCount = 0;
+
+// Write message payload directly to MT4 Files outbox for Python dispatcher (<0.5ms)
+bool Telegram_WriteOutboxPayload(const string textHtml, const string chatId = "", const string replyMarkupJson = "")
+{
+   string escapedText = Telegram_JsonEscape(textHtml);
+   string jsonPayload;
+   if(StringLen(replyMarkupJson) > 0)
+   {
+      jsonPayload = StringFormat("{\"chat_id\":\"%s\",\"text\":\"%s\",\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true,\"reply_markup\":%s}",
+                                 chatId, escapedText, replyMarkupJson);
+   }
+   else
+   {
+      jsonPayload = StringFormat("{\"chat_id\":\"%s\",\"text\":\"%s\",\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true}",
+                                 chatId, escapedText);
+   }
+   
+   uchar postData[];
+   StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
+   int dataSize = ArraySize(postData);
+   if(dataSize > 0 && postData[dataSize - 1] == 0)
+   {
+      ArrayResize(postData, dataSize - 1);
+      dataSize--;
+   }
+   
+   string uniqueOutName = StringFormat("tg_out_%u_%d.json", (uint)GetTickCount(), MathRand());
+   int uHandle = FileOpen(uniqueOutName, FILE_WRITE|FILE_BIN);
+   if(uHandle != INVALID_HANDLE)
+   {
+      FileWriteArray(uHandle, postData, 0, dataSize);
+      FileClose(uHandle);
+      PrintFormat("[Telegram] Queued message to fail-safe outbox for Python dispatcher: %s", uniqueOutName);
+      return true;
+   }
+   else
+   {
+      PrintFormat("[Telegram] ERROR: Failed to write outbox file %s (Error %d)", uniqueOutName, GetLastError());
+   }
+   return false;
+}
+
+// Low-latency direct HTTP WebRequest post to Telegram API (minimal 1500ms timeout, 0 sleep)
+bool Telegram_DirectPost(const string botToken, const string chatId, const string textHtml, const string replyMarkupJson = "", const int timeoutMs = 1500)
+{
+   if(StringLen(botToken) == 0 || StringLen(chatId) == 0) return false;
+   
+   string escapedText = Telegram_JsonEscape(textHtml);
+   string jsonPayload;
+   if(StringLen(replyMarkupJson) > 0)
+   {
+      jsonPayload = StringFormat("{\"chat_id\":\"%s\",\"text\":\"%s\",\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true,\"reply_markup\":%s}",
+                                 chatId, escapedText, replyMarkupJson);
+   }
+   else
+   {
+      jsonPayload = StringFormat("{\"chat_id\":\"%s\",\"text\":\"%s\",\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true}",
+                                 chatId, escapedText);
+   }
+   
+   uchar postData[];
+   StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
+   int dataSize = ArraySize(postData);
+   if(dataSize > 0 && postData[dataSize - 1] == 0)
+   {
+      ArrayResize(postData, dataSize - 1);
+      dataSize--;
+   }
+   
+   string url = "https://api.telegram.org/bot" + botToken + "/sendMessage";
+   string headers = "Content-Type: application/json\r\n";
+   uchar resultData[];
+   string resultHeaders = "";
+   
+   ResetLastError();
+   int res = WebRequest("POST", url, headers, timeoutMs, postData, resultData, resultHeaders);
+   if(res == 200)
+   {
+      return true;
+   }
+   
+   int err = GetLastError();
+   if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060)
+   {
+      PrintFormat("[Telegram] WebRequest not permitted in MT4 options (Error %d). Falling back to outbox for Python dispatcher.", err);
+   }
+   else
+   {
+      string responseBody = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
+      PrintFormat("[Telegram] Direct WebRequest returned HTTP %d (Terminal Error %d): %s", res, err, responseBody);
+   }
+   return false;
+}
+
+// Enqueue message into ring buffer
+bool Telegram_QueueEnqueue(const string token, const string chat, const string textHtml, const string markupJson)
+{
+   if(g_tgQueueCount >= TG_QUEUE_MAX_SIZE)
+   {
+      // Buffer full: flush oldest to outbox to prevent message drop
+      Telegram_WriteOutboxPayload(g_tgMsgQueue[g_tgQueueHead].textHtml, g_tgMsgQueue[g_tgQueueHead].chat, g_tgMsgQueue[g_tgQueueHead].markupJson);
+      g_tgQueueHead = (g_tgQueueHead + 1) % TG_QUEUE_MAX_SIZE;
+      g_tgQueueCount--;
+   }
+   
+   g_tgMsgQueue[g_tgQueueTail].token = token;
+   g_tgMsgQueue[g_tgQueueTail].chat = chat;
+   g_tgMsgQueue[g_tgQueueTail].textHtml = textHtml;
+   g_tgMsgQueue[g_tgQueueTail].markupJson = markupJson;
+   g_tgMsgQueue[g_tgQueueTail].queueTime = TimeLocal();
+   
+   g_tgQueueTail = (g_tgQueueTail + 1) % TG_QUEUE_MAX_SIZE;
+   g_tgQueueCount++;
+   return true;
+}
+
+// Drain pending messages from queue (called from OnTimer)
+void Telegram_ProcessQueue()
+{
+   if(g_tgQueueCount <= 0) return;
+
+   int toProcess = MathMin(3, g_tgQueueCount);
+   for(int i = 0; i < toProcess; i++)
+   {
+      if(g_tgQueueCount <= 0) break;
+
+      TelegramQueueItem item = g_tgMsgQueue[g_tgQueueHead];
+      bool sent = false;
+
+      if(StringLen(item.token) > 0 && StringLen(item.chat) > 0)
+      {
+         sent = Telegram_DirectPost(item.token, item.chat, item.textHtml, item.markupJson, 1500);
+      }
+
+      if(!sent)
+      {
+         // Direct post failed or token empty -> write to fail-safe outbox immediately
+         Telegram_WriteOutboxPayload(item.textHtml, item.chat, item.markupJson);
+      }
+
+      g_tgQueueHead = (g_tgQueueHead + 1) % TG_QUEUE_MAX_SIZE;
+      g_tgQueueCount--;
+   }
+}
+
+// Flush all queued messages on EA deinitialization
+void Telegram_FlushQueue()
+{
+   while(g_tgQueueCount > 0)
+   {
+      TelegramQueueItem item = g_tgMsgQueue[g_tgQueueHead];
+      Telegram_WriteOutboxPayload(item.textHtml, item.chat, item.markupJson);
+      g_tgQueueHead = (g_tgQueueHead + 1) % TG_QUEUE_MAX_SIZE;
+      g_tgQueueCount--;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Send message via Telegram Bot API with queue & outbox fallback   |
+//+------------------------------------------------------------------+
 bool Telegram_SendMessage(const string botToken, 
                           const string chatId, 
                           const string messageTextHtml, 
-                          const int retryCount = 3, 
-                          const int retryDelaySec = 2,
+                          const int retryCount = 1, 
+                          const int retryDelaySec = 0,
                           const string replyMarkupJson = "")
 {
    if(StringLen(messageTextHtml) == 0) return false;
@@ -155,107 +332,23 @@ bool Telegram_SendMessage(const string botToken,
    string activeToken = botToken;
    string activeChat = chatId;
       
-   // Build JSON payload (works with or without direct chat ID)
-   string escapedText = Telegram_JsonEscape(messageTextHtml);
-   string jsonPayload;
-   if(StringLen(replyMarkupJson) > 0)
+   // If direct WebRequest parameters are missing, write instantly to outbox (<0.5ms)
+   if(StringLen(activeToken) == 0 || StringLen(activeChat) == 0)
    {
-      jsonPayload = StringFormat("{\"chat_id\":\"%s\",\"text\":\"%s\",\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true,\"reply_markup\":%s}",
-                                 activeChat, escapedText, replyMarkupJson);
-   }
-   else
-   {
-      jsonPayload = StringFormat("{\"chat_id\":\"%s\",\"text\":\"%s\",\"parse_mode\":\"HTML\",\"disable_web_page_preview\":true}",
-                                 activeChat, escapedText);
-   }
-   
-   // Convert to UTF-8 char array
-   uchar postData[];
-   StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
-   
-   // StringToCharArray includes trailing null character, strip it for HTTP body and file outbox
-   int dataSize = ArraySize(postData);
-   if(dataSize > 0 && postData[dataSize - 1] == 0)
-   {
-      ArrayResize(postData, dataSize - 1);
-      dataSize--;
+      return Telegram_WriteOutboxPayload(messageTextHtml, activeChat, replyMarkupJson);
    }
 
-   // --- STEP 1: Attempt direct WebRequest via MetaTrader 4 ONLY if both bot token and chat ID are provided ---
-   bool webRequestSent = false;
-   if(StringLen(activeToken) > 0 && StringLen(activeChat) > 0)
+   // If message queue is currently empty, attempt immediate non-blocking WebRequest (1500ms timeout max)
+   if(g_tgQueueCount == 0)
    {
-      string url = "https://api.telegram.org/bot" + activeToken + "/sendMessage";
-      string headers = "Content-Type: application/json\r\n";
-      int timeout = 5000; // 5 seconds
-      uchar resultData[];
-      string resultHeaders = "";
-
-      int attempts = MathMax(1, retryCount);
-      for(int attempt = 1; attempt <= attempts; attempt++)
+      if(Telegram_DirectPost(activeToken, activeChat, messageTextHtml, replyMarkupJson, 1500))
       {
-         ResetLastError();
-         int res = WebRequest("POST", url, headers, timeout, postData, resultData, resultHeaders);
-         
-         if(res == 200)
-         {
-            webRequestSent = true;
-            break; // Sent successfully via WebRequest!
-         }
-         
-         int err = GetLastError();
-         string responseBody = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
-         
-         // Common configuration error: WebRequest URL not whitelisted in terminal options
-         if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060)
-         {
-            PrintFormat("[Telegram] WebRequest not permitted in MT4 options (Error %d). Falling back to outbox for Python dispatcher.", err);
-            break; // Retrying will not fix configuration; fall back to outbox
-         }
-         
-         PrintFormat("[Telegram] Attempt %d/%d failed. HTTP Code: %d, Terminal Error: %d, Response: %s", 
-                     attempt, attempts, res, err, responseBody);
-         
-         // If client-side error (400 Bad Request, 401 Unauthorized, 404 Not Found), don't retry fruitlessly
-         if(res == 400 || res == 401 || res == 404)
-         {
-            Print("[Telegram] Aborting retries due to non-recoverable HTTP client error.");
-            break;
-         }
-         
-         // Backoff before retry
-         if(attempt < attempts)
-         {
-            Sleep(retryDelaySec * 1000);
-         }
+         return true; // Sent successfully via WebRequest!
       }
    }
-   else
-   {
-      Print("[Telegram] Direct WebRequest skipped (token or chat ID empty in EA inputs). Queuing to outbox for Python dispatcher.");
-   }
-   
-   if(webRequestSent)
-   {
-      return true; // Sent successfully via WebRequest! DO NOT write outbox file to prevent duplicate messages!
-   }
 
-   // --- STEP 2: Fallback to outbox buffer for external Python bot dispatcher ONLY if WebRequest failed or was skipped ---
-   string uniqueOutName = StringFormat("tg_out_%u_%d.json", (uint)GetTickCount(), MathRand());
-   int uHandle = FileOpen(uniqueOutName, FILE_WRITE|FILE_BIN);
-   if(uHandle != INVALID_HANDLE)
-   {
-      FileWriteArray(uHandle, postData, 0, dataSize);
-      FileClose(uHandle);
-      PrintFormat("[Telegram] Queued message to fail-safe outbox for Python dispatcher: %s", uniqueOutName);
-      return true;
-   }
-   else
-   {
-      PrintFormat("[Telegram] ERROR: Failed to write outbox file %s (Error %d)", uniqueOutName, GetLastError());
-   }
-   
-   return false;
+   // Direct WebRequest failed or queue has pending items -> enqueue for asynchronous timer dispatch
+   return Telegram_QueueEnqueue(activeToken, activeChat, messageTextHtml, replyMarkupJson);
 }
 
 //+------------------------------------------------------------------+
@@ -539,7 +632,7 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    string url = "https://api.telegram.org/bot" + botToken + "/sendPhoto";
    
    ResetLastError();
-   int res = WebRequest("POST", url, headers, 15000, bodyBytes, resultData, resultHeaders);
+   int res = WebRequest("POST", url, headers, 4000, bodyBytes, resultData, resultHeaders);
    
    // Clean up local screenshot
    FileDelete(filename);

@@ -238,11 +238,11 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
 
             # 5. Test cmd_account
             message.reply_text.reset_mock()
-            with patch.object(zmq_client, "get_account", return_value={"status": "ok", "account_number": 1234567, "name": "Invest-AZ Demo", "server": "InvestAZ-Demo", "company": "InvestAZ", "currency": "USD", "balance": 10000.0, "equity": 10150.0, "margin": 200.0, "free_margin": 9950.0, "margin_level": 5075.0, "leverage": 100, "positions_count": 1, "total_floating_pl": 150.0}):
+            with patch.object(zmq_client, "get_account", return_value={"status": "ok", "account_number": 1234567, "name": "Broker Demo", "server": "Broker-Demo", "company": "Broker", "currency": "USD", "balance": 10000.0, "equity": 10150.0, "margin": 200.0, "free_margin": 9950.0, "margin_level": 5075.0, "leverage": 100, "positions_count": 1, "total_floating_pl": 150.0}):
                 await handlers.cmd_account(update, context)
                 message.reply_text.assert_called()
                 acc_call_args = get_text(message.reply_text)
-                self.assertIn("INVEST-AZ INSTITUTIONAL TERMINAL", acc_call_args)
+                self.assertIn("METATRADER 4 INSTITUTIONAL TERMINAL", acc_call_args)
 
             # 6. Test cmd_positions
             message.reply_text.reset_mock()
@@ -615,7 +615,14 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
             print(f"  [PASS] Live MT4 OPEN_ORDER verified (Returned Error 132 with clear text: '{res.get('message')}')")
         else:
             self.assertEqual(res.get("status"), "ok")
-            print(f"  [PASS] Live MT4 OPEN_ORDER executed successfully (Ticket: #{res.get('ticket')})")
+            ticket = res.get("ticket")
+            print(f"  [PASS] Live MT4 OPEN_ORDER executed successfully (Ticket: #{ticket})")
+            if ticket:
+                try:
+                    close_res = zmq_client.close_ticket(int(ticket))
+                    print(f"  [PASS] Closed test ticket #{ticket}: {close_res.get('status')}")
+                except Exception as ex:
+                    print(f"  [WARN] Failed to close test ticket #{ticket}: {ex}")
 
     def test_25_outbox_dedup_and_atomic_processing(self):
         """Verifies bot.outbox_alert_job debounces identical messages and processes files atomically."""

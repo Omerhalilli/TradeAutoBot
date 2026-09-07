@@ -167,10 +167,10 @@ class MT4ZmqClient:
             timeout_ms=timeout_ms
         )
 
-    def close_ticket(self, ticket: int, timeout_ms: int = 6000) -> Dict[str, Any]:
+    def close_ticket(self, ticket: int, timeout_ms: int = 10000) -> Dict[str, Any]:
         return self.send_command("CLOSE_TICKET", ticket=ticket, timeout_ms=timeout_ms)
 
-    def close_partial(self, ticket: int, lots: float, timeout_ms: int = 6000) -> Dict[str, Any]:
+    def close_partial(self, ticket: int, lots: float, timeout_ms: int = 10000) -> Dict[str, Any]:
         return self.send_command("CLOSE_PARTIAL", ticket=ticket, lots=lots, timeout_ms=timeout_ms)
 
     def get_account(self) -> Dict[str, Any]:
@@ -183,12 +183,12 @@ class MT4ZmqClient:
         return self.send_command("GET_HISTORY", limit=limit, filter=filter_type)
 
     def close_all(self) -> Dict[str, Any]:
-        return self.send_command("CLOSE_ALL", timeout_ms=8000)
+        return self.send_command("CLOSE_ALL", timeout_ms=12000)
 
-    def close_symbol(self, symbol: str) -> Dict[str, Any]:
-        return self.send_command("CLOSE_SYMBOL", symbol=symbol)
+    def close_symbol(self, symbol: str, timeout_ms: int = 10000) -> Dict[str, Any]:
+        return self.send_command("CLOSE_SYMBOL", symbol=symbol, timeout_ms=timeout_ms)
 
-    def close_half(self, ticket: int, timeout_ms: int = 6000) -> Dict[str, Any]:
+    def close_half(self, ticket: int, timeout_ms: int = 10000) -> Dict[str, Any]:
         return self.send_command("CLOSE_HALF", ticket=ticket, timeout_ms=timeout_ms)
 
     def modify_order(self, ticket: int = 0, symbol: str = "", sl: float = -1.0, tp: float = -1.0, timeout_ms: int = 5000) -> Dict[str, Any]:

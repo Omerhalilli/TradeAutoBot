@@ -4832,8 +4832,25 @@ void Telegram_ProcessTradeEvents()
 {
    if(!EnableTelegramAlerts) return;
    
-   // 1. Detect open trades and partial closes
+   // Fast optimization: check if orders or trade counts have changed, or at least 200ms elapsed
+   static int s_lastOrdersTotal = -1;
+   static int s_lastHistoryTotal = -1;
+   static uint s_lastProcessTick = 0;
+   
+   uint nowTick = GetTickCount();
    int total = OrdersTotal();
+   int histTotal = OrdersHistoryTotal();
+   
+   if(total == s_lastOrdersTotal && histTotal == s_lastHistoryTotal && (nowTick - s_lastProcessTick < 200))
+   {
+      return; // No order count changes within 200ms -> preserve tick execution latency
+   }
+   
+   s_lastOrdersTotal = total;
+   s_lastHistoryTotal = histTotal;
+   s_lastProcessTick = nowTick;
+   
+   // 1. Detect open trades and partial closes
    for(int i = 0; i < total; i++)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
@@ -6563,6 +6580,7 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    ZeroMQ_Deinit(InpZmqBindAddress);
+   Telegram_FlushQueue();
    // Only purge GUI labels if EA is actually removed, not on simple timeframe changes!
    if(reason != REASON_CHARTCHANGE)
    {
@@ -6580,6 +6598,8 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    ZeroMQ_Poll();
+   Telegram_ProcessQueue();
+   Telegram_ProcessTradeEvents();
 
    static uint s_lastEATimerTick = 0;
    uint nowTimerTick = GetTickCount();

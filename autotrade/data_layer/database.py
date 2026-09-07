@@ -31,6 +31,7 @@ class DatabaseEngine:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._local = threading.local()
         self._lock = threading.RLock()
+        self._open_connections: set = set()
         self._is_initialized = False
 
     def get_connection(self) -> sqlite3.Connection:
@@ -51,6 +52,8 @@ class DatabaseEngine:
             conn.execute("PRAGMA temp_store = MEMORY;")
             conn.execute("PRAGMA busy_timeout = 10000;")
             self._local.conn = conn
+            with self._lock:
+                self._open_connections.add(conn)
         return self._local.conn
 
     async def initialize(self) -> None:
@@ -291,14 +294,28 @@ class DatabaseEngine:
         det_str = json.dumps(details) if details else None
         self.execute(query, (time.time(), category, level, message, det_str))
 
-    async def close(self) -> None:
-        """Closes thread-local connection cleanly."""
+    def close_sync(self) -> None:
+        """Closes all open database connections across all threads."""
+        with self._lock:
+            for conn in list(self._open_connections):
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._open_connections.clear()
         if hasattr(self._local, "conn") and self._local.conn:
             try:
                 self._local.conn.close()
             except Exception:
                 pass
             self._local.conn = None
+
+    async def close(self) -> None:
+        """Asynchronously closes all open database connections."""
+        self.close_sync()
+
+    def __del__(self) -> None:
+        self.close_sync()
 
 
 # Global singleton instance

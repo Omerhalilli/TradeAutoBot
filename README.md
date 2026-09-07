@@ -24,7 +24,7 @@
    - [Step 7: Start the Bot](#step-7-start-the-bot)
 5. [Telegram Commands Cheatsheet](#-telegram-commands-cheatsheet)
 6. [How the AutoTrader Strategy Works (In Plain English)](#-how-the-autotrader-strategy-works-in-plain-english)
-7. [Invest-AZ Multi-Account Switcher (Demo vs Real)](#-invest-az-multi-account-switcher-demo-vs-real)
+7. [Multi-Account Switcher (Demo vs Real)](#-multi-account-switcher-demo-vs-real)
 8. [Frequently Asked Questions & Troubleshooting](#-frequently-asked-questions--troubleshooting)
 9. [Project Directory Layout](#-project-directory-layout)
 
@@ -82,11 +82,11 @@ Everything communicates locally on your machine with virtually zero delay (under
 ## ✨ Features at a Glance
 
 * 🤖 **Fully Automated Trading**: 10-point quantitative confluence engine combines Trend (Triple EMA + ADX), Momentum (RSI + MACD), Support & Resistance levels, and Candlestick patterns.
-* 👥 **Invest-AZ Account Switcher**: Switch between **Demo** (e.g. Account `1234567`) and **Real** live trading with one tap.
+* 👥 **Multi-Account Switcher**: Switch between **Demo** (e.g. Account `1234567`) and **Real** live trading with one tap.
 * ⚡ **Live BUY/SELL Trade Diagnostics**: Instantly inspects active order count, total lots, floating P/L, ticket numbers, and stop levels.
 * 📸 **Interactive 2-Step Screenshot Wizard**: Pick any symbol (GBPUSD, EURUSD, XAUUSD Gold, BTCUSD, etc.) and timeframe (M1 to D1) to receive an instant high-resolution chart picture in Telegram.
 * 🚨 **Emergency Panic Button**: Liquidate all open market orders in one click with a confirmation safety prompt.
-* 📅 **Economic News Shield**: Automated alerts 15 minutes before high-impact events with both Baku (`GMT+4`) and Broker (`GMT+3`) times.
+* 📅 **Economic News Shield**: Automated alerts 15 minutes before high-impact events with both Local and Broker times.
 * 🛡️ **Prop-Firm / Funded Account Guardian**: Tracks daily drawdown limits, trailing peak drawdown, and profit targets.
 * ⏸️ **Remote Pause / Resume**: Freeze new trade entries before big events without closing MetaTrader 4.
 * 🎨 **Dark Chart Color Theme**: Synchronize clean black background and green/red candlesticks across all open MT4 charts in one click.
@@ -99,7 +99,7 @@ Everything communicates locally on your machine with virtually zero delay (under
 You do **not** need to be a programmer to set this up. Follow these simple steps:
 
 ### Prerequisites
-1. **MetaTrader 4** installed (e.g. Invest-AZ MT4).
+1. **MetaTrader 4** installed on your PC or VPS.
 2. **Python 3.10 or higher** installed on Windows.  
    *(When installing Python from [python.org](https://www.python.org/), make sure to check the box that says **"Add Python to PATH"**!)*
 
@@ -113,8 +113,6 @@ You do **not** need to be a programmer to set this up. Follow these simple steps
   cd TradeAutoBot
   ```
 
----
-
 ### Step 2: Install Python Libraries
 Open Command Prompt (`cmd`) or PowerShell, navigate to the folder, and run:
 ```bash
@@ -122,18 +120,15 @@ pip install -r requirements.txt
 ```
 *(This installs `python-telegram-bot`, `pyzmq`, and `httpx`).*
 
----
-
 ### Step 3: Create Your Free Telegram Bot (2 Minutes)
 1. Open the **Telegram** app on your phone or PC.
 2. Search for **`@BotFather`** (the official verified Telegram bot maker).
 3. Send the message: `/newbot`
-4. Follow the prompt to give your bot a name (e.g. `MyInvestAZBot`) and a username ending in `bot` (e.g. `MyInvestAZ_TradeBot`).
+4. Follow the prompt to give your bot a name (e.g. `MyTradeAutoBot`) and a username ending in `bot` (e.g. `MyTradeAuto_Bot`).
 5. BotFather will send you a **HTTP API Token** (looks like `1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ_1234567`). **Save this token!**
 6. Next, search for **`@userinfobot`** in Telegram and press **Start**.
 7. It will reply with your numeric **Id** (e.g. `123456789`). **Save this number!** This ensures only YOU can control the bot.
 
----
 
 ### Step 4: Configure Your Settings (.env / config.ini / config.json)
 The repository provides configuration templates with placeholder values:
@@ -213,7 +208,7 @@ Everything is also accessible directly through Telegram's blue **`[Menu]`** butt
 | Command | Action | Description |
 | :--- | :--- | :--- |
 | **`/boost`** or **`/turbo`** | ⚡ Turbo Boost | Instant 4 Hz telemetry, roundtrip latency (ms), major pair spreads, and one-touch actions. |
-| **`/accounts`** or **`/switch`** | 👥 Switch Accounts | Toggle between Invest-AZ Demo and Real accounts with instant BUY/SELL diagnostics. |
+| **`/accounts`** or **`/switch`** | 👥 Switch Accounts | Toggle between Demo and Real broker accounts with instant BUY/SELL diagnostics. |
 | **`/status`** or **`/account`** | 📊 Account Overview | Check live balance, equity, used margin, free margin, margin level %, and server time. |
 | **`/positions`** | 💼 Open Positions | List of all currently open market trades with ticket numbers, lots, and floating P/L. |
 | **`/screenshot`** | 📸 Chart Photo | Interactive wizard: Pick symbol ➜ Pick timeframe ➜ Receive high-res chart photo. |
@@ -261,21 +256,21 @@ The **SmartAutoTradeEA_Pro** algorithm does not guess. It uses a **10-Point Mult
 
 ---
 
-## 👥 Invest-AZ Multi-Account Switcher (Demo vs Real)
+## 👥 Multi-Account Switcher (Demo vs Real)
 
 When you send `/accounts` (or `/switch`) in Telegram, you get an interactive menu:
 
 ```text
-👥 INVEST-AZ ACCOUNT SWITCHER & TRADE INSPECTOR
+👥 MULTI-ACCOUNT CONTROL & TRADE INSPECTION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-🟢 Current Active Target: Invest-AZ Demo
+🟢 Current Active Target: Broker Demo
 • Number: 1234567
-• Server: InvestAZ-Demo
+• Server: Broker-Demo
 • ZMQ Port: tcp://127.0.0.1:5555
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 👇 Select an account below to switch control and inspect BUY/SELL functionality:
-[ 🟢 🟡 DEMO — Invest-AZ Demo (1234567) [ACTIVE] ]
-[ ⚪ 🔴 REAL — Invest-AZ Real (Real Live) ]
+[ 🟢 🟡 DEMO — Broker Demo (1234567) [ACTIVE] ]
+[ ⚪ 🔴 REAL — Broker Real (Real Live) ]
 [ 🔄 Refresh Panel ]
 ```
 
@@ -283,11 +278,11 @@ When you send `/accounts` (or `/switch`) in Telegram, you get an interactive men
 1. The bot switches all remote controls (`/status`, `/positions`, `/close`, `/panic`) to that account.
 2. It audits your positions and displays a **BUY / SELL Function Diagnostic**:
    ```text
-   👥 ACCOUNT #1: INVEST-AZ DEMO [🟢 ACTIVE]
+   👥 ACCOUNT #1: BROKER DEMO [🟢 ACTIVE]
    ━━━━━━━━━━━━━━━━━━━━━━━━━━
    🔢 Account Number: 1234567 (🟡 DEMO)
-   🏢 Broker: Invest-AZ Investment Company CJSC
-   🌐 Server: InvestAZ-Demo
+   🏢 Broker: MetaTrader 4 Broker
+   🌐 Server: Broker-Demo
    💰 Balance / Equity: $10,000.00 / $10,000.00
    📊 Margin: $0.00 | Free: $10,000.00 (∞)
    📈 Floating P/L: +$0.00 USD
@@ -345,7 +340,7 @@ TradeAutoBot/
 │       └── libsodium.dll              # Cryptographic transport library
 ├── bot.py                      # Main Telegram bot daemon with 24/7 auto-reconnect
 ├── handlers.py                 # Telegram command handlers & interactive screenshot wizard
-├── account_manager.py          # Invest-AZ Demo & Real multi-account switcher
+├── account_manager.py          # Demo & Real multi-account switcher
 ├── zmq_client.py               # ZeroMQ client with heartbeat recovery
 ├── news_service.py             # ForexFactory scraper & 15-minute news reminders
 ├── config.py                   # Portable configuration loader and rotating logger
