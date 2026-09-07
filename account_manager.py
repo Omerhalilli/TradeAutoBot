@@ -47,7 +47,7 @@ DEFAULT_ACCOUNTS: List[Dict[str, str]] = [
 class AccountManager:
     def __init__(self):
         self.accounts: List[AccountProfile] = []
-        self.active_id: str = "1"
+        self.active_id: str = "2"
         self._load()
 
     def _load(self) -> None:

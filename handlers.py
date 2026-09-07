@@ -1531,6 +1531,14 @@ def format_screenshot_wizard_header(symbols_count: int = 0) -> str:
     acc_name = raw_name.replace(" (Real)", "").replace(" (Demo)", "").strip()
     acc_num = active_acc.account_number if active_acc else "213173"
     is_real = active_acc and (active_acc.id == "2" or active_acc.account_number == "213173" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper())
+    if is_real and ("DEMO" in acc_name.upper() or acc_num == "1234567"):
+        real_acc = account_manager.get_account_by_id("2")
+        if real_acc:
+            acc_name = real_acc.name.replace(" (Real)", "").replace(" (Demo)", "").strip()
+            acc_num = real_acc.account_number
+        else:
+            acc_name = "Elnare Xelilzade FX#1"
+            acc_num = "213173"
     mode_badge = "🔴 REAL" if is_real else "🟡 DEMO"
     count_str = f" ({symbols_count} symbols)" if symbols_count > 0 else ""
     return (
@@ -1675,11 +1683,26 @@ async def cb_screenshot_symbol(update: Update, context: ContextTypes.DEFAULT_TYP
     symbol = data.split(":", 1)[1] if ":" in data else "CURRENT"
     display_sym = "Active Chart Window" if symbol == "CURRENT" else symbol
 
+    try:
+        acc_data = await zmq_async(zmq_client.get_account, timeout_ms=1500)
+        if acc_data and acc_data.get("status") == "ok":
+            account_manager.sync_with_live_terminal(acc_data)
+    except Exception:
+        pass
+
     active_acc = account_manager.get_active_account()
     raw_name = active_acc.name if active_acc else "Real Account"
     acc_name = raw_name.replace(" (Real)", "").replace(" (Demo)", "").strip()
     acc_num = active_acc.account_number if active_acc else "213173"
     is_real = active_acc and (active_acc.id == "2" or active_acc.account_number == "213173" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper())
+    if is_real and ("DEMO" in acc_name.upper() or acc_num == "1234567"):
+        real_acc = account_manager.get_account_by_id("2")
+        if real_acc:
+            acc_name = real_acc.name.replace(" (Real)", "").replace(" (Demo)", "").strip()
+            acc_num = real_acc.account_number
+        else:
+            acc_name = "Elnare Xelilzade FX#1"
+            acc_num = "213173"
     mode_badge = "🔴 REAL" if is_real else "🟡 DEMO"
 
     msg = (
@@ -1793,6 +1816,14 @@ async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAUL
     raw_name_str = active_acc.name if active_acc else "Real Account"
     acc_name_str = raw_name_str.replace(" (Real)", "").replace(" (Demo)", "").strip()
     acc_num_str = active_acc.account_number if active_acc else "213173"
+    if is_real and ("DEMO" in acc_name_str.upper() or acc_num_str == "1234567"):
+        real_acc = account_manager.get_account_by_id("2")
+        if real_acc:
+            acc_name_str = real_acc.name.replace(" (Real)", "").replace(" (Demo)", "").strip()
+            acc_num_str = real_acc.account_number
+        else:
+            acc_name_str = "Elnare Xelilzade FX#1"
+            acc_num_str = "213173"
 
     caption = (
         f"📸 <b>INSTITUTIONAL CHART & TELEMETRY</b>\n"
@@ -2091,6 +2122,12 @@ async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     elif data in ["nav_boost", "nav_refresh:boost"]:
         await cmd_boost(update, context)
     elif data == "nav_shot":
+        try:
+            acc_data = await zmq_async(zmq_client.get_account, timeout_ms=2000)
+            if acc_data and acc_data.get("status") == "ok":
+                account_manager.sync_with_live_terminal(acc_data)
+        except Exception as ex:
+            logger.debug(f"Failed to sync live account in nav_shot: {ex}")
         symbols = await get_accessible_symbols()
         msg = format_screenshot_wizard_header(len(symbols))
         await send_or_edit(update, context, msg, reply_markup=get_symbol_keyboard(symbols, page=0))

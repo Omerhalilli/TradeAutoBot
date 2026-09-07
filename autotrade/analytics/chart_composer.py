@@ -130,7 +130,12 @@ def compose_chart_screenshot(chart_image_path: str, data: Dict[str, Any]) -> str
     if not trade_mode:
         trade_mode = "REAL"
 
-    is_real = (trade_mode == "REAL")
+    is_real = (trade_mode == "REAL" or acc_num == "213173")
+    if is_real and ("DEMO" in clean_name.upper() or acc_num == "1234567"):
+        real_acc = account_manager.get_account_by_id("2") if active_acc else None
+        clean_name = real_acc.name.replace(" (Real)", "").replace(" (Demo)", "").strip() if real_acc else "Elnare Xelilzade FX#1"
+        acc_num = real_acc.account_number if real_acc else "213173"
+
     mode_badge_txt = "🔴 REAL" if is_real else "🟡 DEMO"
     mode_col = COLOR_GREEN if is_real else COLOR_GOLD
 
