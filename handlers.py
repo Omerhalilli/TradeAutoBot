@@ -17,6 +17,7 @@ from config import ALLOWED_CHAT_IDS, AUTOTRADE_FLAG_FILE, MT4_FILES_DIR
 from zmq_client import zmq_client
 from news_service import news_service, CURRENCY_FLAGS
 from account_manager import account_manager, AccountProfile
+from autotrade.core.autonomous_trader import autonomous_trader
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +222,8 @@ def get_nav_keyboard(active_section: str = "status") -> InlineKeyboardMarkup:
     b_prop = "🛡️ Prop Guard" if active_section != "prop" else "🛡️ • Prop Guard •"
     b_report = "📈 24h Report" if active_section != "report" else "📈 • Report •"
     b_boost = "⚡ Turbo Boost" if active_section != "boost" else "⚡ • Boost •"
+    b_auto = "🤖 AutoTrade" if active_section != "autotrade" else "🤖 • AutoTrade •"
+    b_scan = "📡 Scanner" if active_section != "scan" else "📡 • Scanner •"
     
     keyboard = [
         [
@@ -229,17 +232,21 @@ def get_nav_keyboard(active_section: str = "status") -> InlineKeyboardMarkup:
             InlineKeyboardButton(b_prop, callback_data="nav_prop")
         ],
         [
-            InlineKeyboardButton(b_report, callback_data="nav_report"),
+            InlineKeyboardButton(b_auto, callback_data="nav_autotrade"),
+            InlineKeyboardButton(b_scan, callback_data="nav_scan"),
+            InlineKeyboardButton(b_report, callback_data="nav_report")
+        ],
+        [
             InlineKeyboardButton("📸 Screenshot", callback_data="nav_shot"),
-            InlineKeyboardButton(b_boost, callback_data="nav_boost")
+            InlineKeyboardButton(b_boost, callback_data="nav_boost"),
+            InlineKeyboardButton("📜 History", callback_data="hist_filter:10")
         ],
         [
-            InlineKeyboardButton("📜 History", callback_data="hist_filter:10"),
             InlineKeyboardButton("📅 News", callback_data="news_filter:today"),
-            InlineKeyboardButton("🔄 Refresh", callback_data=f"nav_refresh:{active_section}")
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"nav_refresh:{active_section}"),
+            InlineKeyboardButton("👥 Switch Account", callback_data="switch_acc:panel")
         ],
         [
-            InlineKeyboardButton("👥 Switch Account", callback_data="switch_acc:panel"),
             InlineKeyboardButton("🚨 Emergency Panic", callback_data="nav_panic")
         ]
     ]
@@ -1401,6 +1408,99 @@ async def cmd_resume_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await send_or_edit(update, context, msg, reply_markup=get_nav_keyboard("status"))
 
 @restricted
+async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Institutional Autonomous Multi-Symbol Control Panel."""
+    args = context.args or []
+    if args:
+        sub = args[0].lower()
+        if sub in ["on", "start", "enable", "resume"]:
+            autonomous_trader.set_enabled(True)
+            write_autotrade_flag("ACTIVE")
+            await zmq_async(zmq_client.resume_bot)
+        elif sub in ["off", "stop", "disable", "pause"]:
+            autonomous_trader.set_enabled(False)
+            write_autotrade_flag("PAUSED")
+            await zmq_async(zmq_client.pause_bot)
+        elif sub == "add" and len(args) > 1:
+            sym = clean_symbol(args[1])
+            autonomous_trader.add_symbol(sym)
+        elif sub == "remove" and len(args) > 1:
+            sym = clean_symbol(args[1])
+            autonomous_trader.remove_symbol(sym)
+
+    text = autonomous_trader.format_status_panel()
+    is_active = autonomous_trader.is_autotrade_active()
+    toggle_btn_text = "⏸️ Pause Autonomous" if is_active else "▶️ Resume Autonomous"
+    toggle_data = "autotrade_toggle:pause" if is_active else "autotrade_toggle:resume"
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(toggle_btn_text, callback_data=toggle_data),
+            InlineKeyboardButton("📡 Scan Market", callback_data="nav_scan"),
+        ],
+        [
+            InlineKeyboardButton("🌐 Watchlist", callback_data="nav_symbols"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="nav_refresh:autotrade"),
+        ],
+        [
+            InlineKeyboardButton("📊 Status", callback_data="nav_status"),
+            InlineKeyboardButton("💼 Positions", callback_data="nav_pos"),
+        ]
+    ])
+    await send_or_edit(update, context, text, reply_markup=kb)
+
+@restricted
+async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Scans all monitored instruments for confluence scores & signals across indicators."""
+    scan_res = await autonomous_trader.scan_portfolio_async()
+    text = autonomous_trader.format_scan_matrix(scan_res)
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔄 Re-Scan", callback_data="nav_scan"),
+            InlineKeyboardButton("🤖 AutoTrade Status", callback_data="nav_autotrade"),
+        ],
+        [
+            InlineKeyboardButton("🌐 Watchlist", callback_data="nav_symbols"),
+            InlineKeyboardButton("💼 Positions", callback_data="nav_pos"),
+        ]
+    ])
+    await send_or_edit(update, context, text, reply_markup=kb)
+
+@restricted
+async def cmd_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays and manages the autonomous multi-symbol watchlist."""
+    text = autonomous_trader.format_symbols_panel()
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📡 Scan Portfolio", callback_data="nav_scan"),
+            InlineKeyboardButton("🤖 AutoTrade Panel", callback_data="nav_autotrade"),
+        ],
+        [
+            InlineKeyboardButton("📊 Status", callback_data="nav_status"),
+            InlineKeyboardButton("💼 Positions", callback_data="nav_pos"),
+        ]
+    ])
+    await send_or_edit(update, context, text, reply_markup=kb)
+
+@restricted
+async def cb_autotrade_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles 1-tap toggling of autonomous multi-symbol trading."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    if "pause" in data:
+        autonomous_trader.set_enabled(False)
+        write_autotrade_flag("PAUSED")
+        await zmq_async(zmq_client.pause_bot)
+        await safe_answer(query, "⏸️ Autonomous trading paused.", show_alert=True)
+    else:
+        autonomous_trader.set_enabled(True)
+        write_autotrade_flag("ACTIVE")
+        await zmq_async(zmq_client.resume_bot)
+        await safe_answer(query, "▶️ Autonomous trading active.", show_alert=True)
+    await cmd_autotrade(update, context)
+
+@restricted
 async def cmd_colors(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = await zmq_async(zmq_client.apply_colors)
     if data.get("status") != "ok":
@@ -2121,6 +2221,12 @@ async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await cmd_report(update, context)
     elif data in ["nav_boost", "nav_refresh:boost"]:
         await cmd_boost(update, context)
+    elif data in ["nav_autotrade", "nav_refresh:autotrade"]:
+        await cmd_autotrade(update, context)
+    elif data in ["nav_scan", "nav_refresh:scan"]:
+        await cmd_scan(update, context)
+    elif data in ["nav_symbols", "nav_refresh:symbols"]:
+        await cmd_symbols(update, context)
     elif data == "nav_shot":
         try:
             acc_data = await zmq_async(zmq_client.get_account, timeout_ms=2000)

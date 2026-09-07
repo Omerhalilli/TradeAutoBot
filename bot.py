@@ -82,6 +82,9 @@ async def post_init(application) -> None:
             BotCommand("panic", "🚨 Emergency Kill-Switch Alias"),
             BotCommand("colors", "🎨 Apply Dark Theme Color Scheme to Charts"),
             BotCommand("news", "📅 High-Impact Economic Calendar"),
+            BotCommand("autotrade", "🤖 Autonomous Multi-Symbol Trading Panel"),
+            BotCommand("scan", "📡 Scan Multi-Symbol Portfolio Confluence"),
+            BotCommand("symbols", "🌐 View/Manage Autonomous Watchlist"),
             BotCommand("pause", "⏸️ Pause Auto-Trading Entries"),
             BotCommand("resume", "▶️ Resume Auto-Trading Entries"),
             BotCommand("help", "🤖 Full Bot Command Guide"),
@@ -101,6 +104,14 @@ async def post_init(application) -> None:
             logger.info(f"Synchronized with live MT4 terminal: Account #{synced_acc.account_number} ({synced_acc.name})")
     except Exception as e:
         logger.debug(f"Could not synchronize active account with live terminal on startup: {e}")
+
+async def autonomous_trading_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Executes periodic autonomous multi-symbol market surveillance & execution cycle."""
+    try:
+        from autotrade.core.autonomous_trader import autonomous_trader
+        await autonomous_trader.run_cycle_async(bot=context.bot)
+    except Exception as e:
+        logger.debug(f"Autonomous trading background job exception: {e}")
 
 # Cache for debouncing identical outbox alerts: (chat_id, text_sha256) -> dispatch_timestamp
 _recent_outbox_dispatches: dict[tuple[str, str], float] = {}
@@ -267,6 +278,9 @@ def create_application():
     app.add_handler(CommandHandler("modify_tp", handlers.cmd_modify_tp))
     app.add_handler(CommandHandler(["pause", "pause_bot"], handlers.cmd_pause_bot))
     app.add_handler(CommandHandler(["resume", "resume_bot"], handlers.cmd_resume_bot))
+    app.add_handler(CommandHandler(["autotrade", "auto"], handlers.cmd_autotrade))
+    app.add_handler(CommandHandler(["scan", "scanner"], handlers.cmd_scan))
+    app.add_handler(CommandHandler(["symbols", "watchlist"], handlers.cmd_symbols))
     app.add_handler(CommandHandler(["news", "calendar"], handlers.cmd_news))
 
     # Slash text commands from EA messages: /close_12345, /half_12345, /be_12345, /shot_SYM_TF
@@ -276,6 +290,7 @@ def create_application():
     app.add_handler(CallbackQueryHandler(handlers.cb_quick_trade, pattern=r"^trade:(buy|sell):"))
     app.add_handler(CallbackQueryHandler(handlers.cb_switch_account, pattern=r"^switch_acc:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^(nav_|boost_colors)"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_autotrade_toggle, pattern=r"^autotrade_toggle:(pause|resume)$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_setrisk, pattern=r"^setrisk:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_reset_safeguards, pattern=r"^recalibrate_safeguards$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_history_filter, pattern=r"^hist_filter:"))
@@ -300,11 +315,12 @@ def create_application():
     # Error Handler
     app.add_error_handler(error_handler)
 
-    # Schedule background news alerts and MT4 outbox poller (optimized 100ms ultra-low latency)
+    # Schedule background news alerts, MT4 outbox poller, and autonomous multi-symbol trading
     if app.job_queue:
         app.job_queue.run_repeating(news_alert_job, interval=60, first=10)
         app.job_queue.run_repeating(outbox_alert_job, interval=0.1, first=1)
-        logger.info(f"News alert (60s) and MT4 outbox (100ms ultra-low latency) background schedulers registered")
+        app.job_queue.run_repeating(autonomous_trading_job, interval=15, first=5)
+        logger.info(f"News alert (60s), MT4 outbox (100ms), and autonomous trader (15s) background schedulers registered")
 
     return app
 

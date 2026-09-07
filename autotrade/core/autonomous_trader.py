@@ -1,0 +1,388 @@
+"""
+Autonomous Multi-Symbol Market Surveillance & Execution Engine.
+Monitors configured portfolio of symbols (EURUSD, GBPUSD, USDJPY, XAUUSD, etc.),
+evaluates multi-factor confluence scoring across technical indicators, and
+autonomously executes high-probability setups directly on MetaTrader without
+sending optional or advisory messages to the operator.
+"""
+
+from __future__ import annotations
+import asyncio
+import logging
+import os
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+from config import (
+    ALLOWED_CHAT_IDS,
+    AUTOTRADE_FLAG_FILE,
+    MAX_OPEN_POSITIONS,
+    MAX_LOTS_PER_SYMBOL,
+    TRADING_SYMBOLS,
+    DEFAULT_FIXED_LOT,
+    MT4_FILES_DIR
+)
+from zmq_client import zmq_client
+
+logger = logging.getLogger("autotrade.core.autonomous_trader")
+
+DEFAULT_PORTFOLIO_SYMBOLS = [
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD", "XAUUSD"
+]
+
+
+class AutonomousMultiSymbolTrader:
+    """
+    Master Autonomous Multi-Symbol Trader.
+    Performs background surveillance across multiple instruments, filters noise,
+    evaluates quantitative scoring confluence, and autonomously dispatches market
+    orders directly to MetaTrader.
+    """
+    def __init__(
+        self,
+        symbols: Optional[List[str]] = None,
+        min_score: int = 6,
+        cooldown_sec: int = 300,
+        max_spread: float = 50.0
+    ):
+        self.symbols: List[str] = symbols or list(TRADING_SYMBOLS) or list(DEFAULT_PORTFOLIO_SYMBOLS)
+        # Clean symbol strings
+        self.symbols = [s.strip().upper() for s in self.symbols if s.strip()]
+        if not self.symbols:
+            self.symbols = list(DEFAULT_PORTFOLIO_SYMBOLS)
+
+        self.min_score: int = min_score
+        self.cooldown_sec: int = cooldown_sec
+        self.max_spread: float = max_spread
+        self.is_enabled: bool = True
+        self.timeframe: str = "H1"
+        self.total_trades_executed: int = 0
+        self.last_trade_times: Dict[str, float] = {}
+        self.last_scan_data: Dict[str, Any] = {}
+        self.last_scan_timestamp: float = 0.0
+        self._lock = asyncio.Lock()
+
+    def is_autotrade_active(self) -> bool:
+        """Checks both internal state and autotrade_state.flag file."""
+        if not self.is_enabled:
+            return False
+        if os.path.exists(AUTOTRADE_FLAG_FILE):
+            try:
+                with open(AUTOTRADE_FLAG_FILE, "r", encoding="utf-8") as f:
+                    content = f.read().strip().upper()
+                    if content == "PAUSED":
+                        return False
+            except Exception:
+                pass
+        return True
+
+    def set_enabled(self, active: bool) -> None:
+        """Toggles the autonomous trader state."""
+        self.is_enabled = active
+
+    def add_symbol(self, symbol: str) -> bool:
+        """Adds a symbol to the autonomous watchlist."""
+        sym = symbol.strip().upper()
+        if sym and sym not in self.symbols:
+            self.symbols.append(sym)
+            return True
+        return False
+
+    def remove_symbol(self, symbol: str) -> bool:
+        """Removes a symbol from the autonomous watchlist."""
+        sym = symbol.strip().upper()
+        if sym in self.symbols and len(self.symbols) > 1:
+            self.symbols.remove(sym)
+            return True
+        return False
+
+    def scan_portfolio(self, timeframe: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Synchronously queries MetaTrader 4 ZeroMQ Bridge for multi-symbol market data & scores.
+        """
+        tf = timeframe or self.timeframe
+        sym_str = ",".join(self.symbols)
+        res = zmq_client.scan_symbols(symbols=sym_str, timeframe=tf, timeout_ms=6000)
+
+        if res.get("status") == "ok" and "results" in res:
+            self.last_scan_data = res
+            self.last_scan_timestamp = time.time()
+            return res
+
+        # If bridge does not support scan_symbols or returns error, check fallback
+        fallback_results: List[Dict[str, Any]] = []
+        for s in self.symbols:
+            fallback_results.append({
+                "symbol": s,
+                "bid": 0.0,
+                "ask": 0.0,
+                "spread": 0.0,
+                "digits": 5,
+                "trend": "MONITORING",
+                "buy_score": 0,
+                "sell_score": 0,
+                "score": 0,
+                "signal": "HOLD",
+                "sl_pips": 30.0,
+                "tp_pips": 60.0,
+                "rsi": 50.0,
+                "atr": 0.0020
+            })
+        fallback = {
+            "status": "ok",
+            "action": "SCAN_SYMBOLS",
+            "server_time": time.strftime("%Y.%m.%d %H:%M:%S"),
+            "results": fallback_results,
+            "count": len(fallback_results),
+            "fallback": True
+        }
+        self.last_scan_data = fallback
+        self.last_scan_timestamp = time.time()
+        return fallback
+
+    async def scan_portfolio_async(self, timeframe: Optional[str] = None) -> Dict[str, Any]:
+        """Asynchronously triggers portfolio scan in a separate worker thread."""
+        return await asyncio.to_thread(self.scan_portfolio, timeframe)
+
+    async def execute_autonomous_cycle(self, bot=None) -> List[Dict[str, Any]]:
+        """
+        Evaluates scan results and autonomously executes valid confluence trade setups.
+        Does NOT send advisory/asking messages to operator; executes directly.
+        """
+        async with self._lock:
+            if not self.is_autotrade_active():
+                return []
+
+            # 1. Scan market portfolio
+            scan_data = await self.scan_portfolio_async()
+            results = scan_data.get("results", [])
+            if not results:
+                return []
+
+            # 2. Check open positions & account safety
+            pos_data = await asyncio.to_thread(zmq_client.get_positions)
+            open_positions = pos_data.get("positions", []) if pos_data.get("status") == "ok" else []
+            total_open = len(open_positions)
+
+            if total_open >= MAX_OPEN_POSITIONS:
+                logger.debug(f"AutonomousTrader: Max open portfolio positions reached ({total_open}/{MAX_OPEN_POSITIONS})")
+                return []
+
+            # Extract symbols currently holding open positions
+            open_symbols = set()
+            for p in open_positions:
+                sym = p.get("symbol", "").upper()
+                if sym:
+                    open_symbols.add(sym)
+
+            executed_trades: List[Dict[str, Any]] = []
+            now = time.time()
+
+            for item in results:
+                raw_sym = item.get("symbol", "").upper()
+                score = int(item.get("score", 0))
+                signal = str(item.get("signal", "HOLD")).upper()
+                spread = float(item.get("spread", 0.0))
+
+                # Filtering checks
+                if signal not in ("BUY", "SELL"):
+                    continue
+                if score < self.min_score:
+                    continue
+                if raw_sym in open_symbols:
+                    continue  # Already in an active trade on this symbol
+                if spread > self.max_spread and spread > 0.0:
+                    logger.debug(f"AutonomousTrader: Skipping {raw_sym} due to wide spread ({spread} pts > {self.max_spread})")
+                    continue
+
+                # Cooldown check
+                last_time = self.last_trade_times.get(raw_sym, 0.0)
+                if now - last_time < self.cooldown_sec:
+                    continue
+
+                # Calculate protective SL & TP
+                sl_pips = float(item.get("sl_pips", 30.0))
+                tp_pips = float(item.get("tp_pips", 60.0))
+                if sl_pips < 15.0:
+                    sl_pips = 25.0
+                if tp_pips < 20.0:
+                    tp_pips = 50.0
+
+                # Determine lot size safely
+                lots = float(DEFAULT_FIXED_LOT)
+                if lots <= 0.0:
+                    lots = 0.01
+
+                # Execute order directly on MetaTrader
+                logger.info(
+                    f"🎯 [AUTONOMOUS TRADE TRIGGERED] Symbol: {raw_sym} | Signal: {signal} | "
+                    f"Confluence Score: {score}/10 | Lots: {lots:.2f} | Direct Execution..."
+                )
+
+                order_res = await asyncio.to_thread(
+                    zmq_client.open_order,
+                    symbol=raw_sym,
+                    cmd=signal,
+                    lots=lots,
+                    sl_pips=sl_pips,
+                    tp_pips=tp_pips,
+                    comment=f"Auto_{raw_sym[:4]}"
+                )
+
+                if order_res.get("status") == "ok":
+                    ticket = order_res.get("ticket", 0)
+                    exec_price = order_res.get("price", 0.0)
+                    self.total_trades_executed += 1
+                    self.last_trade_times[raw_sym] = now
+                    open_symbols.add(raw_sym)
+
+                    trade_record = {
+                        "symbol": raw_sym,
+                        "cmd": signal,
+                        "ticket": ticket,
+                        "price": exec_price,
+                        "lots": lots,
+                        "score": score,
+                        "sl_pips": sl_pips,
+                        "tp_pips": tp_pips,
+                        "trend": item.get("trend", "ALIGNED"),
+                        "timestamp": now
+                    }
+                    executed_trades.append(trade_record)
+
+                    # Notify operator that the bot has executed the trade autonomously
+                    if bot and ALLOWED_CHAT_IDS:
+                        await self._dispatch_execution_alert(bot, trade_record)
+
+                    # Maximum 1 order per autonomous cycle to prevent order burst
+                    break
+                else:
+                    err_msg = order_res.get("message", "Unknown error")
+                    logger.warning(f"Autonomous order dispatch failed for {raw_sym}: {err_msg}")
+
+            return executed_trades
+
+    async def _dispatch_execution_alert(self, bot, trade: Dict[str, Any]) -> None:
+        """Sends clean institutional execution alert to all authorized chats."""
+        sym = trade["symbol"]
+        cmd = trade["cmd"]
+        arrow = "🟢 BUY ⬆️" if cmd == "BUY" else "🔴 SELL ⬇️"
+        price_fmt = f"{trade['price']:.5f}" if trade['price'] > 0 else "Market"
+        ticket_fmt = f"#{trade['ticket']}" if trade['ticket'] else "Filled"
+
+        msg = (
+            "🤖 <b>[AUTONOMOUS MULTI-SYMBOL TRADE EXECUTED]</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Asset:</b> <code>{sym}</code> ({arrow})\n"
+            f"• <b>Ticket:</b> <code>{ticket_fmt}</code> | <b>Volume:</b> <code>{trade['lots']:.2f} Lots</code>\n"
+            f"• <b>Entry Price:</b> <code>{price_fmt}</code>\n"
+            f"• <b>Confluence Score:</b> <b>{trade['score']}/10</b> ({trade['trend']})\n"
+            f"• <b>Stop Loss:</b> <code>-{trade['sl_pips']:.1f} pips</code>\n"
+            f"• <b>Take Profit:</b> <code>+{trade['tp_pips']:.1f} pips</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>⚡ 100% Autonomous Execution: Order placed directly via MT4 ZeroMQ Bridge.</i>"
+        )
+
+        for chat_id in ALLOWED_CHAT_IDS:
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=msg,
+                    parse_mode="HTML"
+                )
+            except Exception as ex:
+                logger.error(f"Failed to dispatch autonomous execution alert to chat {chat_id}: {ex}")
+
+    async def run_cycle_async(self, bot=None) -> None:
+        """Asynchronous entry point for periodic background scheduler."""
+        try:
+            await self.execute_autonomous_cycle(bot=bot)
+        except Exception as ex:
+            logger.debug(f"Error running autonomous trading cycle: {ex}")
+
+    def format_status_panel(self) -> str:
+        """Formats comprehensive HTML status panel for /autotrade command."""
+        active = self.is_autotrade_active()
+        status_badge = "🟢 <b>ACTIVE & SCANNING</b>" if active else "⏸️ <b>PAUSED</b>"
+        sym_list = ", ".join(self.symbols)
+
+        msg = (
+            "🤖 <b>AUTONOMOUS MULTI-SYMBOL TRADING ENGINE</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>System State:</b> {status_badge}\n"
+            f"• <b>Timeframe:</b> <code>{self.timeframe}</code>\n"
+            f"• <b>Confluence Threshold:</b> <b>Score ≥ {self.min_score}/10</b>\n"
+            f"• <b>Execution Mode:</b> <b>Autonomous Direct Execution</b>\n"
+            f"• <b>Max Spread Filter:</b> <code>{self.max_spread:.0f} points</code>\n"
+            f"• <b>Cooldown Per Symbol:</b> <code>{self.cooldown_sec // 60} minutes</code>\n"
+            f"• <b>Autonomous Trades Executed:</b> <b>{self.total_trades_executed}</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🌐 <b>Portfolio Watchlist ({len(self.symbols)} Assets):</b>\n"
+            f"<code>{sym_list}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>💡 When an actionable setup is detected on any symbol, the bot trades itself directly without prompting.</i>"
+        )
+        return msg
+
+    def format_scan_matrix(self, scan_res: Optional[Dict[str, Any]] = None) -> str:
+        """Formats clean tabular scorecard for /scan command."""
+        data = scan_res or self.last_scan_data
+        if not data or "results" not in data:
+            data = self.scan_portfolio()
+
+        results = data.get("results", [])
+        server_time = data.get("server_time", time.strftime("%Y.%m.%d %H:%M:%S"))
+
+        msg = (
+            "⚡ <b>AUTONOMOUS MULTI-SYMBOL SCANNER</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕒 <b>Scan Time:</b> <code>{server_time}</code> | <b>TF:</b> <code>{self.timeframe}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+        for item in results:
+            sym = item.get("symbol", "")
+            trend = item.get("trend", "NEUTRAL")
+            score = item.get("score", 0)
+            sig = item.get("signal", "HOLD")
+            spread = item.get("spread", 0.0)
+
+            if sig == "BUY":
+                sig_badge = "🟢 BUY"
+            elif sig == "SELL":
+                sig_badge = "🔴 SELL"
+            else:
+                sig_badge = "⚪ HOLD"
+
+            trend_badge = "⬆️" if "BULL" in trend else ("⬇️" if "BEAR" in trend else "↔️")
+            msg += (
+                f"• <b>{sym:7s}</b> {sig_badge} (Score: <b>{score}/10</b>) "
+                f"| {trend_badge} {trend} | Spd: <code>{spread:.1f}</code>\n"
+            )
+
+        msg += (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>💡 Autonomous Multi-Symbol Execution: High-conviction setups (Score ≥ 6) are executed automatically.</i>"
+        )
+        return msg
+
+    def format_symbols_panel(self) -> str:
+        """Formats the list of active monitored symbols for /symbols command."""
+        msg = (
+            "🌐 <b>AUTONOMOUS PORTFOLIO WATCHLIST</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Total Monitored Symbols:</b> <b>{len(self.symbols)}</b>\n"
+            f"• <b>Current Symbols:</b>\n"
+        )
+        for s in self.symbols:
+            msg += f"  • <code>{s}</code>\n"
+
+        msg += (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Use /scan to check current market scores across all symbols.</i>"
+        )
+        return msg
+
+
+# Global singleton instance
+autonomous_trader = AutonomousMultiSymbolTrader()

@@ -246,6 +246,9 @@ class MT4ZmqClient:
     def get_symbols(self, timeout_ms: int = 5000) -> Dict[str, Any]:
         return self.send_command("GET_SYMBOLS", timeout_ms=timeout_ms)
 
+    def scan_symbols(self, symbols: str = "", timeframe: str = "H1", timeout_ms: int = 5000) -> Dict[str, Any]:
+        return self.send_command("SCAN_SYMBOLS", symbols=symbols, timeframe=timeframe, timeout_ms=timeout_ms)
+
     def get_boost(self) -> Dict[str, Any]:
         return self.send_command("GET_BOOST")
 

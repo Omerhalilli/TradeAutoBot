@@ -435,6 +435,14 @@ input double             HybridTolerance_M1_M5         = 5.0;               // H
 input double             HybridTolerance_M15_H1        = 10.0;              // Hybrid Cluster Tolerance for M15-H1 (Pips)
 input double             HybridTolerance_H4_Plus       = 25.0;              // Hybrid Cluster Tolerance for H4+ (Pips)
 
+//--- [15. AUTONOMOUS MULTI-SYMBOL TRADING ENGINE]
+input string             Sec_AutonomousMultiSymbol     = "=== [15] AUTONOMOUS MULTI-SYMBOL ENGINE ===";
+input bool               EnableAutonomousMultiSymbol   = true;              // Autonomous Multi-Symbol Engine (True = Monitor Portfolio)
+input string             AutonomousWatchlist           = "EURUSD,GBPUSD,USDJPY,USDCHF,USDCAD,AUDUSD,NZDUSD,XAUUSD"; // Monitored Portfolio Symbols
+input bool               AutonomousTradeDirectly       = true;              // 100% Autonomous Execution (Direct Trade, Zero Advisory Prompting)
+input int                AutonomousScanIntervalSec     = 20;                // Background Multi-Symbol Scan Interval (Seconds)
+input int                AutonomousMinConfluenceScore  = 6;                 // Minimum Score to Execute Autonomous Trade (0-10)
+
 
 
 
@@ -2105,11 +2113,14 @@ void CalculateAdvancedSLTP(const int cmd, const double entryPrice, double &outSL
 //+------------------------------------------------------------------+
 //| ACCURATE DYNAMIC POSITION SIZING (PER-METHOD RISK SIZING)        |
 //+------------------------------------------------------------------+
-double CalculateDynamicLotSize(const double entryPrice, const double slPrice)
+//| ACCURATE DYNAMIC POSITION SIZING (PER-METHOD RISK SIZING)        |
+//+------------------------------------------------------------------+
+double CalculateDynamicLotSize(const double entryPrice, const double slPrice, string targetSymbol = "")
 {
+   string sym = (targetSymbol == "" || targetSymbol == "CURRENT") ? Symbol() : targetSymbol;
    if(LotSizingMethod == LOT_MODE_FIXED)
    {
-      return NormalizeLotStep(FixedLotSize);
+      return NormalizeLotStep(FixedLotSize, sym);
    }
 
    double equity  = AccountEquity();
@@ -2130,39 +2141,44 @@ double CalculateDynamicLotSize(const double entryPrice, const double slPrice)
    
    double riskAmount = capitalBase * (appliedRiskPercent / 100.0);
 
-   double tickValue = MarketInfo(Symbol(), MODE_TICKVALUE);
-   double tickSize  = MarketInfo(Symbol(), MODE_TICKSIZE);
-   if(tickSize <= 0.0)  tickSize  = (Point > 0.0) ? Point : 0.0001;
+   double tickValue = MarketInfo(sym, MODE_TICKVALUE);
+   double tickSize  = MarketInfo(sym, MODE_TICKSIZE);
+   double pt        = MarketInfo(sym, MODE_POINT);
+   int dig          = (int)MarketInfo(sym, MODE_DIGITS);
+   double pipPt     = (dig == 3 || dig == 5) ? (pt * 10.0) : pt;
+   if(pipPt <= 0.0) pipPt = (dig == 3 ? 0.01 : (dig == 5 ? 0.0001 : 0.01));
+
+   if(tickSize <= 0.0)  tickSize  = (pt > 0.0) ? pt : 0.0001;
    if(tickValue <= 0.0) tickValue = 10.0;
 
-   double pipValue = tickValue * (g_PipPoint / tickSize);
+   double pipValue = tickValue * (pipPt / tickSize);
    if(pipValue <= 0.0) pipValue = 10.0;
 
    double slDistancePips = 0.0;
    if(LotSizingMethod == LOT_MODE_ATR_RISK)
    {
-      double atr = iATR(Symbol(), Period(), ATRPeriod, 1);
-      if(atr > 0.0 && g_PipPoint > 0.0)
-         slDistancePips = (atr * ATRMultiplierSL) / g_PipPoint;
-      else if(entryPrice > 0.0 && slPrice > 0.0 && g_PipPoint > 0.0)
-         slDistancePips = MathAbs(entryPrice - slPrice) / g_PipPoint;
+      double atr = iATR(sym, Period(), ATRPeriod, 1);
+      if(atr > 0.0 && pipPt > 0.0)
+         slDistancePips = (atr * ATRMultiplierSL) / pipPt;
+      else if(entryPrice > 0.0 && slPrice > 0.0 && pipPt > 0.0)
+         slDistancePips = MathAbs(entryPrice - slPrice) / pipPt;
    }
    else
    {
-      if(entryPrice > 0.0 && slPrice > 0.0 && g_PipPoint > 0.0)
-         slDistancePips = MathAbs(entryPrice - slPrice) / g_PipPoint;
+      if(entryPrice > 0.0 && slPrice > 0.0 && pipPt > 0.0)
+         slDistancePips = MathAbs(entryPrice - slPrice) / pipPt;
    }
 
    if(slDistancePips <= 0.0) slDistancePips = (double)StopLossPips;
    if(slDistancePips <= 0.0) slDistancePips = 30.0;
 
    double lossPerLot = slDistancePips * pipValue;
-   if(lossPerLot <= 0.0) return MarketInfo(Symbol(), MODE_MINLOT);
+   if(lossPerLot <= 0.0) return MarketInfo(sym, MODE_MINLOT);
 
    double computedLot = riskAmount / lossPerLot;
 
    // Margin Requirement Verification
-   double marginRequiredPerLot = MarketInfo(Symbol(), MODE_MARGINREQUIRED);
+   double marginRequiredPerLot = MarketInfo(sym, MODE_MARGINREQUIRED);
    if(marginRequiredPerLot > 0.0)
    {
       double maxAffordableLots = (AccountFreeMargin() * 0.85) / marginRequiredPerLot;
@@ -2173,7 +2189,7 @@ double CalculateDynamicLotSize(const double entryPrice, const double slPrice)
       }
    }
 
-   return NormalizeLotStep(computedLot);
+   return NormalizeLotStep(computedLot, sym);
 }
 
 
@@ -2192,11 +2208,12 @@ double CalculateOptimalLotSize(const double stopLossDistancePoints)
 }
 
 
-double NormalizeLotStep(double rawLots)
+double NormalizeLotStep(double rawLots, string targetSymbol = "")
 {
-   double minLot  = MarketInfo(Symbol(), MODE_MINLOT);
-   double maxLot  = MarketInfo(Symbol(), MODE_MAXLOT);
-   double lotStep = MarketInfo(Symbol(), MODE_LOTSTEP);
+   string sym = (targetSymbol == "" || targetSymbol == "CURRENT") ? Symbol() : targetSymbol;
+   double minLot  = MarketInfo(sym, MODE_MINLOT);
+   double maxLot  = MarketInfo(sym, MODE_MAXLOT);
+   double lotStep = MarketInfo(sym, MODE_LOTSTEP);
 
    if(minLot <= 0.0)  minLot  = (g_MinLot > 0.0) ? g_MinLot : 0.01;
    if(maxLot <= 0.0)  maxLot  = (g_MaxLot > 0.0) ? g_MaxLot : 100.0;
@@ -2228,6 +2245,7 @@ double NormalizeLotStep(double rawLots)
 
    return NormalizeDouble(rawLots, stepDecimals);
 }
+
 
 
 //+------------------------------------------------------------------+
@@ -2317,8 +2335,9 @@ void CleanupStealthOrders()
 //+------------------------------------------------------------------+
 //| SECTION 7: ROBUST ORDER EXECUTION WRAPPER                        |
 //+------------------------------------------------------------------+
-int ExecuteSmartOrder(const int command, const double volume, const double entryPrice, const double stopLoss, const double takeProfit)
+int ExecuteSmartOrder(const int command, const double volume, const double entryPrice, const double stopLoss, const double takeProfit, string targetSymbol = "")
 {
+   string sym = (targetSymbol == "" || targetSymbol == "CURRENT") ? Symbol() : targetSymbol;
    int ticket = -1;
    int attempts = 0;
    color arrowColor = (command == OP_BUY) ? BuyArrowColor : SellArrowColor;
@@ -2327,16 +2346,16 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
 
    // Pre-execution free margin validation
    ResetLastError();
-   double freeMarginCheck = AccountFreeMarginCheck(Symbol(), command, volume);
+   double freeMarginCheck = AccountFreeMarginCheck(sym, command, volume);
    if(GetLastError() == 134 || freeMarginCheck <= 0.0)
    {
-      PrintFormat("[ORDER REJECTED] Insufficient margin for %.2f lots on %s. Free Margin Check: %.2f", volume, Symbol(), freeMarginCheck);
+      PrintFormat("[ORDER REJECTED] Insufficient margin for %.2f lots on %s. Free Margin Check: %.2f", volume, sym, freeMarginCheck);
       return -1;
    }
 
    // MQL4-compatible ECN/STP detection: market execution mode uses 0-pip stop levels
    // and requires 2-step execution (open first, then attach SL/TP)
-   double stopLevel = MarketInfo(Symbol(), MODE_STOPLEVEL);
+   double stopLevel = MarketInfo(sym, MODE_STOPLEVEL);
    bool isECN = (stopLevel == 0.0);
 
    while(attempts < OrderRetryAttempts && ticket < 0)
@@ -2345,17 +2364,17 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
       ResetLastError();
       RefreshRates();
 
-      double currentExecPrice = (command == OP_BUY) ? Ask : Bid;
+      double currentExecPrice = (entryPrice > 0.0) ? entryPrice : ((command == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID));
       double sendSL = (isECN || UseStealthStops) ? 0.0 : stopLoss;
       double sendTP = (isECN || UseStealthStops) ? 0.0 : takeProfit;
 
-      ticket = OrderSend(Symbol(), command, volume, currentExecPrice, slippage, sendSL, sendTP, orderComment, MagicNumber, 0, arrowColor);
+      ticket = OrderSend(sym, command, volume, currentExecPrice, slippage, sendSL, sendTP, orderComment, MagicNumber, 0, arrowColor);
 
       if(ticket > 0)
       {
          g_LastOrderExecutionTime = TimeCurrent();
-         PrintFormat("[ORDER FILLED] Ticket #%d | Type: %s | Lots: %.2f | Price: %f | SL: %f | TP: %f",
-                     ticket, (command == OP_BUY ? "BUY" : "SELL"), volume, currentExecPrice, stopLoss, takeProfit);
+         PrintFormat("[ORDER FILLED] Ticket #%d | Symbol: %s | Type: %s | Lots: %.2f | Price: %f | SL: %f | TP: %f",
+                     ticket, sym, (command == OP_BUY ? "BUY" : "SELL"), volume, currentExecPrice, stopLoss, takeProfit);
 
          // If stealth stops enabled, register virtual SL/TP
          if(UseStealthStops)
@@ -2377,19 +2396,19 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
       else
       {
          int err = GetLastError();
-         PrintFormat("[ORDER ERROR] Attempt %d/%d failed. Error: %d (%s)",
-                     attempts, OrderRetryAttempts, err, MqlErrorToString(err));
+         PrintFormat("[ORDER ERROR] Attempt %d/%d failed for %s. Error: %d (%s)",
+                     attempts, OrderRetryAttempts, sym, err, MqlErrorToString(err));
 
          // If Instant Execution broker failed with Error 130 (Invalid Stops), attempt ECN two-step approach
          if(err == 130 && !isECN && !UseStealthStops && (stopLoss > 0.0 || takeProfit > 0.0))
          {
             RefreshRates();
-            currentExecPrice = (command == OP_BUY) ? Ask : Bid;
-            ticket = OrderSend(Symbol(), command, volume, currentExecPrice, slippage, 0, 0, orderComment, MagicNumber, 0, arrowColor);
+            currentExecPrice = (entryPrice > 0.0) ? entryPrice : ((command == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID));
+            ticket = OrderSend(sym, command, volume, currentExecPrice, slippage, 0, 0, orderComment, MagicNumber, 0, arrowColor);
             if(ticket > 0)
             {
                g_LastOrderExecutionTime = TimeCurrent();
-               PrintFormat("[ORDER FILLED TWO-STEP] Ticket #%d opened with 0/0. Modifying SL/TP...", ticket);
+               PrintFormat("[ORDER FILLED TWO-STEP] Ticket #%d opened with 0/0 on %s. Modifying SL/TP...", ticket, sym);
                SafeOrderModify(ticket, currentExecPrice, stopLoss, takeProfit, 0, arrowColor);
                Telegram_ProcessTradeEvents();
                return ticket;
@@ -6647,12 +6666,153 @@ void OnDeinit(const int reason)
    }
 }
 
+//+------------------------------------------------------------------+
+//| Autonomous Multi-Symbol Surveillance & Execution Engine         |
+//+------------------------------------------------------------------+
+void Autonomous_MultiSymbolScan()
+{
+   if(!EnableAutonomousMultiSymbol) return;
+   if(!g_AutoTradingRuntimeActive) return;
+   if(g_DailyLossCircuitTripped || g_PropLockoutActive) return;
+   if(GlobalVariableCheck("AutoTrading_Paused") && GlobalVariableGet("AutoTrading_Paused") > 0.5) return;
+   
+   static uint s_lastAutonomousScanTick = 0;
+   uint nowTick = GetTickCount();
+   if(nowTick - s_lastAutonomousScanTick < (uint)(AutonomousScanIntervalSec * 1000)) return;
+   s_lastAutonomousScanTick = nowTick;
+   
+   // Check portfolio open positions count
+   int totalOpen = 0;
+   for(int i = 0; i < OrdersTotal(); i++)
+   {
+      if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+      {
+         if(OrderType() == OP_BUY || OrderType() == OP_SELL)
+            totalOpen++;
+      }
+   }
+   if(totalOpen >= MaxTotalPortfolioPositions) return;
+   
+   // Parse symbols from AutonomousWatchlist
+   int start = 0;
+   int totalLen = StringLen(AutonomousWatchlist);
+   while(start < totalLen)
+   {
+      int comma = StringFind(AutonomousWatchlist, ",", start);
+      string symToken = (comma >= 0) ? StringSubstr(AutonomousWatchlist, start, comma - start) : StringSubstr(AutonomousWatchlist, start);
+      StringTrimLeft(symToken);
+      StringTrimRight(symToken);
+      StringToUpper(symToken);
+      start = (comma >= 0) ? (comma + 1) : totalLen;
+      
+      if(StringLen(symToken) == 0) continue;
+      
+      string sym = Zmq_ResolveSymbol(symToken);
+      if(sym == "") sym = symToken;
+      SymbolSelect(sym, true);
+      
+      // Do not double-trade if EA already has an open position on this symbol
+      int symOpenCount = 0;
+      for(int k = 0; k < OrdersTotal(); k++)
+      {
+         if(OrderSelect(k, SELECT_BY_POS, MODE_TRADES))
+         {
+            if((OrderType() == OP_BUY || OrderType() == OP_SELL) && OrderSymbol() == sym)
+               symOpenCount++;
+         }
+      }
+      if(symOpenCount >= MaxOpenPositionsPerSymbol) continue;
+      
+      double pt = MarketInfo(sym, MODE_POINT);
+      if(pt <= 0.0) continue;
+      
+      // Check spread
+      double spread = Zmq_GetSpreadPoints(sym);
+      if(spread > (double)MaxSpreadPoints && spread > 0.0) continue;
+      
+      // Multi-indicator confluence scoring on H1
+      ENUM_TIMEFRAMES tf = PERIOD_H1;
+      double ema20  = iMA(sym, tf, 20,  0, MODE_EMA, PRICE_CLOSE, 1);
+      double ema50  = iMA(sym, tf, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
+      double ema200 = iMA(sym, tf, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
+      double rsi = iRSI(sym, tf, 14, PRICE_CLOSE, 1);
+      double macd = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 1);
+      double macd_sig = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 1);
+      double stoch_k = iStochastic(sym, tf, 5, 3, 3, MODE_SMA, 0, MODE_MAIN, 1);
+      double stoch_d = iStochastic(sym, tf, 5, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 1);
+      double atr = iATR(sym, tf, 14, 1);
+      double pipPt = Zmq_GetPipPoint(sym);
+      
+      int buyScore = 0;
+      int sellScore = 0;
+      
+      if(ema20 > ema50 && ema50 > ema200) buyScore += 3;
+      else if(ema20 > ema50) buyScore += 2;
+      
+      if(ema20 < ema50 && ema50 < ema200) sellScore += 3;
+      else if(ema20 < ema50) sellScore += 2;
+      
+      if(rsi > 50.0 && rsi < 70.0) buyScore += 2;
+      else if(rsi <= 32.0) buyScore += 2;
+      
+      if(rsi < 50.0 && rsi > 30.0) sellScore += 2;
+      else if(rsi >= 68.0) sellScore += 2;
+      
+      if(macd > macd_sig && macd > 0.0) buyScore += 2;
+      else if(macd > macd_sig) buyScore += 1;
+      
+      if(macd < macd_sig && macd < 0.0) sellScore += 2;
+      else if(macd < macd_sig) sellScore += 1;
+      
+      if(stoch_k > stoch_d && stoch_k < 80.0) buyScore += 2;
+      if(stoch_k < stoch_d && stoch_k > 20.0) sellScore += 2;
+      
+      if(iClose(sym, tf, 1) > iOpen(sym, tf, 1)) buyScore += 1;
+      if(iClose(sym, tf, 1) < iOpen(sym, tf, 1)) sellScore += 1;
+      
+      if(buyScore > 10) buyScore = 10;
+      if(sellScore > 10) sellScore = 10;
+      
+      int finalScore = MathMax(buyScore, sellScore);
+      if(finalScore < AutonomousMinConfluenceScore) continue;
+      
+      int cmd = -1;
+      if(buyScore >= AutonomousMinConfluenceScore && buyScore > sellScore) cmd = OP_BUY;
+      else if(sellScore >= AutonomousMinConfluenceScore && sellScore > buyScore) cmd = OP_SELL;
+      if(cmd < 0) continue;
+      
+      if(AutonomousTradeDirectly)
+      {
+         double entryPrice = (cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
+         double slDistance = (atr > 0.0) ? (atr * 1.5) : (pipPt * 30.0);
+         double tpDistance = (atr > 0.0) ? (atr * 3.0) : (pipPt * 60.0);
+         
+         double slPrice = (cmd == OP_BUY) ? (entryPrice - slDistance) : (entryPrice + slDistance);
+         double tpPrice = (cmd == OP_BUY) ? (entryPrice + tpDistance) : (entryPrice - tpDistance);
+         
+         int dig = (int)MarketInfo(sym, MODE_DIGITS);
+         slPrice = NormalizeDouble(slPrice, dig);
+         tpPrice = NormalizeDouble(tpPrice, dig);
+         
+         double orderLots = CalculateDynamicLotSize(entryPrice, slPrice, sym);
+         int ticket = ExecuteSmartOrder(cmd, orderLots, entryPrice, slPrice, tpPrice, sym);
+         if(ticket > 0)
+         {
+            PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Successfully placed %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d)",
+                        (cmd == OP_BUY ? "BUY" : "SELL"), sym, orderLots, finalScore, ticket);
+            break; // Max 1 new order per scan cycle
+         }
+      }
+   }
+}
+
 
 void OnTimer()
 {
    ZeroMQ_Poll();
    Telegram_ProcessQueue();
    Telegram_ProcessTradeEvents();
+   Autonomous_MultiSymbolScan();
 
    static uint s_lastEATimerTick = 0;
    uint nowTimerTick = GetTickCount();
@@ -6850,7 +7010,10 @@ void OnTick()
    if(decision != SIGNAL_NEUTRAL)
    {
       DrawChartSignalMarker(decision, 1);
-      BroadcastSignalAlerts(decision, finalWinningScore);
+      if(!AutonomousTradeDirectly)
+      {
+         BroadcastSignalAlerts(decision, finalWinningScore);
+      }
 
 
       // Check Filters and Execute if AutoTrading is enabled

@@ -1012,6 +1012,155 @@ string HandleGetSymbols()
 }
 
 //+------------------------------------------------------------------+
+//| HandleScanSymbols: Autonomous Multi-Symbol Market Scanner        |
+//+------------------------------------------------------------------+
+string HandleScanSymbols(const string reqJson)
+{
+   string symListStr = ExtractJsonString(reqJson, "symbols");
+   if(symListStr == "")
+   {
+      symListStr = "EURUSD,GBPUSD,USDJPY,USDCHF,USDCAD,AUDUSD,NZDUSD,XAUUSD";
+   }
+   
+   string tfParam = ExtractJsonString(reqJson, "timeframe");
+   ENUM_TIMEFRAMES tf = (tfParam != "") ? Bridge_StringToTimeframe(tfParam) : PERIOD_H1;
+   
+   string symbols[];
+   ArrayResize(symbols, 0);
+   
+   int start = 0;
+   int totalLen = StringLen(symListStr);
+   while(start < totalLen)
+   {
+      int comma = StringFind(symListStr, ",", start);
+      string token = (comma >= 0) ? StringSubstr(symListStr, start, comma - start) : StringSubstr(symListStr, start);
+      StringTrimLeft(token);
+      StringTrimRight(token);
+      StringToUpper(token);
+      if(StringLen(token) > 0)
+      {
+         int sz = ArraySize(symbols);
+         ArrayResize(symbols, sz + 1);
+         symbols[sz] = token;
+      }
+      if(comma < 0) break;
+      start = comma + 1;
+   }
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"SCAN_SYMBOLS\",";
+   json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
+   json += "\"results\":[";
+   
+   int validCount = 0;
+   for(int i = 0; i < ArraySize(symbols); i++)
+   {
+      string rawSym = symbols[i];
+      string sym = Bridge_ResolveSymbol(rawSym);
+      if(sym == "") sym = rawSym;
+      SymbolSelect(sym, true);
+      
+      double pt = MarketInfo(sym, MODE_POINT);
+      if(pt <= 0.0) continue;
+      
+      double bid = MarketInfo(sym, MODE_BID);
+      double ask = MarketInfo(sym, MODE_ASK);
+      double spread = MarketInfo(sym, MODE_SPREAD);
+      if(spread <= 0.0 && pt > 0.0 && ask > bid)
+      {
+         spread = NormalizeDouble((ask - bid) / pt, 1);
+      }
+      int dig = (int)MarketInfo(sym, MODE_DIGITS);
+      double pipPt = (dig == 3 || dig == 5) ? (pt * 10.0) : pt;
+      if(pipPt <= 0.0) pipPt = (dig == 3 ? 0.01 : (dig == 5 ? 0.0001 : 0.01));
+      double atr = iATR(sym, tf, 14, 1);
+      
+      double ema20  = iMA(sym, tf, 20,  0, MODE_EMA, PRICE_CLOSE, 1);
+      double ema50  = iMA(sym, tf, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
+      double ema200 = iMA(sym, tf, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
+      
+      double rsi = iRSI(sym, tf, 14, PRICE_CLOSE, 1);
+      double macd = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 1);
+      double macd_sig = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 1);
+      double stoch_k = iStochastic(sym, tf, 5, 3, 3, MODE_SMA, 0, MODE_MAIN, 1);
+      double stoch_d = iStochastic(sym, tf, 5, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 1);
+      
+      int buyScore = 0;
+      int sellScore = 0;
+      
+      // 1. Trend (0 - 3)
+      if(ema20 > ema50 && ema50 > ema200) buyScore += 3;
+      else if(ema20 > ema50) buyScore += 2;
+      
+      if(ema20 < ema50 && ema50 < ema200) sellScore += 3;
+      else if(ema20 < ema50) sellScore += 2;
+      
+      // 2. Momentum RSI (0 - 2)
+      if(rsi > 50.0 && rsi < 70.0) buyScore += 2;
+      else if(rsi <= 32.0) buyScore += 2;
+      
+      if(rsi < 50.0 && rsi > 30.0) sellScore += 2;
+      else if(rsi >= 68.0) sellScore += 2;
+      
+      // 3. MACD (0 - 2)
+      if(macd > macd_sig && macd > 0.0) buyScore += 2;
+      else if(macd > macd_sig) buyScore += 1;
+      
+      if(macd < macd_sig && macd < 0.0) sellScore += 2;
+      else if(macd < macd_sig) sellScore += 1;
+      
+      // 4. Stochastic (0 - 2)
+      if(stoch_k > stoch_d && stoch_k < 80.0) buyScore += 2;
+      if(stoch_k < stoch_d && stoch_k > 20.0) sellScore += 2;
+      
+      // 5. Price Action Candle (0 - 1)
+      if(iClose(sym, tf, 1) > iOpen(sym, tf, 1)) buyScore += 1;
+      if(iClose(sym, tf, 1) < iOpen(sym, tf, 1)) sellScore += 1;
+      
+      if(buyScore > 10) buyScore = 10;
+      if(sellScore > 10) sellScore = 10;
+      
+      string trend = "NEUTRAL";
+      if(ema20 > ema50 && ema50 > ema200) trend = "STRONG BULLISH";
+      else if(ema20 > ema50) trend = "BULLISH";
+      else if(ema20 < ema50 && ema50 < ema200) trend = "STRONG BEARISH";
+      else if(ema20 < ema50) trend = "BEARISH";
+      
+      string signal = "HOLD";
+      int finalScore = MathMax(buyScore, sellScore);
+      if(buyScore >= 6 && buyScore > sellScore) signal = "BUY";
+      else if(sellScore >= 6 && sellScore > buyScore) signal = "SELL";
+      
+      double slPips = (atr > 0.0 && pipPt > 0.0) ? NormalizeDouble((atr * 1.5) / pipPt, 1) : 30.0;
+      double tpPips = (atr > 0.0 && pipPt > 0.0) ? NormalizeDouble((atr * 3.0) / pipPt, 1) : 60.0;
+      if(slPips < 10.0) slPips = 20.0;
+      if(tpPips < 15.0) tpPips = 40.0;
+      
+      if(validCount > 0) json += ",";
+      json += "{";
+      json += "\"symbol\":\"" + JsonEscape(sym) + "\",";
+      json += "\"bid\":" + DoubleToString(bid, dig) + ",";
+      json += "\"ask\":" + DoubleToString(ask, dig) + ",";
+      json += "\"spread\":" + DoubleToString(spread, 1) + ",";
+      json += "\"digits\":" + IntegerToString(dig) + ",";
+      json += "\"trend\":\"" + trend + "\",";
+      json += "\"buy_score\":" + IntegerToString(buyScore) + ",";
+      json += "\"sell_score\":" + IntegerToString(sellScore) + ",";
+      json += "\"score\":" + IntegerToString(finalScore) + ",";
+      json += "\"signal\":\"" + signal + "\",";
+      json += "\"sl_pips\":" + DoubleToString(slPips, 1) + ",";
+      json += "\"tp_pips\":" + DoubleToString(tpPips, 1) + ",";
+      json += "\"rsi\":" + DoubleToString(rsi, 1) + ",";
+      json += "\"atr\":" + DoubleToString(atr, dig);
+      json += "}";
+      validCount++;
+   }
+   json += "],\"count\":" + IntegerToString(validCount) + "}";
+   return json;
+}
+
+//+------------------------------------------------------------------+
 //| DISPATCH REQUEST                                                 |
 //+------------------------------------------------------------------+
 string ProcessRequest(const string reqStr)
@@ -1050,6 +1199,8 @@ string ProcessRequest(const string reqStr)
       return HandleScreenshot(reqStr);
    if(action == "GET_SYMBOLS" || action == "SYMBOLS")
       return HandleGetSymbols();
+   if(action == "SCAN_SYMBOLS" || action == "SCAN" || action == "MARKET_DATA")
+      return HandleScanSymbols(reqStr);
       
    return "{\"status\":\"error\",\"message\":\"Unknown action: " + JsonEscape(action) + "\"}";
 }

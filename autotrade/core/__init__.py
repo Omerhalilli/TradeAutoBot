@@ -13,6 +13,7 @@ from autotrade.core.event_bus import (
 from autotrade.core.config_manager import ConfigManager, get_config
 from autotrade.core.scheduler import AsyncScheduler, scheduler
 from autotrade.core.engine import TradingEngine, get_engine
+from autotrade.core.autonomous_trader import AutonomousMultiSymbolTrader, autonomous_trader
 
 __all__ = [
     "EventBus",
@@ -26,4 +27,6 @@ __all__ = [
     "scheduler",
     "TradingEngine",
     "get_engine",
+    "AutonomousMultiSymbolTrader",
+    "autonomous_trader",
 ]
