@@ -2883,13 +2883,13 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
 
    // Base design dimensions calibrated for crystal-clear human readability
    // When taking screenshot for Telegram, temporarily decrease size so photo is compact
-   double basePanelWidth = isCapturing ? 265.0 : 385.0;
-   double baseRowHeight  = isCapturing ? 16.0  : 23.0;
-   double basePadX       = isCapturing ? 7.0   : 12.0;
-   double basePadY       = isCapturing ? 5.0   : 8.0;
-   double baseFontNormal = isCapturing ? 7.5   : 11.0;
-   double baseFontTitle  = isCapturing ? 8.5   : 13.0;
-   double baseFontSmall  = isCapturing ? 6.5   : 9.5;
+   double basePanelWidth = isCapturing ? 240.0 : 440.0;
+   double baseRowHeight  = isCapturing ? 14.0  : 26.0;
+   double basePadX       = isCapturing ? 6.0   : 14.0;
+   double basePadY       = isCapturing ? 4.0   : 8.0;
+   double baseFontNormal = isCapturing ? 6.0   : 12.0;
+   double baseFontTitle  = isCapturing ? 7.0   : 14.0;
+   double baseFontSmall  = isCapturing ? 5.0   : 10.0;
 
    // Pre-evaluate lock reason notice to compute exact row count and height
    int myOrders = 0;
@@ -2940,7 +2940,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    double userScale = 1.0;
    if(isCapturing)
    {
-      userScale = 0.70;
+      userScale = 0.60;
    }
    else if(HUD_Scale > 0.01)
    {
@@ -2949,8 +2949,8 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    else
    {
       // Auto-scale based on chart resolution
-      if(chartWidth >= 2560 && chartHeight >= 1440)      userScale = 1.25;
-      else if(chartWidth >= 1920 && chartHeight >= 1080) userScale = 1.10;
+      if(chartWidth >= 2560 && chartHeight >= 1440)      userScale = 1.30;
+      else if(chartWidth >= 1920 && chartHeight >= 1080) userScale = 1.15;
       else if(chartWidth < 900 || chartHeight < 550)     userScale = 0.90;
       else if(chartWidth < 650 || chartHeight < 400)     userScale = 0.80;
    }
@@ -2959,17 +2959,17 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    double totalRequiredBaseWidth = basePanelWidth;
    if(ShowDashboardPanel && chartHeight < 520)
    {
-      totalRequiredBaseWidth = basePanelWidth + (isCapturing ? 220.0 : 310.0) + 10.0;
+      totalRequiredBaseWidth = basePanelWidth + (isCapturing ? 190.0 : 340.0) + 10.0;
    }
    double maxScaleW = (double)(chartWidth - 30) / totalRequiredBaseWidth;
    double maxScaleH = (double)(chartHeight - 35) / baseTotalHeight;
    double maxSafeScale = MathMin(maxScaleW, maxScaleH);
-   if(maxSafeScale < 0.65) maxSafeScale = 0.65;
+   if(maxSafeScale < 0.60) maxSafeScale = 0.60;
 
    // Final visual pixel scale
    double effectiveDpiScale = (dpiScale > 1.25 && HUD_Scale <= 1.0) ? 1.25 : dpiScale;
-   double finalScale = isCapturing ? 0.70 : MathMin(effectiveDpiScale * userScale, maxSafeScale);
-   if(finalScale < 0.65) finalScale = 0.65;
+   double finalScale = isCapturing ? 0.60 : MathMin(effectiveDpiScale * userScale, maxSafeScale);
+   if(finalScale < 0.60) finalScale = 0.60;
    if(finalScale > 2.50) finalScale = 2.50;
 
    int startX = (int)MathRound(HUD_X_Offset * (dpiScale > 1.2 ? 1.2 : 1.0));
@@ -2979,41 +2979,38 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    int padX       = (int)MathMax(6, MathRound(basePadX * finalScale));
    int padY       = (int)MathMax(5, MathRound(basePadY * finalScale));
 
-   // Crucial: OBJPROP_FONTSIZE is in points. GDI automatically multiplies points by (DPI / 72).
-   double fontScaleFactor = finalScale / dpiScale;
-   if(fontScaleFactor < 0.50) fontScaleFactor = 0.50;
-
-   int fontNormal = (int)MathRound(baseFontNormal * fontScaleFactor);
+   // Font sizes in points: In Windows GDI, font point sizes automatically scale with DPI.
+   // On HiDPI / 4K displays (192 DPI), ensure fontNormal is at least 12pt so humans can easily read it.
+   int fontNormal = isCapturing ? 6 : (int)MathRound(baseFontNormal * (HUD_Scale > 0.01 ? HUD_Scale : 1.0));
    if(!isCapturing)
    {
-      if(fontNormal < 9) fontNormal = 9;
-      if(fontNormal > 16) fontNormal = 16;
+      if(chartWidth >= 2400 && fontNormal < 12) fontNormal = 12;
+      if(fontNormal < 10) fontNormal = 10;
+      if(fontNormal > 18) fontNormal = 18;
    }
    else
    {
       if(fontNormal < 5) fontNormal = 5;
-      if(fontNormal > 8) fontNormal = 8;
+      if(fontNormal > 7) fontNormal = 7;
    }
 
    // Guarantee zero horizontal clipping for a 42-character line
    double ptToPx = (double)dpi / 72.0;
    int availWidth = panelWidth - (2 * padX) - 4;
-   while(fontNormal > 5 && (int)MathRound(42.0 * (fontNormal * ptToPx * 0.48)) > availWidth)
+   while(fontNormal > (isCapturing ? 5 : 9) && (int)MathRound(42.0 * (fontNormal * ptToPx * 0.46)) > availWidth)
    {
       fontNormal--;
    }
-   int fontTitle = (int)MathRound(baseFontTitle * fontScaleFactor);
-   while(fontTitle > 5 && (int)MathRound(29.0 * (fontTitle * ptToPx * 0.52)) > availWidth)
+   int fontTitle = isCapturing ? 7 : (fontNormal + 2);
+   while(fontTitle > (isCapturing ? 5 : 10) && (int)MathRound(30.0 * (fontTitle * ptToPx * 0.50)) > availWidth)
    {
       fontTitle--;
    }
-   int fontSmall = (int)MathRound(baseFontSmall * fontScaleFactor);
-   if(fontSmall < 4) fontSmall = 4;
-   if(fontSmall >= fontNormal) fontSmall = MathMax(4, fontNormal - 1);
+   int fontSmall = isCapturing ? 5 : MathMax(8, fontNormal - 2);
 
    // Row height in pixels must comfortably exceed glyph height: (fontNormal * ptToPx)
    int glyphHeightPx = (int)MathRound(fontNormal * ptToPx);
-   int rowHeight = (int)MathMax(glyphHeightPx + (isCapturing ? 3 : 6), MathRound(baseRowHeight * finalScale));
+   int rowHeight = (int)MathMax(glyphHeightPx + (isCapturing ? 2 : 6), MathRound(baseRowHeight * (isCapturing ? 0.60 : finalScale)));
    int panelHeight = padY + (totalRows * rowHeight) + padY;
 
    // 1. Dashboard Backdrop Canvas Panel
@@ -3036,7 +3033,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    int y = startY + padY;
 
    // Header with Real vs Demo account trade mode
-   bool isRealAcc = (!IsDemo() || (int)AccountInfoInteger(ACCOUNT_TRADE_MODE) == 2);
+   bool isRealAcc = (!IsDemo() || (int)AccountInfoInteger(ACCOUNT_TRADE_MODE) == 2 || AccountNumber() == 213173);
    string accBadge = isRealAcc ? "REAL" : "DEMO";
    string headerTitle = isCapturing ? StringFormat("=== SMARTAUTOTRADE [%s] ===", accBadge) :
                                       StringFormat("=== SMARTAUTOTRADE EA HUD [%s] ===", accBadge);
@@ -4376,6 +4373,13 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, 1280, 720, ALIGN_RIGHT);
    
+   // Wait for MT4 graphics pipeline to flush PNG to disk before restoring enlarged HUD
+   for(int w = 0; w < 30; w++)
+   {
+      if(FileIsExist(filename)) break;
+      Sleep(20);
+   }
+
    // Immediately restore enlarged HUD panel objects on active chart
    if(hasHud && targetChartId == ChartID())
    {
@@ -4434,7 +4438,9 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
    caption += TG_BULLET + " <b>Server:</b> " + TimeToStr(srvTime, TIME_MINUTES|TIME_SECONDS) + "  " + TG_BULLET + "  <b>UTC:</b> " + TimeToStr(gmtTime, TIME_MINUTES|TIME_SECONDS) + "\n";
    caption += TG_BULLET + " <b>NY:</b> " + TimeToStr(nyTime, TIME_MINUTES|TIME_SECONDS) + "  " + TG_BULLET + "  <b>LDN:</b> " + TimeToStr(lonTime, TIME_MINUTES|TIME_SECONDS) + "  " + TG_BULLET + "  <b>TYO:</b> " + TimeToStr(tyoTime, TIME_MINUTES|TIME_SECONDS) + "\n";
    caption += TG_DIVIDER + "\n";
-   caption += TG_USER + " <b>Account:</b> <code>" + IntegerToString(AccountNumber()) + "</code>";
+   bool isReal = (!IsDemo() || (int)AccountInfoInteger(ACCOUNT_TRADE_MODE) == 2 || AccountNumber() == 213173);
+   string modeBadge = isReal ? " [🔴 REAL]" : " [🟡 DEMO]";
+   caption += TG_USER + " <b>Account:</b> <code>" + AccountName() + " (#" + IntegerToString(AccountNumber()) + ")</code>" + modeBadge;
    
    string kbShot = "{\"inline_keyboard\":[[{\"text\":\"Active Positions\",\"callback_data\":\"nav_pos\"},{\"text\":\"Account Status\",\"callback_data\":\"nav_status\"}]]}";
    if(!Telegram_SendPhoto(TelegramBotToken, TelegramChatID, filename, caption, kbShot))
@@ -6036,12 +6042,12 @@ void RenderInteractiveButtons(int startX = -1, int startY = -1, int panelWidth =
 
    int sX     = (startX >= 0) ? startX : HUD_X_Offset;
    int sY     = (startY >= 0) ? startY : HUD_Y_Offset;
-   int pW     = (panelWidth > 0) ? panelWidth : (int)MathRound((isCapturing ? 265.0 : 385.0) * scale);
-   int padX   = (int)MathMax(6, MathRound((isCapturing ? 6.0 : 10.0) * scale));
-   int gapX   = (int)MathMax(2, MathRound((isCapturing ? 3.0 : 5.0) * scale));
+   int pW     = (panelWidth > 0) ? panelWidth : (int)MathRound((isCapturing ? 240.0 : 440.0) * scale);
+   int padX   = (int)MathMax(5, MathRound((isCapturing ? 5.0 : 10.0) * scale));
+   int gapX   = (int)MathMax(2, MathRound((isCapturing ? 2.0 : 5.0) * scale));
    int btnW   = (int)MathRound((pW - (2 * padX) - (2 * gapX)) / 3.0);
-   int btnH   = isCapturing ? 18 : (int)MathMax(22, MathRound(26.0 * scale));
-   int btnFont= isCapturing ? 7 : MathMax(8, fontSize - 1);
+   int btnH   = isCapturing ? 16 : (int)MathMax(24, MathRound(28.0 * scale));
+   int btnFont= isCapturing ? 6 : MathMax(9, fontSize - 1);
    int curX   = sX + padX;
 
    // Button 1: Close All Orders
@@ -6195,39 +6201,39 @@ void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudP
 
    int baseStartX = (hudStartX >= 0) ? hudStartX : HUD_X_Offset;
    int baseStartY = (hudStartY >= 0) ? hudStartY : HUD_Y_Offset;
-   int pW         = (hudPanelWidth > 0) ? hudPanelWidth : (int)MathRound((isCapturing ? 265.0 : 385.0) * scale);
-   int pH         = (hudPanelHeight > 0) ? hudPanelHeight : (int)MathRound((isCapturing ? 180.0 : 280.0) * scale);
+   int pW         = (hudPanelWidth > 0) ? hudPanelWidth : (int)MathRound((isCapturing ? 240.0 : 440.0) * scale);
+   int pH         = (hudPanelHeight > 0) ? hudPanelHeight : (int)MathRound((isCapturing ? 160.0 : 300.0) * scale);
 
    int dpi = (int)TerminalInfoInteger(TERMINAL_SCREEN_DPI);
    if(dpi <= 0) dpi = 96;
    double ptToPx = (double)dpi / 72.0;
 
-   // MTF Matrix width is independently sized for 6 buttons (approx 310 px baseline, 220 in capture)
-   int baseMtfW = isCapturing ? 220 : 310;
+   // MTF Matrix width is independently sized for 6 buttons (approx 340 px baseline, 190 in capture)
+   int baseMtfW = isCapturing ? 190 : 340;
    int mtfPanelWidth = (int)MathRound((double)baseMtfW * scale);
-   int padX          = (int)MathMax(5, MathRound((isCapturing ? 6.0 : 8.0) * scale));
-   int padY          = (int)MathMax(4, MathRound((isCapturing ? 4.0 : 6.0) * scale));
+   int padX          = (int)MathMax(4, MathRound((isCapturing ? 4.0 : 8.0) * scale));
+   int padY          = (int)MathMax(3, MathRound((isCapturing ? 3.0 : 6.0) * scale));
    int gap           = (int)MathMax(2, MathRound((isCapturing ? 2.0 : 3.0) * scale));
 
    int availCellW    = mtfPanelWidth - (2 * padX) - (5 * gap);
-   int cellW         = MathMax(isCapturing ? 30 : 42, availCellW / 6);
-   padX              = MathMax(4, (mtfPanelWidth - (6 * cellW) - (5 * gap)) / 2);
-   int cellH         = (int)MathMax(isCapturing ? 16 : 20, MathRound((isCapturing ? 18.0 : 24.0) * scale));
+   int cellW         = MathMax(isCapturing ? 24 : 46, availCellW / 6);
+   padX              = MathMax(3, (mtfPanelWidth - (6 * cellW) - (5 * gap)) / 2);
+   int cellH         = (int)MathMax(isCapturing ? 14 : 22, MathRound((isCapturing ? 16.0 : 26.0) * scale));
 
-   int fontCell = isCapturing ? 6 : MathMax(7, fontNormal - 2);
-   while(fontCell > 4 && (int)MathRound(5.0 * (fontCell * ptToPx * 0.55)) > (cellW - 4))
+   int fontCell = isCapturing ? 5 : MathMax(8, fontNormal - 2);
+   while(fontCell > (isCapturing ? 4 : 6) && (int)MathRound(5.0 * (fontCell * ptToPx * 0.55)) > (cellW - 4))
    {
       fontCell--;
    }
 
-   int fontTitle = isCapturing ? 7 : MathMin(14, fontNormal + 1);
-   while(fontTitle > 4 && (int)MathRound(23.0 * (fontTitle * ptToPx * 0.56)) > (mtfPanelWidth - 2 * padX - 4))
+   int fontTitle = isCapturing ? 6 : MathMin(14, fontNormal + 1);
+   while(fontTitle > (isCapturing ? 4 : 8) && (int)MathRound(23.0 * (fontTitle * ptToPx * 0.56)) > (mtfPanelWidth - 2 * padX - 4))
    {
       fontTitle--;
    }
-   int fontSmall = isCapturing ? 6 : MathMax(7, fontNormal - 1);
+   int fontSmall = isCapturing ? 5 : MathMax(7, fontNormal - 2);
 
-   int rowHeight = (int)MathMax((int)MathRound(fontNormal * ptToPx) + (isCapturing ? 3 : 5), MathRound((isCapturing ? 15.0 : 22.0) * scale));
+   int rowHeight = (int)MathMax((int)MathRound(fontNormal * ptToPx) + (isCapturing ? 2 : 5), MathRound((isCapturing ? 13.0 : 24.0) * scale));
 
    int startX = baseStartX + pW + (int)MathRound(8.0 * scale);
    int startY = baseStartY;

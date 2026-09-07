@@ -1527,15 +1527,16 @@ async def get_accessible_symbols(force_refresh: bool = False) -> List[str]:
 
 def format_screenshot_wizard_header(symbols_count: int = 0) -> str:
     active_acc = account_manager.get_active_account()
-    acc_name = active_acc.name if active_acc else "Real Account"
-    acc_num = active_acc.account_number if active_acc else "N/A"
-    is_real = active_acc and (active_acc.id == "2" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper())
+    raw_name = active_acc.name if active_acc else "Real Account"
+    acc_name = raw_name.replace(" (Real)", "").replace(" (Demo)", "").strip()
+    acc_num = active_acc.account_number if active_acc else "213173"
+    is_real = active_acc and (active_acc.id == "2" or active_acc.account_number == "213173" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper())
     mode_badge = "🔴 REAL" if is_real else "🟡 DEMO"
     count_str = f" ({symbols_count} symbols)" if symbols_count > 0 else ""
     return (
         "📸 <b>INSTITUTIONAL CHART SNAPSHOT WIZARD</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Account:</b> <code>{acc_name} ({acc_num})</code> [{mode_badge}]{count_str}\n"
+        f"👤 <b>Account:</b> <code>{acc_name} (#{acc_num})</code> [{mode_badge}]{count_str}\n"
         "Select the accessible currency pair or asset to render:"
     )
 
@@ -1674,9 +1675,18 @@ async def cb_screenshot_symbol(update: Update, context: ContextTypes.DEFAULT_TYP
     symbol = data.split(":", 1)[1] if ":" in data else "CURRENT"
     display_sym = "Active Chart Window" if symbol == "CURRENT" else symbol
 
+    active_acc = account_manager.get_active_account()
+    raw_name = active_acc.name if active_acc else "Real Account"
+    acc_name = raw_name.replace(" (Real)", "").replace(" (Demo)", "").strip()
+    acc_num = active_acc.account_number if active_acc else "213173"
+    is_real = active_acc and (active_acc.id == "2" or active_acc.account_number == "213173" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper())
+    mode_badge = "🔴 REAL" if is_real else "🟡 DEMO"
+
     msg = (
-        f"📸 <b>Target Instrument:</b> <code>{display_sym}</code>\n"
+        "📸 <b>INSTITUTIONAL CHART SNAPSHOT WIZARD</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 <b>Account:</b> <code>{acc_name} (#{acc_num})</code> [{mode_badge}]\n"
+        f"🎯 <b>Target Instrument:</b> <code>{display_sym}</code>\n"
         "Select the chart timeframe to capture:"
     )
     await send_or_edit(update, context, msg, reply_markup=get_timeframe_keyboard(symbol))
@@ -1754,10 +1764,11 @@ async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAUL
         return False
 
     # Dynamically synchronize live MT4 account state from screenshot payload or live query
-    active_acc = account_manager.sync_with_live_terminal(data)
-    if not active_acc or active_acc.id != "2":
+    if data and any(k in data for k in ["account_number", "trade_mode", "account_name", "server"]):
+        active_acc = account_manager.sync_with_live_terminal(data)
+    else:
         try:
-            acc_info = await zmq_async(zmq_client.get_account, timeout_ms=1500)
+            acc_info = await zmq_async(zmq_client.get_account, timeout_ms=2000)
             if acc_info and acc_info.get("status") == "ok":
                 active_acc = account_manager.sync_with_live_terminal(acc_info)
         except Exception:
@@ -1777,15 +1788,16 @@ async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAUL
     bull_pwr = telem.get("bull_power", "")
 
     trade_mode = str(data.get("trade_mode", "")).upper()
-    is_real = trade_mode == "REAL" or (active_acc and (active_acc.id == "2" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper()))
+    is_real = trade_mode == "REAL" or (active_acc and (active_acc.id == "2" or active_acc.account_number == "213173" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper()))
     mode_badge = "🔴 REAL (LIVE)" if is_real else "🟡 DEMO"
-    acc_name_str = active_acc.name if active_acc else "Real Account"
-    acc_num_str = active_acc.account_number if active_acc else ""
+    raw_name_str = active_acc.name if active_acc else "Real Account"
+    acc_name_str = raw_name_str.replace(" (Real)", "").replace(" (Demo)", "").strip()
+    acc_num_str = active_acc.account_number if active_acc else "213173"
 
     caption = (
         f"📸 <b>INSTITUTIONAL CHART & TELEMETRY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"• <b>Account:</b> <code>{acc_name_str} ({acc_num_str})</code> [{mode_badge}]\n"
+        f"• <b>Account:</b> <code>{acc_name_str} (#{acc_num_str})</code> [{mode_badge}]\n"
         f"• <b>Asset:</b> <code>{sym}</code>  •  <b>Timeframe:</b> <code>{tf}</code>\n"
         f"• <b>Market Quote:</b> <code>{bid} / {ask}</code>\n"
     )

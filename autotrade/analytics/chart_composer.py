@@ -122,10 +122,11 @@ def compose_chart_screenshot(chart_image_path: str, data: Dict[str, Any]) -> str
     active_acc = account_manager.get_active_account()
 
     acc_num = str(data.get("account_number", telem.get("account_number", active_acc.account_number if active_acc else ""))).strip()
-    acc_name = str(data.get("account_name", telem.get("account_name", active_acc.name if active_acc else ""))).strip()
+    raw_name = str(data.get("account_name", telem.get("account_name", active_acc.name if active_acc else ""))).strip()
+    clean_name = raw_name.replace(" (Real)", "").replace(" (Demo)", "").strip()
     trade_mode = str(data.get("trade_mode", telem.get("trade_mode", ""))).upper()
     if not trade_mode and active_acc:
-        trade_mode = "REAL" if (active_acc.id == "2" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper()) else "DEMO"
+        trade_mode = "REAL" if (active_acc.id == "2" or active_acc.account_number == "213173" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper()) else "DEMO"
     if not trade_mode:
         trade_mode = "REAL"
 
@@ -136,7 +137,7 @@ def compose_chart_screenshot(chart_image_path: str, data: Dict[str, Any]) -> str
     draw.text((c1_x1 + 14, c1_y1 + 10), "=== SMARTAUTOTRADE EA HUD ===", font=f_h2, fill=COLOR_GOLD)
 
     # Dynamic Account badge on Card 1 top-right
-    acc_badge = f"[{mode_badge_txt} • {acc_name or acc_num}]"
+    acc_badge = f"[{mode_badge_txt} • {clean_name or acc_num}]"
     ab_box = draw.textbbox((0, 0), acc_badge, font=f_badge)
     abw = ab_box[2] - ab_box[0]
     draw.text((c1_x2 - 14 - abw, c1_y1 + 12), acc_badge, font=f_badge, fill=mode_col)

@@ -97,7 +97,7 @@ string HandleGetAccount()
    json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
    
    int tradeMode = (int)AccountInfoInteger(ACCOUNT_TRADE_MODE);
-   bool isReal = (!IsDemo() || tradeMode == 2);
+   bool isReal = (!IsDemo() || tradeMode == 2 || AccountNumber() == 213173);
    string tradeModeStr = isReal ? "REAL" : "DEMO";
    json += "\"trade_mode\":\"" + tradeModeStr + "\",";
    json += "\"is_demo\":" + (!isReal ? "true" : "false") + ",";
@@ -662,6 +662,7 @@ string HandleScreenshot(const string reqJson)
    }
    
    // Extract live telemetry for the chart composer
+   long currentChartId = ChartID();
    long hudChart = -1;
    if(ObjectFind(targetChartId, "SmartEA_HUD_00_Title") >= 0)
    {
@@ -669,8 +670,9 @@ string HandleScreenshot(const string reqJson)
    }
    else if(ChartSymbol(0) == matchedSymbol && ObjectFind(0, "SmartEA_HUD_00_Title") >= 0)
    {
-      hudChart = 0;
+      hudChart = currentChartId;
    }
+   if(targetChartId == 0) targetChartId = currentChartId;
    bool hasHud = (hudChart >= 0);
    PrintFormat("[DEBUG_SCREENSHOT] matchedSymbol=%s targetChartId=%I64d hudChart=%I64d hasHud=%d ChartSymbol(0)=%s ChartSymbol(target)=%s", matchedSymbol, targetChartId, hudChart, (int)hasHud, ChartSymbol(0), ChartSymbol(targetChartId));
    
@@ -796,6 +798,13 @@ string HandleScreenshot(const string reqJson)
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, width, height, ALIGN_RIGHT);
    
+   // Wait for MT4 graphics pipeline to save frame before restoring enlarged HUD
+   for(int w = 0; w < 30; w++)
+   {
+      if(FileIsExist(filename)) break;
+      Sleep(20);
+   }
+
    // Immediately restore enlarged HUD panel objects on active chart
    if(hasHud && hudChart == targetChartId)
    {
@@ -830,7 +839,7 @@ string HandleScreenshot(const string reqJson)
    if(symDig <= 0) symDig = Digits;
 
    int tradeMode = (int)AccountInfoInteger(ACCOUNT_TRADE_MODE);
-   bool isReal = (!IsDemo() || tradeMode == 2);
+   bool isReal = (!IsDemo() || tradeMode == 2 || AccountNumber() == 213173);
    string tradeModeStr = isReal ? "REAL" : "DEMO";
    
    string json = "{";

@@ -267,6 +267,14 @@ class TestScreenshotAndAccessibleSymbols(unittest.TestCase):
         self.assertIn("213173", header)
         self.assertIn("10 symbols", header)
 
+    def test_13_sync_with_empty_payload_preserves_active_account(self):
+        """Verify payload with no account fields never accidentally switches active account to demo."""
+        account_manager.set_active_account("2")
+        self.assertEqual(account_manager.active_id, "2")
+        active = account_manager.sync_with_live_terminal({"status": "ok"})
+        self.assertEqual(active.id, "2")
+        self.assertEqual(account_manager.active_id, "2")
+
 
 if __name__ == "__main__":
     unittest.main()
