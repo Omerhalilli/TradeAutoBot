@@ -1527,13 +1527,15 @@ async def get_accessible_symbols(force_refresh: bool = False) -> List[str]:
 
 def format_screenshot_wizard_header(symbols_count: int = 0) -> str:
     active_acc = account_manager.get_active_account()
-    acc_name = active_acc.name if active_acc else "Standard"
+    acc_name = active_acc.name if active_acc else "Real Account"
     acc_num = active_acc.account_number if active_acc else "N/A"
+    is_real = active_acc and (active_acc.id == "2" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper())
+    mode_badge = "🔴 REAL" if is_real else "🟡 DEMO"
     count_str = f" ({symbols_count} symbols)" if symbols_count > 0 else ""
     return (
         "📸 <b>INSTITUTIONAL CHART SNAPSHOT WIZARD</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 <b>Account:</b> <code>{acc_name} ({acc_num})</code>{count_str}\n"
+        f"👤 <b>Account:</b> <code>{acc_name} ({acc_num})</code> [{mode_badge}]{count_str}\n"
         "Select the accessible currency pair or asset to render:"
     )
 
@@ -1608,6 +1610,14 @@ def get_timeframe_keyboard(symbol: str) -> InlineKeyboardMarkup:
 
 @restricted
 async def cmd_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Dynamically synchronize with live MT4 terminal state first
+    try:
+        acc_data = await zmq_async(zmq_client.get_account, timeout_ms=2500)
+        if acc_data and acc_data.get("status") == "ok":
+            account_manager.sync_with_live_terminal(acc_data)
+    except Exception as ex:
+        logger.debug(f"Failed to sync live account in cmd_screenshot: {ex}")
+
     args = context.args or []
     if args:
         sym = clean_symbol(args[0])
@@ -1743,6 +1753,17 @@ async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAUL
         logger.warning(f"Screenshot file {shot_path} not ready after wait.")
         return False
 
+    # Dynamically synchronize live MT4 account state from screenshot payload or live query
+    active_acc = account_manager.sync_with_live_terminal(data)
+    if not active_acc or active_acc.id != "2":
+        try:
+            acc_info = await zmq_async(zmq_client.get_account, timeout_ms=1500)
+            if acc_info and acc_info.get("status") == "ok":
+                active_acc = account_manager.sync_with_live_terminal(acc_info)
+        except Exception:
+            pass
+    active_acc = account_manager.get_active_account()
+
     # Ensure the chart screenshot is beautifully composited with HUD & MTF telemetry
     try:
         from autotrade.analytics.chart_composer import compose_chart_screenshot
@@ -1755,9 +1776,16 @@ async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAUL
     sig_txt = telem.get("signal", "")
     bull_pwr = telem.get("bull_power", "")
 
+    trade_mode = str(data.get("trade_mode", "")).upper()
+    is_real = trade_mode == "REAL" or (active_acc and (active_acc.id == "2" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper()))
+    mode_badge = "🔴 REAL (LIVE)" if is_real else "🟡 DEMO"
+    acc_name_str = active_acc.name if active_acc else "Real Account"
+    acc_num_str = active_acc.account_number if active_acc else ""
+
     caption = (
         f"📸 <b>INSTITUTIONAL CHART & TELEMETRY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Account:</b> <code>{acc_name_str} ({acc_num_str})</code> [{mode_badge}]\n"
         f"• <b>Asset:</b> <code>{sym}</code>  •  <b>Timeframe:</b> <code>{tf}</code>\n"
         f"• <b>Market Quote:</b> <code>{bid} / {ask}</code>\n"
     )

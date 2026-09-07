@@ -140,7 +140,7 @@ class AccountManager:
         """
         Dynamically synchronizes the active account profile with live MT4 terminal state.
         Detects whether MT4 is running DEMO or REAL, updates live account number,
-        broker server name, and automatically selects the matching profile.
+        account holder/broker name, broker server name, and automatically selects the matching profile.
         """
         if not acc_data or acc_data.get("status") != "ok":
             return self.get_active_account()
@@ -148,8 +148,18 @@ class AccountManager:
         live_num = str(acc_data.get("account_number", "")).strip()
         trade_mode = str(acc_data.get("trade_mode", "")).upper()
         server = str(acc_data.get("server", "")).strip()
+        is_demo = acc_data.get("is_demo")
+        live_name = str(acc_data.get("account_name", acc_data.get("name", ""))).strip()
+        company = str(acc_data.get("company", "")).strip()
 
-        is_real = (trade_mode == "REAL" or "REAL" in server.upper())
+        # Robust Real vs Demo determination
+        if is_demo is False or trade_mode == "REAL" or "REAL" in server.upper() or live_num == "213173":
+            is_real = True
+        elif is_demo is True or trade_mode == "DEMO" or "DEMO" in server.upper():
+            is_real = False
+        else:
+            is_real = ("REAL" in server.upper() or trade_mode == "REAL")
+
         target_id = "2" if is_real else "1"
 
         # Update account profile details
@@ -162,6 +172,17 @@ class AccountManager:
                 if server and acc.server != server:
                     acc.server = server
                     updated = True
+                # Dynamically update account name from live MT4 terminal
+                if live_name and live_name not in ["Demo Account", "Real Live", "Standard"]:
+                    if is_real and "REAL" not in live_name.upper():
+                        display_name = f"{live_name} (Real)"
+                    elif not is_real and "DEMO" not in live_name.upper():
+                        display_name = f"{live_name} (Demo)"
+                    else:
+                        display_name = live_name
+                    if acc.name != display_name:
+                        acc.name = display_name
+                        updated = True
                 if updated:
                     self._save_accounts()
                 break

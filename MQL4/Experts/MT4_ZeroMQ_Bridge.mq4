@@ -97,8 +97,10 @@ string HandleGetAccount()
    json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
    
    int tradeMode = (int)AccountInfoInteger(ACCOUNT_TRADE_MODE);
-   string tradeModeStr = (tradeMode == 2) ? "REAL" : "DEMO";
+   bool isReal = (!IsDemo() || tradeMode == 2);
+   string tradeModeStr = isReal ? "REAL" : "DEMO";
    json += "\"trade_mode\":\"" + tradeModeStr + "\",";
+   json += "\"is_demo\":" + (!isReal ? "true" : "false") + ",";
    json += "\"account_name\":\"" + JsonEscape(AccountName()) + "\",";
    
    json += "\"balance\":" + DoubleToString(AccountBalance(), 2) + ",";
@@ -549,6 +551,33 @@ string Bridge_ResolveSymbol(string sym)
    return s;
 }
 
+void ScaleHudObjectsOnChart(long chartId, double factor)
+{
+   int total = ObjectsTotal(chartId);
+   for(int k = 0; k < total; k++)
+   {
+      string objName = ObjectName(chartId, k);
+      if(StringFind(objName, "SmartEA_HUD_") >= 0)
+      {
+         int objType = (int)ObjectGetInteger(chartId, objName, OBJPROP_TYPE);
+         if(objType == OBJ_RECTANGLE_LABEL || objType == OBJ_BUTTON)
+         {
+            int xs = (int)ObjectGetInteger(chartId, objName, OBJPROP_XSIZE);
+            int ys = (int)ObjectGetInteger(chartId, objName, OBJPROP_YSIZE);
+            if(xs > 0) ObjectSetInteger(chartId, objName, OBJPROP_XSIZE, (int)MathRound(xs * factor));
+            if(ys > 0) ObjectSetInteger(chartId, objName, OBJPROP_YSIZE, (int)MathRound(ys * factor));
+         }
+         int fs = (int)ObjectGetInteger(chartId, objName, OBJPROP_FONTSIZE);
+         if(fs > 0)
+         {
+            int nfs = (int)MathRound(fs * factor);
+            if(factor < 1.0 && nfs < 5) nfs = 5;
+            ObjectSetInteger(chartId, objName, OBJPROP_FONTSIZE, nfs);
+         }
+      }
+   }
+}
+
 string HandleScreenshot(const string reqJson)
 {
    string targetSymbol = ExtractJsonString(reqJson, "symbol");
@@ -756,37 +785,23 @@ string HandleScreenshot(const string reqJson)
       else telemAdvice = "Action: Mixed / Neutral Alignment";
    }
    
-   // Temporarily hide any HUD panel objects on the target chart to ensure the price chart is 100% clean
-   int totalChartObjs = ObjectsTotal(targetChartId);
-   string hiddenHudNames[];
-   ArrayResize(hiddenHudNames, 0);
-   for(int k = 0; k < totalChartObjs; k++)
+   // Temporarily decrease HUD panel size for screenshot capture if HUD is present on target chart
+   if(hasHud && hudChart == targetChartId)
    {
-      string objName = ObjectName(targetChartId, k);
-      if(StringFind(objName, "SmartEA_HUD_") >= 0)
-      {
-         int tfProp = (int)ObjectGetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES);
-         if(tfProp != OBJ_NO_PERIODS)
-         {
-            int curSz = ArraySize(hiddenHudNames);
-            ArrayResize(hiddenHudNames, curSz + 1);
-            hiddenHudNames[curSz] = objName;
-            ObjectSetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
-         }
-      }
+      ScaleHudObjectsOnChart(targetChartId, 0.70);
+      ChartRedraw(targetChartId);
    }
    
    if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, width, height, ALIGN_RIGHT);
    
-   // Immediately restore HUD panel objects on active chart
-   int hiddenTotal = ArraySize(hiddenHudNames);
-   for(int r = 0; r < hiddenTotal; r++)
+   // Immediately restore enlarged HUD panel objects on active chart
+   if(hasHud && hudChart == targetChartId)
    {
-      ObjectSetInteger(targetChartId, hiddenHudNames[r], OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+      ScaleHudObjectsOnChart(targetChartId, 1.0 / 0.70);
+      ChartRedraw(targetChartId);
    }
-   ChartRedraw(targetChartId);
    
    if(tempChartOpened)
    {
@@ -813,6 +828,10 @@ string HandleScreenshot(const string reqJson)
    if(ask == 0.0) ask = Ask;
    int symDig = (int)MarketInfo(matchedSymbol, MODE_DIGITS);
    if(symDig <= 0) symDig = Digits;
+
+   int tradeMode = (int)AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   bool isReal = (!IsDemo() || tradeMode == 2);
+   string tradeModeStr = isReal ? "REAL" : "DEMO";
    
    string json = "{";
    json += "\"status\":\"ok\",";
@@ -820,10 +839,22 @@ string HandleScreenshot(const string reqJson)
    json += "\"filename\":\"" + filename + "\",";
    json += "\"symbol\":\"" + matchedSymbol + "\",";
    json += "\"timeframe\":\"" + cleanTfStr + "\",";
+   json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"trade_mode\":\"" + tradeModeStr + "\",";
+   json += "\"is_demo\":" + (!isReal ? "true" : "false") + ",";
+   json += "\"account_name\":\"" + JsonEscape(AccountName()) + "\",";
+   json += "\"company\":\"" + JsonEscape(AccountCompany()) + "\",";
+   json += "\"server\":\"" + JsonEscape(AccountServer()) + "\",";
    json += "\"bid\":" + DoubleToString(bid, symDig) + ",";
    json += "\"ask\":" + DoubleToString(ask, symDig) + ",";
    json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
    json += "\"telemetry\":{";
+   json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"trade_mode\":\"" + tradeModeStr + "\",";
+   json += "\"is_demo\":" + (!isReal ? "true" : "false") + ",";
+   json += "\"account_name\":\"" + JsonEscape(AccountName()) + "\",";
+   json += "\"company\":\"" + JsonEscape(AccountCompany()) + "\",";
+   json += "\"server\":\"" + JsonEscape(AccountServer()) + "\",";
    json += "\"trend\":\"" + JsonEscape(telemTrend) + "\",";
    json += "\"signal\":\"" + JsonEscape(telemSignal) + "\",";
    json += "\"points\":\"" + JsonEscape(telemPoints) + "\",";

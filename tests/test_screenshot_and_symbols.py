@@ -228,5 +228,45 @@ class TestScreenshotAndAccessibleSymbols(unittest.TestCase):
             mock_query.delete_message.assert_called_once()
 
 
+    def test_11_sync_with_live_terminal_real_detection(self):
+        """Verify dynamic synchronization with live MT4 real account correctly detects REAL and updates name."""
+        real_data = {
+            "status": "ok",
+            "account_number": "213173",
+            "trade_mode": "REAL",
+            "is_demo": False,
+            "account_name": "Elnare Xelilzade FX#1",
+            "server": "InvestAZ-REAL"
+        }
+        active = account_manager.sync_with_live_terminal(real_data)
+        self.assertEqual(active.id, "2")
+        self.assertEqual(active.account_number, "213173")
+        self.assertIn("Real", active.name)
+        self.assertIn("Elnare Xelilzade", active.name)
+        self.assertEqual(account_manager.active_id, "2")
+
+        # Now test demo sync switches back to ID 1
+        demo_data = {
+            "status": "ok",
+            "account_number": "987654",
+            "trade_mode": "DEMO",
+            "is_demo": True,
+            "account_name": "Demo Trader",
+            "server": "Broker-Demo"
+        }
+        active_demo = account_manager.sync_with_live_terminal(demo_data)
+        self.assertEqual(active_demo.id, "1")
+        self.assertIn("Demo", active_demo.name)
+        self.assertEqual(account_manager.active_id, "1")
+
+    def test_12_format_screenshot_wizard_header_real_account(self):
+        """Verify screenshot wizard header displays live real account details and mode badge."""
+        account_manager.set_active_account("2")
+        header = handlers.format_screenshot_wizard_header(10)
+        self.assertIn("🔴 REAL", header)
+        self.assertIn("213173", header)
+        self.assertIn("10 symbols", header)
+
+
 if __name__ == "__main__":
     unittest.main()

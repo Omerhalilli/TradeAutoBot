@@ -470,7 +470,8 @@ double   g_PropPeakEquity              = 0.0;
 bool     g_PropLockoutActive           = false;
 datetime g_PropLockoutDate             = 0;
 
-#include <ZeroMQBridge.mqh>
+// Global flag indicating whether HUD is in temporary screenshot capture mode (scaled down)
+bool     g_HUD_IsScreenshotCapturing   = false;
 
 
 // Real-time quantitative scoring telemetry cache
@@ -2861,9 +2862,11 @@ void RegisterTicketPartialClose(const int ticket)
 //+------------------------------------------------------------------+
 //| SECTION 9: ON-CHART GRAPHICS & HUD DASHBOARD                     |
 //+------------------------------------------------------------------+
-void RenderHUDDashboard()
+void RenderHUDDashboard(bool isScreenshotMode = false)
 {
    if(!ShowDashboardPanel) return;
+
+   bool isCapturing = isScreenshotMode || g_HUD_IsScreenshotCapturing;
 
    // 1. Chart Resolution & DPI Scaling Engine
    int chartWidth  = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
@@ -2878,11 +2881,15 @@ void RenderHUDDashboard()
    if(dpiScale < 0.75) dpiScale = 0.75;
    if(dpiScale > 3.00) dpiScale = 3.00;
 
-   // Base design dimensions (calibrated for 96 DPI baseline)
-   double basePanelWidth = 305.0;
-   double baseRowHeight  = 17.0;
-   double basePadX       = 8.0;
-   double basePadY       = 6.0;
+   // Base design dimensions calibrated for crystal-clear human readability
+   // When taking screenshot for Telegram, temporarily decrease size so photo is compact
+   double basePanelWidth = isCapturing ? 265.0 : 385.0;
+   double baseRowHeight  = isCapturing ? 16.0  : 23.0;
+   double basePadX       = isCapturing ? 7.0   : 12.0;
+   double basePadY       = isCapturing ? 5.0   : 8.0;
+   double baseFontNormal = isCapturing ? 7.5   : 11.0;
+   double baseFontTitle  = isCapturing ? 8.5   : 13.0;
+   double baseFontSmall  = isCapturing ? 6.5   : 9.5;
 
    // Pre-evaluate lock reason notice to compute exact row count and height
    int myOrders = 0;
@@ -2931,7 +2938,11 @@ void RenderHUDDashboard()
 
    // User-defined scale override (0 = Auto-Scale)
    double userScale = 1.0;
-   if(HUD_Scale > 0.01)
+   if(isCapturing)
+   {
+      userScale = 0.70;
+   }
+   else if(HUD_Scale > 0.01)
    {
       userScale = HUD_Scale;
    }
@@ -2940,26 +2951,24 @@ void RenderHUDDashboard()
       // Auto-scale based on chart resolution
       if(chartWidth >= 2560 && chartHeight >= 1440)      userScale = 1.25;
       else if(chartWidth >= 1920 && chartHeight >= 1080) userScale = 1.10;
-      else if(chartWidth < 900 || chartHeight < 550)     userScale = 0.85;
-      else if(chartWidth < 650 || chartHeight < 400)     userScale = 0.75;
+      else if(chartWidth < 900 || chartHeight < 550)     userScale = 0.90;
+      else if(chartWidth < 650 || chartHeight < 400)     userScale = 0.80;
    }
 
    // Constrain pixel scale so panel never overflows chart boundaries.
-   // When chart height is compact (< 520), MTF matrix cannot stack vertically without clipping,
-   // so horizontal scale accounts for both panels side-by-side.
    double totalRequiredBaseWidth = basePanelWidth;
    if(ShowDashboardPanel && chartHeight < 520)
    {
-      totalRequiredBaseWidth = basePanelWidth + 250.0 + 10.0;
+      totalRequiredBaseWidth = basePanelWidth + (isCapturing ? 220.0 : 310.0) + 10.0;
    }
    double maxScaleW = (double)(chartWidth - 30) / totalRequiredBaseWidth;
    double maxScaleH = (double)(chartHeight - 35) / baseTotalHeight;
    double maxSafeScale = MathMin(maxScaleW, maxScaleH);
    if(maxSafeScale < 0.65) maxSafeScale = 0.65;
 
-   // Final visual pixel scale: Cap DPI multiplier at 1.25 for standard 1.0 scale to keep panel compact
+   // Final visual pixel scale
    double effectiveDpiScale = (dpiScale > 1.25 && HUD_Scale <= 1.0) ? 1.25 : dpiScale;
-   double finalScale = MathMin(effectiveDpiScale * userScale, maxSafeScale);
+   double finalScale = isCapturing ? 0.70 : MathMin(effectiveDpiScale * userScale, maxSafeScale);
    if(finalScale < 0.65) finalScale = 0.65;
    if(finalScale > 2.50) finalScale = 2.50;
 
@@ -2967,35 +2976,44 @@ void RenderHUDDashboard()
    int startY = (int)MathRound(HUD_Y_Offset * (dpiScale > 1.2 ? 1.2 : 1.0));
 
    int panelWidth = (int)MathRound(basePanelWidth * finalScale);
-   int padX       = (int)MathMax(8, MathRound(basePadX * finalScale));
-   int padY       = (int)MathMax(6, MathRound(basePadY * finalScale));
+   int padX       = (int)MathMax(6, MathRound(basePadX * finalScale));
+   int padY       = (int)MathMax(5, MathRound(basePadY * finalScale));
 
    // Crucial: OBJPROP_FONTSIZE is in points. GDI automatically multiplies points by (DPI / 72).
-   // So font points must ONLY scale by (finalScale / dpiScale) to avoid double-DPI inflation.
    double fontScaleFactor = finalScale / dpiScale;
    if(fontScaleFactor < 0.50) fontScaleFactor = 0.50;
 
-   int fontNormal = (int)MathRound(8.0 * fontScaleFactor);
-   if(fontNormal < 5) fontNormal = 5;
-   if(fontNormal > 11) fontNormal = 11;
+   int fontNormal = (int)MathRound(baseFontNormal * fontScaleFactor);
+   if(!isCapturing)
+   {
+      if(fontNormal < 9) fontNormal = 9;
+      if(fontNormal > 16) fontNormal = 16;
+   }
+   else
+   {
+      if(fontNormal < 5) fontNormal = 5;
+      if(fontNormal > 8) fontNormal = 8;
+   }
 
    // Guarantee zero horizontal clipping for a 42-character line
    double ptToPx = (double)dpi / 72.0;
    int availWidth = panelWidth - (2 * padX) - 4;
-   while(fontNormal > 4 && (int)MathRound(42.0 * (fontNormal * ptToPx * 0.50)) > availWidth)
+   while(fontNormal > 5 && (int)MathRound(42.0 * (fontNormal * ptToPx * 0.48)) > availWidth)
    {
       fontNormal--;
    }
-   int fontTitle = fontNormal;
-   while(fontTitle > 4 && (int)MathRound(29.0 * (fontTitle * ptToPx * 0.56)) > availWidth)
+   int fontTitle = (int)MathRound(baseFontTitle * fontScaleFactor);
+   while(fontTitle > 5 && (int)MathRound(29.0 * (fontTitle * ptToPx * 0.52)) > availWidth)
    {
       fontTitle--;
    }
-   int fontSmall = MathMax(4, fontNormal - 1);
+   int fontSmall = (int)MathRound(baseFontSmall * fontScaleFactor);
+   if(fontSmall < 4) fontSmall = 4;
+   if(fontSmall >= fontNormal) fontSmall = MathMax(4, fontNormal - 1);
 
    // Row height in pixels must comfortably exceed glyph height: (fontNormal * ptToPx)
    int glyphHeightPx = (int)MathRound(fontNormal * ptToPx);
-   int rowHeight = (int)MathMax(glyphHeightPx + 4, MathRound(baseRowHeight * finalScale));
+   int rowHeight = (int)MathMax(glyphHeightPx + (isCapturing ? 3 : 6), MathRound(baseRowHeight * finalScale));
    int panelHeight = padY + (totalRows * rowHeight) + padY;
 
    // 1. Dashboard Backdrop Canvas Panel
@@ -3017,8 +3035,12 @@ void RenderHUDDashboard()
    int textX = startX + padX;
    int y = startY + padY;
 
-   // Header
-   RenderHUDLabel("00_Title", "=== SMARTAUTOTRADE EA HUD ===", textX, y, HUD_HeaderTextColor, fontTitle, true);
+   // Header with Real vs Demo account trade mode
+   bool isRealAcc = (!IsDemo() || (int)AccountInfoInteger(ACCOUNT_TRADE_MODE) == 2);
+   string accBadge = isRealAcc ? "REAL" : "DEMO";
+   string headerTitle = isCapturing ? StringFormat("=== SMARTAUTOTRADE [%s] ===", accBadge) :
+                                      StringFormat("=== SMARTAUTOTRADE EA HUD [%s] ===", accBadge);
+   RenderHUDLabel("00_Title", headerTitle, textX, y, (isRealAcc ? clrGold : clrWheat), fontTitle, true);
    y += rowHeight;
 
    // Trend & Momentum Metrics
@@ -3083,7 +3105,7 @@ void RenderHUDDashboard()
    y += rowHeight;
 
    // Account Financial Overview
-   string finStr = StringFormat("Balance: $%.2f | Equity: $%.2f", AccountBalance(), AccountEquity());
+   string finStr = StringFormat("Balance: $%.2f | Equity: $%.2f | #%d", AccountBalance(), AccountEquity(), AccountNumber());
    RenderHUDLabel("07_Fin", finStr, textX, y, HUD_ValueTextColor, fontNormal, false);
    y += rowHeight;
 
@@ -3151,13 +3173,13 @@ void RenderHUDDashboard()
    RenderHUDLabel("11_ExtInd", extStr, textX, y, clrMediumSpringGreen, fontSmall, false);
 
    // Render On-Chart Action Buttons directly below HUD
-   RenderInteractiveButtons(startX, startY + panelHeight + (int)MathRound(6.0 * finalScale), panelWidth, finalScale, fontNormal);
+   RenderInteractiveButtons(startX, startY + panelHeight + (int)MathRound((isCapturing ? 4.0 : 8.0) * finalScale), panelWidth, finalScale, fontNormal, isCapturing);
 
-   // ── PERF: MTF Matrix throttled to every 10 seconds ───────────────────────
-   if(GetTickCount() - g_LastMTFMatrixTick >= 10000)
+   // ── PERF: MTF Matrix throttled to every 10 seconds (or immediately on screenshot capture) ───
+   if(isCapturing || GetTickCount() - g_LastMTFMatrixTick >= 10000)
    {
       g_LastMTFMatrixTick = GetTickCount();
-      RenderMultiTimeframeMatrix(startX, startY, panelWidth, panelHeight, finalScale, chartWidth, fontNormal);
+      RenderMultiTimeframeMatrix(startX, startY, panelWidth, panelHeight, finalScale, chartWidth, fontNormal, isCapturing);
    }
 }
 
@@ -4342,37 +4364,25 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
    ChartSetDouble(targetChartId, CHART_SHIFT_SIZE, 10.0);
    ChartSetInteger(targetChartId, CHART_AUTOSCROLL, true);
    
-   // Temporarily hide any HUD panel objects on the target chart to ensure the price chart is 100% clean
-   int totalChartObjs = ObjectsTotal(targetChartId);
-   string hiddenHudNames[];
-   ArrayResize(hiddenHudNames, 0);
-   for(int k = 0; k < totalChartObjs; k++)
+   // Temporarily decrease HUD panel size for taking photo if HUD is present on target chart
+   bool hasHud = (ObjectFind(targetChartId, PREFIX_GUI + "Backdrop") >= 0 || ObjectFind(targetChartId, PREFIX_GUI + "00_Title") >= 0);
+   if(hasHud && targetChartId == ChartID())
    {
-      string objName = ObjectName(targetChartId, k);
-      if(StringFind(objName, "SmartEA_HUD_") >= 0)
-      {
-         int tfProp = (int)ObjectGetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES);
-         if(tfProp != OBJ_NO_PERIODS)
-         {
-            int curSz = ArraySize(hiddenHudNames);
-            ArrayResize(hiddenHudNames, curSz + 1);
-            hiddenHudNames[curSz] = objName;
-            ObjectSetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
-         }
-      }
+      g_HUD_IsScreenshotCapturing = true;
+      RenderHUDDashboard(true);
    }
    
    if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, 1280, 720, ALIGN_RIGHT);
    
-   // Immediately restore HUD panel objects on active chart
-   int hiddenTotal = ArraySize(hiddenHudNames);
-   for(int r = 0; r < hiddenTotal; r++)
+   // Immediately restore enlarged HUD panel objects on active chart
+   if(hasHud && targetChartId == ChartID())
    {
-      ObjectSetInteger(targetChartId, hiddenHudNames[r], OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+      g_HUD_IsScreenshotCapturing = false;
+      RenderHUDDashboard(false);
+      ChartRedraw(targetChartId);
    }
-   ChartRedraw(targetChartId);
    
    if(annoDrawn)
    {
@@ -6020,18 +6030,18 @@ void SaveChartTradeScreenshot(const string signalName)
 //+------------------------------------------------------------------+
 //| INTERACTIVE ON-CHART GUI BUTTONS BUILDER                         |
 //+------------------------------------------------------------------+
-void RenderInteractiveButtons(int startX = -1, int startY = -1, int panelWidth = -1, double scale = 1.0, int fontSize = 8)
+void RenderInteractiveButtons(int startX = -1, int startY = -1, int panelWidth = -1, double scale = 1.0, int fontSize = 8, bool isCapturing = false)
 {
    if(!ShowInteractiveButtons) return;
 
    int sX     = (startX >= 0) ? startX : HUD_X_Offset;
    int sY     = (startY >= 0) ? startY : HUD_Y_Offset;
-   int pW     = (panelWidth > 0) ? panelWidth : (int)MathRound(340.0 * scale);
-   int padX   = (int)MathMax(8, MathRound(10.0 * scale));
-   int gapX   = (int)MathMax(3, MathRound(5.0 * scale));
+   int pW     = (panelWidth > 0) ? panelWidth : (int)MathRound((isCapturing ? 265.0 : 385.0) * scale);
+   int padX   = (int)MathMax(6, MathRound((isCapturing ? 6.0 : 10.0) * scale));
+   int gapX   = (int)MathMax(2, MathRound((isCapturing ? 3.0 : 5.0) * scale));
    int btnW   = (int)MathRound((pW - (2 * padX) - (2 * gapX)) / 3.0);
-   int btnH   = (int)MathMax(18, MathRound(22.0 * scale));
-   int btnFont= MathMax(6, fontSize);
+   int btnH   = isCapturing ? 18 : (int)MathMax(22, MathRound(26.0 * scale));
+   int btnFont= isCapturing ? 7 : MathMax(8, fontSize - 1);
    int curX   = sX + padX;
 
    // Button 1: Close All Orders
@@ -6174,7 +6184,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 //+------------------------------------------------------------------+
 //| SECTION 14: MULTI-TIMEFRAME (MTF) CONFLUENCE MATRIX & DASHBOARD  |
 //+------------------------------------------------------------------+
-void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudPanelWidth = -1, int hudPanelHeight = -1, double scale = 1.0, int chartWidth = -1, int fontNormal = 8)
+void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudPanelWidth = -1, int hudPanelHeight = -1, double scale = 1.0, int chartWidth = -1, int fontNormal = 8, bool isCapturing = false)
 {
    if(!ShowDashboardPanel) return;
 
@@ -6185,38 +6195,39 @@ void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudP
 
    int baseStartX = (hudStartX >= 0) ? hudStartX : HUD_X_Offset;
    int baseStartY = (hudStartY >= 0) ? hudStartY : HUD_Y_Offset;
-   int pW         = (hudPanelWidth > 0) ? hudPanelWidth : (int)MathRound(320.0 * scale);
-   int pH         = (hudPanelHeight > 0) ? hudPanelHeight : (int)MathRound(250.0 * scale);
+   int pW         = (hudPanelWidth > 0) ? hudPanelWidth : (int)MathRound((isCapturing ? 265.0 : 385.0) * scale);
+   int pH         = (hudPanelHeight > 0) ? hudPanelHeight : (int)MathRound((isCapturing ? 180.0 : 280.0) * scale);
 
    int dpi = (int)TerminalInfoInteger(TERMINAL_SCREEN_DPI);
    if(dpi <= 0) dpi = 96;
    double ptToPx = (double)dpi / 72.0;
 
-   // MTF Matrix width is independently sized for 6 buttons (approx 250 px at baseline)
-   int mtfPanelWidth = (int)MathRound(250.0 * scale);
-   int padX          = (int)MathMax(6, MathRound(8.0 * scale));
-   int padY          = (int)MathMax(5, MathRound(6.0 * scale));
-   int gap           = (int)MathMax(2, MathRound(3.0 * scale));
+   // MTF Matrix width is independently sized for 6 buttons (approx 310 px baseline, 220 in capture)
+   int baseMtfW = isCapturing ? 220 : 310;
+   int mtfPanelWidth = (int)MathRound((double)baseMtfW * scale);
+   int padX          = (int)MathMax(5, MathRound((isCapturing ? 6.0 : 8.0) * scale));
+   int padY          = (int)MathMax(4, MathRound((isCapturing ? 4.0 : 6.0) * scale));
+   int gap           = (int)MathMax(2, MathRound((isCapturing ? 2.0 : 3.0) * scale));
 
    int availCellW    = mtfPanelWidth - (2 * padX) - (5 * gap);
-   int cellW         = MathMax(34, availCellW / 6);
+   int cellW         = MathMax(isCapturing ? 30 : 42, availCellW / 6);
    padX              = MathMax(4, (mtfPanelWidth - (6 * cellW) - (5 * gap)) / 2);
-   int cellH         = (int)MathMax(18, MathRound(20.0 * scale));
+   int cellH         = (int)MathMax(isCapturing ? 16 : 20, MathRound((isCapturing ? 18.0 : 24.0) * scale));
 
-   int fontCell = MathMax(4, fontNormal - 1);
+   int fontCell = isCapturing ? 6 : MathMax(7, fontNormal - 2);
    while(fontCell > 4 && (int)MathRound(5.0 * (fontCell * ptToPx * 0.55)) > (cellW - 4))
    {
       fontCell--;
    }
 
-   int fontTitle = fontNormal;
+   int fontTitle = isCapturing ? 7 : MathMin(14, fontNormal + 1);
    while(fontTitle > 4 && (int)MathRound(23.0 * (fontTitle * ptToPx * 0.56)) > (mtfPanelWidth - 2 * padX - 4))
    {
       fontTitle--;
    }
-   int fontSmall = MathMax(4, fontNormal - 1);
+   int fontSmall = isCapturing ? 6 : MathMax(7, fontNormal - 1);
 
-   int rowHeight = (int)MathMax((int)MathRound(fontNormal * ptToPx) + 4, MathRound(17.0 * scale));
+   int rowHeight = (int)MathMax((int)MathRound(fontNormal * ptToPx) + (isCapturing ? 3 : 5), MathRound((isCapturing ? 15.0 : 22.0) * scale));
 
    int startX = baseStartX + pW + (int)MathRound(8.0 * scale);
    int startY = baseStartY;
@@ -6477,6 +6488,7 @@ void RenderKeltnerChannelsOverlay()
    UpdateChartRay(PREFIX_OBJ + "KC_Lower", kcLower, clrCadetBlue, STYLE_DOT, "Keltner Channel Lower");
 }
 
+#include <ZeroMQBridge.mqh>
 
 //+------------------------------------------------------------------+
 //| SECTION 11: MAIN EVENT CYCLES (OnInit, OnDeinit, OnTick, OnTimer)|

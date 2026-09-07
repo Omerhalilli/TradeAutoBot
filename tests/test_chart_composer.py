@@ -125,5 +125,48 @@ class TestChartComposer(unittest.TestCase):
             self.assertEqual(img.size, (1280, 968))
 
 
+    def test_card1_header_account_badge_real_and_demo(self):
+        """Verify Card 1 renders account badge accurately for REAL and DEMO trade modes."""
+        real_data = {
+            "symbol": "GBPUSD_min",
+            "timeframe": "M15",
+            "account_number": "213173",
+            "account_name": "Elnare Xelilzade FX#1 (Real)",
+            "trade_mode": "REAL",
+            "telemetry": {
+                "trend": "STRONG BULLISH",
+                "signal": "BUY 8/10",
+                "account_number": "213173",
+                "account_name": "Elnare Xelilzade FX#1 (Real)",
+                "trade_mode": "REAL"
+            }
+        }
+        compose_chart_screenshot(self.mock_chart_path, real_data)
+        with Image.open(self.mock_chart_path) as img:
+            self.assertEqual(img.size, (1280, 968))
+
+        # Reset image
+        base_img = Image.new("RGB", (1280, 720), color=(10, 10, 10))
+        base_img.save(self.mock_chart_path, "PNG")
+
+        demo_data = {
+            "symbol": "EURUSD",
+            "timeframe": "H1",
+            "account_number": "1234567",
+            "account_name": "Demo Account",
+            "trade_mode": "DEMO",
+            "telemetry": {
+                "trend": "SIDEWAYS",
+                "signal": "FLAT 0/10",
+                "account_number": "1234567",
+                "account_name": "Demo Account",
+                "trade_mode": "DEMO"
+            }
+        }
+        compose_chart_screenshot(self.mock_chart_path, demo_data)
+        with Image.open(self.mock_chart_path) as img:
+            self.assertEqual(img.size, (1280, 968))
+
+
 if __name__ == "__main__":
     unittest.main()

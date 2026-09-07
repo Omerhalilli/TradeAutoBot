@@ -118,13 +118,28 @@ def compose_chart_screenshot(chart_image_path: str, data: Dict[str, Any]) -> str
     # -------------------------------------------------------------
     # CARD 1: SMARTAUTOTRADE EA HUD PANEL
     # -------------------------------------------------------------
+    from account_manager import account_manager
+    active_acc = account_manager.get_active_account()
+
+    acc_num = str(data.get("account_number", telem.get("account_number", active_acc.account_number if active_acc else ""))).strip()
+    acc_name = str(data.get("account_name", telem.get("account_name", active_acc.name if active_acc else ""))).strip()
+    trade_mode = str(data.get("trade_mode", telem.get("trade_mode", ""))).upper()
+    if not trade_mode and active_acc:
+        trade_mode = "REAL" if (active_acc.id == "2" or "REAL" in active_acc.name.upper() or "REAL" in active_acc.server.upper()) else "DEMO"
+    if not trade_mode:
+        trade_mode = "REAL"
+
+    is_real = (trade_mode == "REAL")
+    mode_badge_txt = "🔴 REAL" if is_real else "🟡 DEMO"
+    mode_col = COLOR_GREEN if is_real else COLOR_GOLD
+
     draw.text((c1_x1 + 14, c1_y1 + 10), "=== SMARTAUTOTRADE EA HUD ===", font=f_h2, fill=COLOR_GOLD)
 
-    # Asset & timeframe badge on Card 1 top-right
-    asset_badge = f"[{sym} • {tf}]"
-    b_box = draw.textbbox((0, 0), asset_badge, font=f_bold)
-    bw = b_box[2] - b_box[0]
-    draw.text((c1_x2 - 14 - bw, c1_y1 + 12), asset_badge, font=f_bold, fill=COLOR_CYAN)
+    # Dynamic Account badge on Card 1 top-right
+    acc_badge = f"[{mode_badge_txt} • {acc_name or acc_num}]"
+    ab_box = draw.textbbox((0, 0), acc_badge, font=f_badge)
+    abw = ab_box[2] - ab_box[0]
+    draw.text((c1_x2 - 14 - abw, c1_y1 + 12), acc_badge, font=f_badge, fill=mode_col)
 
     # Row 1: Trend Regime & Last Signal
     trend = telem.get("trend", "STRONG BULLISH")
@@ -194,12 +209,13 @@ def compose_chart_screenshot(chart_image_path: str, data: Dict[str, Any]) -> str
     # -------------------------------------------------------------
     draw.text((c2_x1 + 14, c2_y1 + 10), "=== MTF CONFLUENCE MATRIX ===", font=f_h2, fill=COLOR_GOLD)
 
-    # Server quote on Card 2 top-right
+    # Asset tag & server quote on Card 2 top-right
+    quote_text = f"[{sym} • {tf}]"
     if bid and ask:
-        quote_text = f"Bid: {bid} / Ask: {ask}"
-        qb_box = draw.textbbox((0, 0), quote_text, font=f_small)
-        qw = qb_box[2] - qb_box[0]
-        draw.text((c2_x2 - 14 - qw, c2_y1 + 12), quote_text, font=f_small, fill=COLOR_LABEL)
+        quote_text += f"  Bid: {bid} / Ask: {ask}"
+    qb_box = draw.textbbox((0, 0), quote_text, font=f_small)
+    qw = qb_box[2] - qb_box[0]
+    draw.text((c2_x2 - 14 - qw, c2_y1 + 12), quote_text, font=f_small, fill=COLOR_CYAN)
 
     # Timeframe pills
     mtf_dict = telem.get("mtf", {})

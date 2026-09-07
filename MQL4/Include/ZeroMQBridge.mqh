@@ -118,8 +118,10 @@ string Zmq_HandleGetAccount()
    json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
    
    int tradeMode = (int)AccountInfoInteger(ACCOUNT_TRADE_MODE);
-   string tradeModeStr = (tradeMode == 2) ? "REAL" : "DEMO";
+   bool isReal = (!IsDemo() || tradeMode == 2);
+   string tradeModeStr = isReal ? "REAL" : "DEMO";
    json += "\"trade_mode\":\"" + tradeModeStr + "\",";
+   json += "\"is_demo\":" + (!isReal ? "true" : "false") + ",";
    json += "\"account_name\":\"" + Zmq_JsonEscape(AccountName()) + "\",";
    
    json += "\"balance\":" + DoubleToString(AccountBalance(), 2) + ",";
@@ -1764,37 +1766,24 @@ string Zmq_HandleScreenshot(const string reqJson)
       else telemAdvice = "Action: Mixed / Neutral Alignment";
    }
    
-   // Temporarily hide any HUD panel objects on the target chart to ensure the price chart is 100% clean
-   int totalChartObjs = ObjectsTotal(targetChartId);
-   string hiddenHudNames[];
-   ArrayResize(hiddenHudNames, 0);
-   for(int k = 0; k < totalChartObjs; k++)
+   // Temporarily decrease HUD panel size for screenshot capture if HUD is present on target chart
+   if(hasHud && hudChart == targetChartId)
    {
-      string objName = ObjectName(targetChartId, k);
-      if(StringFind(objName, "SmartEA_HUD_") >= 0)
-      {
-         int tfProp = (int)ObjectGetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES);
-         if(tfProp != OBJ_NO_PERIODS)
-         {
-            int curSz = ArraySize(hiddenHudNames);
-            ArrayResize(hiddenHudNames, curSz + 1);
-            hiddenHudNames[curSz] = objName;
-            ObjectSetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
-         }
-      }
+      g_HUD_IsScreenshotCapturing = true;
+      RenderHUDDashboard(true);
    }
    
    if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, width, height, ALIGN_RIGHT);
    
-   // Immediately restore HUD panel objects on active chart
-   int hiddenTotal = ArraySize(hiddenHudNames);
-   for(int r = 0; r < hiddenTotal; r++)
+   // Immediately restore enlarged HUD panel objects on active chart
+   if(hasHud && hudChart == targetChartId)
    {
-      ObjectSetInteger(targetChartId, hiddenHudNames[r], OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+      g_HUD_IsScreenshotCapturing = false;
+      RenderHUDDashboard(false);
+      ChartRedraw(targetChartId);
    }
-   ChartRedraw(targetChartId);
    
    if(tempChartOpened)
    {
@@ -1823,6 +1812,10 @@ string Zmq_HandleScreenshot(const string reqJson)
    if(ask == 0.0) ask = Ask;
    int symDig = (int)MarketInfo(matchedSymbol, MODE_DIGITS);
    if(symDig <= 0) symDig = Digits;
+
+   int tradeMode = (int)AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   bool isReal = (!IsDemo() || tradeMode == 2);
+   string tradeModeStr = isReal ? "REAL" : "DEMO";
    
    string json = "{";
    json += "\"status\":\"ok\",";
@@ -1830,10 +1823,22 @@ string Zmq_HandleScreenshot(const string reqJson)
    json += "\"filename\":\"" + filename + "\",";
    json += "\"symbol\":\"" + matchedSymbol + "\",";
    json += "\"timeframe\":\"" + cleanTfStr + "\",";
+   json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"trade_mode\":\"" + tradeModeStr + "\",";
+   json += "\"is_demo\":" + (!isReal ? "true" : "false") + ",";
+   json += "\"account_name\":\"" + Zmq_JsonEscape(AccountName()) + "\",";
+   json += "\"company\":\"" + Zmq_JsonEscape(AccountCompany()) + "\",";
+   json += "\"server\":\"" + Zmq_JsonEscape(AccountServer()) + "\",";
    json += "\"bid\":" + DoubleToString(bid, symDig) + ",";
    json += "\"ask\":" + DoubleToString(ask, symDig) + ",";
    json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
    json += "\"telemetry\":{";
+   json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"trade_mode\":\"" + tradeModeStr + "\",";
+   json += "\"is_demo\":" + (!isReal ? "true" : "false") + ",";
+   json += "\"account_name\":\"" + Zmq_JsonEscape(AccountName()) + "\",";
+   json += "\"company\":\"" + Zmq_JsonEscape(AccountCompany()) + "\",";
+   json += "\"server\":\"" + Zmq_JsonEscape(AccountServer()) + "\",";
    json += "\"trend\":\"" + Zmq_JsonEscape(telemTrend) + "\",";
    json += "\"signal\":\"" + Zmq_JsonEscape(telemSignal) + "\",";
    json += "\"points\":\"" + Zmq_JsonEscape(telemPoints) + "\",";
