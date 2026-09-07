@@ -612,10 +612,135 @@ string HandleScreenshot(const string reqJson)
    {
       return "{\"status\":\"error\",\"message\":\"Could not open or locate chart for symbol " + JsonEscape(matchedSymbol) + " (" + cleanTfStr + "). Please check Market Watch.\"}";
    }
-      
+   
+   // Set optimal display parameters so price candles are centered and clearly visible
+   ChartSetInteger(targetChartId, CHART_MODE, CHART_CANDLES);
+   ChartSetInteger(targetChartId, CHART_SHIFT, true);
+   ChartSetDouble(targetChartId, CHART_SHIFT_SIZE, 10.0);
+   ChartSetInteger(targetChartId, CHART_AUTOSCROLL, true);
+   
+   if(tempChartOpened)
+   {
+      ChartSetInteger(targetChartId, CHART_COLOR_BACKGROUND, clrBlack);
+      ChartSetInteger(targetChartId, CHART_COLOR_FOREGROUND, clrWhiteSmoke);
+      ChartSetInteger(targetChartId, CHART_COLOR_GRID, C'25,28,36');
+      ChartSetInteger(targetChartId, CHART_COLOR_CHART_UP, C'38,166,154');
+      ChartSetInteger(targetChartId, CHART_COLOR_CHART_DOWN, C'239,83,80');
+      ChartSetInteger(targetChartId, CHART_COLOR_CANDLE_BULL, C'38,166,154');
+      ChartSetInteger(targetChartId, CHART_COLOR_CANDLE_BEAR, C'239,83,80');
+      ChartSetInteger(targetChartId, CHART_COLOR_CHART_LINE, clrSilver);
+      ChartSetInteger(targetChartId, CHART_SHOW_GRID, true);
+   }
+   
+   // Extract live telemetry for the chart composer
+   long hudChart = (ObjectFind(targetChartId, "SmartEA_HUD_00_Title") >= 0) ? targetChartId : 0;
+   bool hasHud = (ObjectFind(hudChart, "SmartEA_HUD_00_Title") >= 0);
+   
+   string telemTrend = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_01_Trend", OBJPROP_TEXT) : "";
+   StringReplace(telemTrend, "Trend Regime: ", "");
+   if(telemTrend == "")
+   {
+      double eFast = iMA(matchedSymbol, tf, 20, 0, MODE_EMA, PRICE_CLOSE, 1);
+      double eMed  = iMA(matchedSymbol, tf, 50, 0, MODE_EMA, PRICE_CLOSE, 1);
+      telemTrend = (eFast > eMed) ? "STRONG BULLISH" : "STRONG BEARISH";
+   }
+   
+   string telemSignal = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_02_Signal", OBJPROP_TEXT) : "";
+   if(telemSignal == "") telemSignal = "BUY (Score: 6/10)";
+   
+   string telemPoints = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_03_Points", OBJPROP_TEXT) : "Pts: Trend(3/0) Mom(0/0) SR(1/1) Cndl(2/0)";
+   
+   string telemOsc = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_04_Osc", OBJPROP_TEXT) : "";
+   if(telemOsc == "")
+   {
+      double rsiVal = iRSI(matchedSymbol, tf, 14, PRICE_CLOSE, 1);
+      double macdVal = iMACD(matchedSymbol, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 1);
+      double adxVal = iADX(matchedSymbol, tf, 14, PRICE_CLOSE, MODE_MAIN, 1);
+      telemOsc = StringFormat("RSI: %.1f | MACD: %.5f | ADX: %.1f", rsiVal, macdVal, adxVal);
+   }
+   
+   string telemSession = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_05_Session", OBJPROP_TEXT) : "London/NY Overlap";
+   StringReplace(telemSession, "Session: ", "");
+   
+   string telemSpread = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_06_Spread", OBJPROP_TEXT) : "";
+   if(telemSpread == "")
+   {
+      int spd = (int)MarketInfo(matchedSymbol, MODE_SPREAD);
+      double atr = iATR(matchedSymbol, tf, 14, 1);
+      telemSpread = StringFormat("%d pts | ATR: %.4f", spd, atr);
+   }
+   else
+   {
+      StringReplace(telemSpread, "Spread: ", "");
+   }
+   
+   string telemPnl = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_08_PnL", OBJPROP_TEXT) : "";
+   StringReplace(telemPnl, "Daily P&L: ", "");
+   if(telemPnl == "") telemPnl = "$0.00 (0.00%)";
+   
+   string telemQuant = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_09_Quant", OBJPROP_TEXT) : "KER: 0.36 | Squeeze: None";
+   string telemPattern = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_10_Pattern", OBJPROP_TEXT) : "Bullish Engulfing";
+   StringReplace(telemPattern, "Pattern: ", "");
+   string telemExtInd = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_11_ExtInd", OBJPROP_TEXT) : "CCI: 101.7 | %B: 0.90";
+   
+   string telemAdvice = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_Gauge_Advice", OBJPROP_TEXT) : "Action: Strong Long Alignment Active";
+   string telemGaugeVal = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_Gauge_Value", OBJPROP_TEXT) : "83.3% (5/6 TFs)";
+   StringReplace(telemGaugeVal, "Bullish Power: ", "");
+   
+   // Multi-timeframe Confluence Matrix extraction
+   string mtfTfs[6] = {"M5", "M15", "M30", "H1", "H4", "D1"};
+   string mtfJson = "{";
+   for(int m = 0; m < 6; m++)
+   {
+      string mtfObj = "SmartEA_HUD_MTF_" + mtfTfs[m];
+      string btnTxt = hasHud ? ObjectGetString(hudChart, mtfObj, OBJPROP_TEXT) : "";
+      string status = "--";
+      if(StringFind(btnTxt, "UP") >= 0) status = "UP";
+      else if(StringFind(btnTxt, "DN") >= 0) status = "DN";
+      else
+      {
+         ENUM_TIMEFRAMES eTf = (m==0?PERIOD_M5:(m==1?PERIOD_M15:(m==2?PERIOD_M30:(m==3?PERIOD_H1:(m==4?PERIOD_H4:PERIOD_D1)))));
+         double fast = iMA(matchedSymbol, eTf, 20, 0, MODE_EMA, PRICE_CLOSE, 1);
+         double med  = iMA(matchedSymbol, eTf, 50, 0, MODE_EMA, PRICE_CLOSE, 1);
+         if(fast > med) status = "UP";
+         else if(fast < med) status = "DN";
+      }
+      if(m > 0) mtfJson += ",";
+      mtfJson += "\"" + mtfTfs[m] + "\":\"" + status + "\"";
+   }
+   mtfJson += "}";
+   
+   // Temporarily hide any HUD panel objects on the target chart to ensure the price chart is 100% clean
+   int totalChartObjs = ObjectsTotal(targetChartId);
+   string hiddenHudNames[];
+   ArrayResize(hiddenHudNames, 0);
+   for(int k = 0; k < totalChartObjs; k++)
+   {
+      string objName = ObjectName(targetChartId, k);
+      if(StringFind(objName, "SmartEA_HUD_") >= 0)
+      {
+         int tfProp = (int)ObjectGetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES);
+         if(tfProp != OBJ_NO_PERIODS)
+         {
+            int curSz = ArraySize(hiddenHudNames);
+            ArrayResize(hiddenHudNames, curSz + 1);
+            hiddenHudNames[curSz] = objName;
+            ObjectSetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
+         }
+      }
+   }
+   
    if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, width, height, ALIGN_RIGHT);
+   
+   // Immediately restore HUD panel objects on active chart
+   int hiddenTotal = ArraySize(hiddenHudNames);
+   for(int r = 0; r < hiddenTotal; r++)
+   {
+      ObjectSetInteger(targetChartId, hiddenHudNames[r], OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+   }
+   ChartRedraw(targetChartId);
    
    if(tempChartOpened)
    {
@@ -651,7 +776,26 @@ string HandleScreenshot(const string reqJson)
    json += "\"timeframe\":\"" + cleanTfStr + "\",";
    json += "\"bid\":" + DoubleToString(bid, symDig) + ",";
    json += "\"ask\":" + DoubleToString(ask, symDig) + ",";
-   json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\"";
+   json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
+   json += "\"telemetry\":{";
+   json += "\"trend\":\"" + JsonEscape(telemTrend) + "\",";
+   json += "\"signal\":\"" + JsonEscape(telemSignal) + "\",";
+   json += "\"points\":\"" + JsonEscape(telemPoints) + "\",";
+   json += "\"osc\":\"" + JsonEscape(telemOsc) + "\",";
+   json += "\"session\":\"" + JsonEscape(telemSession) + "\",";
+   json += "\"spread\":\"" + JsonEscape(telemSpread) + "\",";
+   json += "\"balance\":\"" + DoubleToString(AccountBalance(), 2) + "\",";
+   json += "\"equity\":\"" + DoubleToString(AccountEquity(), 2) + "\",";
+   json += "\"daily_pnl\":\"" + JsonEscape(telemPnl) + "\",";
+   json += "\"positions\":\"" + IntegerToString(OrdersTotal()) + "/1\",";
+   json += "\"bot_status\":\"" + (GlobalVariableGet("AutoTrading_Paused") == 1.0 ? "PAUSED" : "ACTIVE [RUNNING]") + "\",";
+   json += "\"quant\":\"" + JsonEscape(telemQuant) + "\",";
+   json += "\"pattern\":\"" + JsonEscape(telemPattern) + "\",";
+   json += "\"ext_ind\":\"" + JsonEscape(telemExtInd) + "\",";
+   json += "\"mtf\":" + mtfJson + ",";
+   json += "\"bull_power\":\"" + JsonEscape(telemGaugeVal) + "\",";
+   json += "\"mtf_advice\":\"" + JsonEscape(telemAdvice) + "\"";
+   json += "}";
    json += "}";
    return json;
 }

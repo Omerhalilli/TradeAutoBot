@@ -1743,13 +1743,31 @@ async def execute_screenshot_delivery(chat_id: int, context: ContextTypes.DEFAUL
         logger.warning(f"Screenshot file {shot_path} not ready after wait.")
         return False
 
+    # Ensure the chart screenshot is beautifully composited with HUD & MTF telemetry
+    try:
+        from autotrade.analytics.chart_composer import compose_chart_screenshot
+        compose_chart_screenshot(shot_path, data)
+    except Exception as ex:
+        logger.warning(f"Chart composer invocation error in handlers: {ex}")
+
+    telem = data.get("telemetry", {})
+    trend_txt = telem.get("trend", "")
+    sig_txt = telem.get("signal", "")
+    bull_pwr = telem.get("bull_power", "")
+
     caption = (
-        f"📸 <b>INSTITUTIONAL CHART TELEMETRY</b>\n"
+        f"📸 <b>INSTITUTIONAL CHART & TELEMETRY</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Asset:</b> <code>{sym}</code>  •  <b>Timeframe:</b> <code>{tf}</code>\n"
         f"• <b>Market Quote:</b> <code>{bid} / {ask}</code>\n"
-        f"• <b>Server Time:</b> <code>{server_time}</code>"
     )
+    if trend_txt:
+        caption += f"• <b>Trend Regime:</b> <code>{trend_txt}</code>\n"
+    if sig_txt:
+        caption += f"• <b>Live Signal:</b> <code>{sig_txt}</code>\n"
+    if bull_pwr:
+        caption += f"• <b>MTF Confluence:</b> <code>{bull_pwr}</code>\n"
+    caption += f"• <b>Server Time:</b> <code>{server_time}</code>"
     kb_shot = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("💼 Active Positions", callback_data="nav_pos"),

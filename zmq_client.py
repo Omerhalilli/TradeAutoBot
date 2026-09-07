@@ -224,8 +224,24 @@ class MT4ZmqClient:
     def apply_colors(self) -> Dict[str, Any]:
         return self.send_command("APPLY_COLORS")
 
-    def get_screenshot(self, symbol: str = "", timeframe: str = "", width: int = 1280, height: int = 720, timeout_ms: int = 10000) -> Dict[str, Any]:
-        return self.send_command("SCREENSHOT", symbol=symbol, timeframe=timeframe, width=width, height=height, timeout_ms=timeout_ms)
+    def get_screenshot(self, symbol: str = "", timeframe: str = "", width: int = 1280, height: int = 720, timeout_ms: int = 10000, compose: bool = True) -> Dict[str, Any]:
+        res = self.send_command("SCREENSHOT", symbol=symbol, timeframe=timeframe, width=width, height=height, timeout_ms=timeout_ms)
+        if compose and res.get("status") == "ok":
+            fn = res.get("filename")
+            if fn:
+                try:
+                    import os
+                    from config import MT4_FILES_DIR
+                    from autotrade.analytics.chart_composer import compose_chart_screenshot
+                    shot_path = os.path.join(MT4_FILES_DIR, fn)
+                    for _ in range(25):
+                        if os.path.exists(shot_path) and os.path.getsize(shot_path) > 500:
+                            compose_chart_screenshot(shot_path, res)
+                            break
+                        time.sleep(0.1)
+                except Exception as ex:
+                    logger.warning(f"Error composing screenshot in zmq_client: {ex}")
+        return res
 
     def get_symbols(self, timeout_ms: int = 5000) -> Dict[str, Any]:
         return self.send_command("GET_SYMBOLS", timeout_ms=timeout_ms)

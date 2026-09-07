@@ -2957,8 +2957,9 @@ void RenderHUDDashboard()
    double maxSafeScale = MathMin(maxScaleW, maxScaleH);
    if(maxSafeScale < 0.65) maxSafeScale = 0.65;
 
-   // Final visual pixel scale
-   double finalScale = MathMin(dpiScale * userScale, maxSafeScale);
+   // Final visual pixel scale: Cap DPI multiplier at 1.25 for standard 1.0 scale to keep panel compact
+   double effectiveDpiScale = (dpiScale > 1.25 && HUD_Scale <= 1.0) ? 1.25 : dpiScale;
+   double finalScale = MathMin(effectiveDpiScale * userScale, maxSafeScale);
    if(finalScale < 0.65) finalScale = 0.65;
    if(finalScale > 2.50) finalScale = 2.50;
 
@@ -4335,9 +4336,43 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
       }
    }
    
+   // Set optimal display parameters so price candles are centered and clearly visible
+   ChartSetInteger(targetChartId, CHART_MODE, CHART_CANDLES);
+   ChartSetInteger(targetChartId, CHART_SHIFT, true);
+   ChartSetDouble(targetChartId, CHART_SHIFT_SIZE, 10.0);
+   ChartSetInteger(targetChartId, CHART_AUTOSCROLL, true);
+   
+   // Temporarily hide any HUD panel objects on the target chart to ensure the price chart is 100% clean
+   int totalChartObjs = ObjectsTotal(targetChartId);
+   string hiddenHudNames[];
+   ArrayResize(hiddenHudNames, 0);
+   for(int k = 0; k < totalChartObjs; k++)
+   {
+      string objName = ObjectName(targetChartId, k);
+      if(StringFind(objName, "SmartEA_HUD_") >= 0)
+      {
+         int tfProp = (int)ObjectGetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES);
+         if(tfProp != OBJ_NO_PERIODS)
+         {
+            int curSz = ArraySize(hiddenHudNames);
+            ArrayResize(hiddenHudNames, curSz + 1);
+            hiddenHudNames[curSz] = objName;
+            ObjectSetInteger(targetChartId, objName, OBJPROP_TIMEFRAMES, OBJ_NO_PERIODS);
+         }
+      }
+   }
+   
    if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, 1280, 720, ALIGN_RIGHT);
+   
+   // Immediately restore HUD panel objects on active chart
+   int hiddenTotal = ArraySize(hiddenHudNames);
+   for(int r = 0; r < hiddenTotal; r++)
+   {
+      ObjectSetInteger(targetChartId, hiddenHudNames[r], OBJPROP_TIMEFRAMES, OBJ_ALL_PERIODS);
+   }
+   ChartRedraw(targetChartId);
    
    if(annoDrawn)
    {
@@ -6193,7 +6228,7 @@ void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudP
    bool canFitSideBySide = (startX + mtfPanelWidth <= cWidth - 8);
    bool canFitStacked    = (baseStartY + pH + btnH + (int)MathRound(8.0 * scale) + estimatedMtfH <= cHeight - 5);
 
-   if(!canFitSideBySide)
+   if(!canFitSideBySide || (canFitStacked && cWidth < 2200))
    {
       if(canFitStacked)
       {
