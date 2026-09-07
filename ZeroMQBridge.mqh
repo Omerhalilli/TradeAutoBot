@@ -1702,7 +1702,7 @@ string Zmq_HandleScreenshot(const string reqJson)
       double atr = iATR(matchedSymbol, tf, 14, 1);
       int dig = (int)MarketInfo(matchedSymbol, MODE_DIGITS);
       int atrDig = (dig == 3 || dig == 5) ? dig - 1 : (dig > 0 ? dig : 4);
-      telemSpread = StringFormat("%d pts (Max: 50) | ATR: %.*f", spd, atrDig, atr);
+      telemSpread = StringFormat("%d pts (Max: 50) | ATR: %s", spd, DoubleToString(atr, atrDig));
    }
    else
    {
