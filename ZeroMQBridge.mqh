@@ -1641,8 +1641,17 @@ string Zmq_HandleScreenshot(const string reqJson)
    }
    
    // Extract live telemetry for the chart composer
-   long hudChart = (ObjectFind(targetChartId, "SmartEA_HUD_00_Title") >= 0) ? targetChartId : 0;
-   bool hasHud = (ObjectFind(hudChart, "SmartEA_HUD_00_Title") >= 0);
+   long hudChart = -1;
+   if(ObjectFind(targetChartId, "SmartEA_HUD_00_Title") >= 0)
+   {
+      hudChart = targetChartId;
+   }
+   else if(ChartSymbol(0) == matchedSymbol && ObjectFind(0, "SmartEA_HUD_00_Title") >= 0)
+   {
+      hudChart = 0;
+   }
+   bool hasHud = (hudChart >= 0);
+   PrintFormat("[DEBUG_SCREENSHOT] matchedSymbol=%s targetChartId=%I64d hudChart=%I64d hasHud=%d ChartSymbol(0)=%s ChartSymbol(target)=%s", matchedSymbol, targetChartId, hudChart, (int)hasHud, ChartSymbol(0), ChartSymbol(targetChartId));
    
    string telemTrend = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_01_Trend", OBJPROP_TEXT) : "";
    StringReplace(telemTrend, "Trend Regime: ", "");
@@ -1650,21 +1659,37 @@ string Zmq_HandleScreenshot(const string reqJson)
    {
       double eFast = iMA(matchedSymbol, tf, 20, 0, MODE_EMA, PRICE_CLOSE, 1);
       double eMed  = iMA(matchedSymbol, tf, 50, 0, MODE_EMA, PRICE_CLOSE, 1);
-      telemTrend = (eFast > eMed) ? "STRONG BULLISH" : "STRONG BEARISH";
+      double eSlow = iMA(matchedSymbol, tf, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
+      if(eFast > eMed && eMed > eSlow) telemTrend = "STRONG BULLISH";
+      else if(eFast > eMed) telemTrend = "WEAK BULLISH";
+      else if(eFast < eMed && eMed < eSlow) telemTrend = "STRONG BEARISH";
+      else if(eFast < eMed) telemTrend = "WEAK BEARISH";
+      else telemTrend = "SIDEWAYS";
+   }
+   
+   string telemOsc = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_04_Osc", OBJPROP_TEXT) : "";
+   double rsiVal = iRSI(matchedSymbol, tf, 14, PRICE_CLOSE, 1);
+   double macdVal = iMACD(matchedSymbol, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 1);
+   double macdSig = iMACD(matchedSymbol, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 1);
+   double adxVal = iADX(matchedSymbol, tf, 14, PRICE_CLOSE, MODE_MAIN, 1);
+   if(telemOsc == "")
+   {
+      telemOsc = StringFormat("RSI: %.1f | MACD: %.5f | ADX: %.1f", rsiVal, macdVal, adxVal);
    }
    
    string telemSignal = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_02_Signal", OBJPROP_TEXT) : "";
-   if(telemSignal == "") telemSignal = "BUY (Score: 6/10)";
-   
-   string telemPoints = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_03_Points", OBJPROP_TEXT) : "Pts: Trend(3/0) Mom(0/0) SR(1/1) Cndl(2/0)";
-   
-   string telemOsc = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_04_Osc", OBJPROP_TEXT) : "";
-   if(telemOsc == "")
+   string telemPoints = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_03_Points", OBJPROP_TEXT) : "";
+   if(telemSignal == "")
    {
-      double rsiVal = iRSI(matchedSymbol, tf, 14, PRICE_CLOSE, 1);
-      double macdVal = iMACD(matchedSymbol, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 1);
-      double adxVal = iADX(matchedSymbol, tf, 14, PRICE_CLOSE, MODE_MAIN, 1);
-      telemOsc = StringFormat("RSI: %.1f | MACD: %.5f | ADX: %.1f", rsiVal, macdVal, adxVal);
+      double eF = iMA(matchedSymbol, tf, 20, 0, MODE_EMA, PRICE_CLOSE, 1);
+      double eM = iMA(matchedSymbol, tf, 50, 0, MODE_EMA, PRICE_CLOSE, 1);
+      int buyPts = (eF > eM ? 3 : 0) + (rsiVal > 50.0 && rsiVal < 70.0 ? 2 : 0) + (macdVal > macdSig ? 2 : 0);
+      int sellPts = (eF < eM ? 3 : 0) + (rsiVal < 50.0 && rsiVal > 30.0 ? 2 : 0) + (macdVal < macdSig ? 2 : 0);
+      if(buyPts >= 5) telemSignal = StringFormat("Evaluating: BUY %d/10 (Need: 6)", buyPts);
+      else if(sellPts >= 5) telemSignal = StringFormat("Evaluating: SELL %d/10 (Need: 6)", sellPts);
+      else telemSignal = StringFormat("Evaluating: FLAT %d/10 (Need: 6)", MathMax(buyPts, sellPts));
+      
+      telemPoints = StringFormat("Pts: Trend(%d/%d) Mom(%d/%d) SR(0/0) Cndl(0/0)", (eF>eM?3:0), (eF<eM?3:0), (rsiVal>50?2:0), (rsiVal<50?2:0));
    }
    
    string telemSession = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_05_Session", OBJPROP_TEXT) : "London/NY Overlap";
@@ -1675,7 +1700,9 @@ string Zmq_HandleScreenshot(const string reqJson)
    {
       int spd = (int)MarketInfo(matchedSymbol, MODE_SPREAD);
       double atr = iATR(matchedSymbol, tf, 14, 1);
-      telemSpread = StringFormat("%d pts | ATR: %.4f", spd, atr);
+      int dig = (int)MarketInfo(matchedSymbol, MODE_DIGITS);
+      int atrDig = (dig == 3 || dig == 5) ? dig - 1 : (dig > 0 ? dig : 4);
+      telemSpread = StringFormat("%d pts (Max: 50) | ATR: %.*f", spd, atrDig, atr);
    }
    else
    {
@@ -1686,37 +1713,56 @@ string Zmq_HandleScreenshot(const string reqJson)
    StringReplace(telemPnl, "Daily P&L: ", "");
    if(telemPnl == "") telemPnl = "$0.00 (0.00%)";
    
-   string telemQuant = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_09_Quant", OBJPROP_TEXT) : "KER: 0.36 | Squeeze: None";
-   string telemPattern = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_10_Pattern", OBJPROP_TEXT) : "Bullish Engulfing";
+   string telemQuant = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_09_Quant", OBJPROP_TEXT) : "KER: 0.35 | Squeeze: None";
+   string telemPattern = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_10_Pattern", OBJPROP_TEXT) : "";
    StringReplace(telemPattern, "Pattern: ", "");
-   string telemExtInd = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_11_ExtInd", OBJPROP_TEXT) : "CCI: 101.7 | %B: 0.90";
-   
-   string telemAdvice = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_Gauge_Advice", OBJPROP_TEXT) : "Action: Strong Long Alignment Active";
-   string telemGaugeVal = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_Gauge_Value", OBJPROP_TEXT) : "83.3% (5/6 TFs)";
-   StringReplace(telemGaugeVal, "Bullish Power: ", "");
+   if(telemPattern == "") telemPattern = "None";
+   string telemExtInd = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_11_ExtInd", OBJPROP_TEXT) : "";
+   if(telemExtInd == "")
+   {
+      double cciVal = iCCI(matchedSymbol, tf, 14, PRICE_TYPICAL, 1);
+      telemExtInd = StringFormat("CCI: %.1f | %%B: 0.50 | VSA: Normal", cciVal);
+   }
    
    // Multi-timeframe Confluence Matrix extraction
    string mtfTfs[6] = {"M5", "M15", "M30", "H1", "H4", "D1"};
    string mtfJson = "{";
+   int upCount = 0;
+   int dnCount = 0;
    for(int m = 0; m < 6; m++)
    {
       string mtfObj = "SmartEA_HUD_MTF_" + mtfTfs[m];
       string btnTxt = hasHud ? ObjectGetString(hudChart, mtfObj, OBJPROP_TEXT) : "";
       string status = "--";
-      if(StringFind(btnTxt, "UP") >= 0) status = "UP";
-      else if(StringFind(btnTxt, "DN") >= 0) status = "DN";
+      if(StringFind(btnTxt, "UP") >= 0) { status = "UP"; upCount++; }
+      else if(StringFind(btnTxt, "DN") >= 0) { status = "DN"; dnCount++; }
       else
       {
          ENUM_TIMEFRAMES eTf = (m==0?PERIOD_M5:(m==1?PERIOD_M15:(m==2?PERIOD_M30:(m==3?PERIOD_H1:(m==4?PERIOD_H4:PERIOD_D1)))));
          double fast = iMA(matchedSymbol, eTf, 20, 0, MODE_EMA, PRICE_CLOSE, 1);
          double med  = iMA(matchedSymbol, eTf, 50, 0, MODE_EMA, PRICE_CLOSE, 1);
-         if(fast > med) status = "UP";
-         else if(fast < med) status = "DN";
+         if(fast > med) { status = "UP"; upCount++; }
+         else if(fast < med) { status = "DN"; dnCount++; }
       }
       if(m > 0) mtfJson += ",";
       mtfJson += "\"" + mtfTfs[m] + "\":\"" + status + "\"";
    }
    mtfJson += "}";
+   
+   double powerPct = ((double)upCount / 6.0) * 100.0;
+   string telemGaugeVal = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_Gauge_Value", OBJPROP_TEXT) : "";
+   StringReplace(telemGaugeVal, "Bullish Power: ", "");
+   if(telemGaugeVal == "")
+   {
+      telemGaugeVal = StringFormat("%.1f%% (%d/6 TFs)", powerPct, upCount);
+   }
+   string telemAdvice = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_Gauge_Advice", OBJPROP_TEXT) : "";
+   if(telemAdvice == "")
+   {
+      if(powerPct >= 66.0) telemAdvice = "Action: Strong Long Alignment Active";
+      else if(powerPct <= 33.0) telemAdvice = "Action: Strong Short Alignment Active";
+      else telemAdvice = "Action: Mixed / Neutral Alignment";
+   }
    
    // Temporarily hide any HUD panel objects on the target chart to ensure the price chart is 100% clean
    int totalChartObjs = ObjectsTotal(targetChartId);
@@ -1804,6 +1850,7 @@ string Zmq_HandleScreenshot(const string reqJson)
    json += "\"ext_ind\":\"" + Zmq_JsonEscape(telemExtInd) + "\",";
    json += "\"mtf\":" + mtfJson + ",";
    json += "\"bull_power\":\"" + Zmq_JsonEscape(telemGaugeVal) + "\",";
+   json += "\"power_pct\":" + DoubleToString(powerPct, 1) + ",";
    json += "\"mtf_advice\":\"" + Zmq_JsonEscape(telemAdvice) + "\"";
    json += "}";
    json += "}";

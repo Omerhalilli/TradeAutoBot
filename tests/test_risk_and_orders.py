@@ -12,6 +12,9 @@ from autotrade.risk.position_sizer import PositionSizer, SizingMethod
 from autotrade.risk.risk_manager import RiskManager
 
 
+from unittest.mock import patch
+
+
 class TestRiskAndOrders(unittest.TestCase):
     def setUp(self):
         self.sizer = PositionSizer()
@@ -23,6 +26,12 @@ class TestRiskAndOrders(unittest.TestCase):
             risk_manager=self.risk,
             position_tracker=self.tracker
         )
+        self.acc_patcher = patch(
+            "zmq_client.zmq_client.get_account",
+            return_value={"status": "ok", "balance": 100000.0, "equity": 100000.0, "margin_free": 100000.0}
+        )
+        self.acc_patcher.start()
+        self.addCleanup(self.acc_patcher.stop)
 
     def test_position_sizer_methods(self):
         # 1. Percent risk
