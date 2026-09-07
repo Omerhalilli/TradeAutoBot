@@ -75,7 +75,7 @@ def format_progress_bar(current: float, max_val: float, bar_len: int = 10) -> st
     return f"[{bar}] {int(round(ratio * 100))}%"
 
 def clean_symbol(symbol: str) -> str:
-    """Normalizes financial instrument aliases and removes separators/whitespace while preserving broker suffixes like .az."""
+    """Normalizes financial instrument aliases and removes separators/whitespace while preserving broker suffixes like .pro or .raw."""
     raw = symbol.strip()
     # Check if exact or case-insensitive match exists in cached account symbols
     for acc in account_manager.get_all_accounts():
@@ -96,7 +96,7 @@ def clean_symbol(symbol: str) -> str:
     }
     if s in aliases:
         return aliases[s]
-    # Check if dot suffix exists (e.g. EURUSD.az or GOLD.az)
+    # Check if dot suffix exists (e.g. EURUSD.pro or GOLD.raw)
     if "." in raw:
         base, suffix = raw.replace("/", "").replace("\\", "").replace(" ", "").split(".", 1)
         base_upper = base.upper()

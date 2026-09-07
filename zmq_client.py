@@ -168,7 +168,7 @@ class MT4ZmqClient:
         )
 
     def close_ticket(self, ticket: int, timeout_ms: int = 10000) -> Dict[str, Any]:
-        return self.send_command("CLOSE_TICKET", ticket=ticket, timeout_ms=timeout_ms)
+        return self.close_symbol(str(ticket), timeout_ms=timeout_ms)
 
     def close_partial(self, ticket: int, lots: float, timeout_ms: int = 10000) -> Dict[str, Any]:
         return self.send_command("CLOSE_PARTIAL", ticket=ticket, lots=lots, timeout_ms=timeout_ms)

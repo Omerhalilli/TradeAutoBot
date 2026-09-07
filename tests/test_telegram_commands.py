@@ -29,6 +29,7 @@ class TestTelegramCommands(unittest.TestCase):
         message.reply_text = AsyncMock(return_value=sent_mock)
         update = Update(update_id=100, message=message)
         context = MagicMock()
+        context.bot.send_message = AsyncMock()
         context.args = args or []
         return update, context, message
 
@@ -396,6 +397,409 @@ class TestTelegramCommands(unittest.TestCase):
 
         asyncio.run(run())
 
+    # --------------------------------------------------------------------------
+    # 6. Full Command Center & Status (/start, /help, /status, /account)
+    # --------------------------------------------------------------------------
+    def test_cmd_start_and_help(self):
+        """Verifies /start and /help render command center with navigation keyboard."""
+        async def run():
+            # /start
+            update, context, message = self._make_message_update(self.auth_id, text="/start")
+            await handlers.cmd_start(update, context)
+            reply = self._get_reply_text(message.reply_text)
+            self.assertIn("COMMAND CENTER", reply)
+            self.assertIn("/buy", reply)
+            self.assertIn("/positions", reply)
+
+            # /help
+            message.reply_text.reset_mock()
+            update, context, message = self._make_message_update(self.auth_id, text="/help")
+            await handlers.cmd_help(update, context)
+            reply = self._get_reply_text(message.reply_text)
+            self.assertIn("COMMAND CENTER", reply)
+
+        asyncio.run(run())
+
+    def test_cmd_account_online_and_offline(self):
+        """Verifies /account and /status render full account stats when online and offline card when offline."""
+        async def run():
+            # Online
+            online_resp = {
+                "status": "ok",
+                "account_number": "1234567",
+                "trade_mode": "DEMO",
+                "balance": 100000.0,
+                "equity": 102500.0,
+                "margin": 1500.0,
+                "free_margin": 101000.0,
+                "margin_level": 6833.3,
+                "floating_pl": 2500.0,
+                "currency": "USD",
+                "company": "Institutional Broker",
+                "server": "Demo-Server",
+                "server_time": "2026.09.07 12:00:00",
+                "leverage": 100,
+                "is_trade_allowed": True,
+                "is_expert_enabled": True
+            }
+            with patch.object(zmq_client, "get_account", return_value=online_resp):
+                update, context, message = self._make_message_update(self.auth_id, text="/status")
+                await handlers.cmd_account(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("Balance:", reply)
+                self.assertIn("$100,000.00", reply)
+                self.assertIn("$102,500.00", reply)
+                self.assertIn("Margin Level:", reply)
+
+            # Offline
+            with patch.object(zmq_client, "get_account", return_value={"status": "error"}):
+                message.reply_text.reset_mock()
+                update, context, message = self._make_message_update(self.auth_id, text="/account")
+                await handlers.cmd_account(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("BRIDGE OFFLINE", reply)
+
+        asyncio.run(run())
+
+    # --------------------------------------------------------------------------
+    # 7. Portfolio & Orders (/positions, /close, /modify_sl, /modify_tp)
+    # --------------------------------------------------------------------------
+    def test_cmd_positions_empty_and_populated(self):
+        """Verifies /positions handles 0 orders cleanly and renders active trade details when orders exist."""
+        async def run():
+            # Empty portfolio
+            with patch.object(zmq_client, "get_positions", return_value={"status": "ok", "count": 0, "positions": []}):
+                update, context, message = self._make_message_update(self.auth_id, text="/positions")
+                await handlers.cmd_positions(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("0 Orders", reply)
+                self.assertIn("no active market orders running", reply)
+
+            # Populated portfolio
+            pop_resp = {
+                "status": "ok",
+                "count": 1,
+                "positions": [{
+                    "ticket": 888100,
+                    "symbol": "GBPUSD",
+                    "type": "BUY",
+                    "volume": 0.05,
+                    "open_price": 1.26500,
+                    "sl": 1.26000,
+                    "tp": 1.28000,
+                    "profit": 45.20,
+                    "open_time": "2026.09.07 10:00:00"
+                }]
+            }
+            with patch.object(zmq_client, "get_positions", return_value=pop_resp):
+                message.reply_text.reset_mock()
+                context.bot.send_message.reset_mock()
+                update, context, message = self._make_message_update(self.auth_id, text="/positions")
+                await handlers.cmd_positions(update, context)
+                reply = self._get_reply_text(context.bot.send_message) or self._get_reply_text(message.reply_text)
+                self.assertIn("888100", reply)
+                self.assertIn("GBPUSD", reply)
+
+        asyncio.run(run())
+
+    def test_cmd_close_symbol_and_ticket(self):
+        """Verifies /close handles missing args, symbol close, ticket close, and /close all."""
+        async def run():
+            # No args shows guide
+            update, context, message = self._make_message_update(self.auth_id, text="/close", args=[])
+            await handlers.cmd_close_symbol(update, context)
+            reply = self._get_reply_text(message.reply_text)
+            self.assertIn("Close Order Usage:", reply)
+
+            # /close all routes to cmd_closeall
+            with patch.object(zmq_client, "get_positions", return_value={"status": "ok", "count": 1, "orders": []}):
+                message.reply_text.reset_mock()
+                context.args = ["all"]
+                await handlers.cmd_close_symbol(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("EMERGENCY KILL-SWITCH", reply)
+
+            # Close by symbol (e.g. /close GBPUSD)
+            close_sym_resp = {"status": "ok", "closed_count": 2, "failed_count": 0, "realized_pl": 85.0}
+            with patch.object(zmq_client, "close_symbol", return_value=close_sym_resp) as mock_sym_close:
+                message.reply_text.reset_mock()
+                context.args = ["GBPUSD"]
+                await handlers.cmd_close_symbol(update, context)
+                mock_sym_close.assert_called_once_with("GBPUSD")
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("LIQUIDATION COMPLETED", reply)
+                self.assertIn("+$85.00", reply)
+
+            # Close by ticket (e.g. /close 888100)
+            close_ticket_resp = {"status": "ok", "closed_count": 1, "failed_count": 0, "realized_pl": 45.20}
+            with patch.object(zmq_client, "close_symbol", return_value=close_ticket_resp) as mock_tick_close:
+                message.reply_text.reset_mock()
+                context.args = ["888100"]
+                await handlers.cmd_close_symbol(update, context)
+                mock_tick_close.assert_called_once_with("888100")
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("LIQUIDATION COMPLETED", reply)
+
+        asyncio.run(run())
+
+    def test_cmd_modify_sl_and_tp(self):
+        """Verifies /modify_sl and /modify_tp validate arguments and dispatch to ZMQ."""
+        async def run():
+            # /modify_sl missing args
+            update, context, message = self._make_message_update(self.auth_id, text="/modify_sl", args=[])
+            await handlers.cmd_modify_sl(update, context)
+            reply = self._get_reply_text(message.reply_text)
+            self.assertIn("Modify Stop Loss Usage:", reply)
+
+            # /modify_sl invalid price
+            message.reply_text.reset_mock()
+            context.args = ["GBPUSD", "-1.5"]
+            await handlers.cmd_modify_sl(update, context)
+            reply = self._get_reply_text(message.reply_text)
+            self.assertIn("Invalid Price:", reply)
+
+            # /modify_sl valid ticket
+            with patch.object(zmq_client, "modify_sl", return_value={"status": "ok", "modified_count": 1}) as mock_sl:
+                message.reply_text.reset_mock()
+                context.args = ["888100", "1.2610"]
+                await handlers.cmd_modify_sl(update, context)
+                mock_sl.assert_called_once_with(ticket=888100, sl=1.2610)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("STOP LOSS SYNCHRONIZED", reply)
+
+            # /modify_tp valid symbol
+            with patch.object(zmq_client, "modify_tp", return_value={"status": "ok", "modified_count": 2}) as mock_tp:
+                message.reply_text.reset_mock()
+                context.args = ["GBPUSD", "1.2850"]
+                await handlers.cmd_modify_tp(update, context)
+                mock_tp.assert_called_once_with(symbol="GBPUSD", tp=1.2850)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("TAKE PROFIT SYNCHRONIZED", reply)
+
+        asyncio.run(run())
+
+    # --------------------------------------------------------------------------
+    # 8. Protection & Risk (/be, /trailing, /prop, /reset_risk)
+    # --------------------------------------------------------------------------
+    def test_cmd_breakeven_and_trailing_variations(self):
+        """Verifies /be and /trailing with symbol, ticket, custom pips, and no-match scenarios."""
+        async def run():
+            # /be with ticket
+            with patch.object(zmq_client, "set_breakeven", return_value={"status": "ok", "modified_count": 1, "skipped_count": 0}) as mock_be:
+                update, context, message = self._make_message_update(self.auth_id, text="/be 888100 2", args=["888100", "2"])
+                await handlers.cmd_breakeven(update, context)
+                mock_be.assert_called_once_with(symbol="", ticket=888100, lock_pips=2)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("BREAK-EVEN PROTECTION SYNCHRONIZED", reply)
+
+            # /trailing with symbol
+            with patch.object(zmq_client, "set_trailing", return_value={"status": "ok", "modified_count": 1, "skipped_count": 0}) as mock_tr:
+                message.reply_text.reset_mock()
+                context.args = ["GBPUSD", "25"]
+                await handlers.cmd_trailing(update, context)
+                mock_tr.assert_called_once_with(symbol="GBPUSD", ticket=0, trail_pips=25)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("TRAILING STOP SYNCHRONIZED", reply)
+
+        asyncio.run(run())
+
+    def test_cmd_prop_and_reset_safeguards(self):
+        """Verifies /prop scorecard display and /reset_risk recalibration."""
+        async def run():
+            prop_resp = {
+                "status": "ok",
+                "account": "1234567",
+                "company": "Institutional Broker",
+                "equity": 102500.0,
+                "peak_equity": 103000.0,
+                "day_loss": 200.0,
+                "day_loss_limit": 4500.0,
+                "day_loss_pct": 0.2,
+                "day_status": "Safe",
+                "peak_loss": 500.0,
+                "peak_loss_limit": 8000.0,
+                "peak_loss_pct": 0.5,
+                "peak_status": "Safe",
+                "current_gain": 2500.0,
+                "target_profit_goal": 8000.0,
+                "autotrading_active": True
+            }
+            with patch.object(zmq_client, "get_prop", return_value=prop_resp):
+                update, context, message = self._make_message_update(self.auth_id, text="/prop")
+                await handlers.cmd_prop(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("PROP-FIRM RISK GUARDIAN SCORECARD", reply)
+                self.assertIn("DAILY DRAWDOWN MONITOR", reply)
+
+            # /reset_risk
+            reset_resp = {"status": "ok", "account": "1234567", "equity": 102500.0}
+            with patch.object(zmq_client, "reset_safeguards", return_value=reset_resp):
+                message.reply_text.reset_mock()
+                update, context, message = self._make_message_update(self.auth_id, text="/reset_risk")
+                await handlers.cmd_reset_safeguards(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("PROP SAFEGUARDS RECALIBRATED", reply)
+                self.assertIn("$102,500.00", reply)
+
+        asyncio.run(run())
+
+    # --------------------------------------------------------------------------
+    # 9. Diagnostics & Intel (/boost, /report, /colors, /news, /screenshot, /trade)
+    # --------------------------------------------------------------------------
+    def test_cmd_boost_and_report_and_colors_and_news(self):
+        """Verifies diagnostics, reports, colors, and news calendar commands."""
+        async def run():
+            # /boost
+            boost_resp = {
+                "status": "ok",
+                "balance": 100000.0,
+                "equity": 102500.0,
+                "active_orders": 2,
+                "floating_pl": 2500.0,
+                "server_time": "2026.09.07 12:00:00",
+                "autotrading_active": True,
+                "spread_gbpusd": 1.2,
+                "spread_eurusd": 0.8,
+                "spread_xauusd": 15.0
+            }
+            with patch.object(zmq_client, "get_boost", return_value=boost_resp), \
+                 patch.object(zmq_client, "ping_latency_ms", return_value=12.5):
+                update, context, message = self._make_message_update(self.auth_id, text="/boost")
+                await handlers.cmd_boost(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("TURBO BOOST PANEL", reply)
+                self.assertIn("12.50 ms", reply)
+
+            # /report
+            rep_resp = {
+                "status": "ok",
+                "period": "Last 24 Hours",
+                "account": "1234567",
+                "total_trades": 10,
+                "win_count": 7,
+                "loss_count": 3,
+                "win_rate": 70.0,
+                "gross_profit": 1400.0,
+                "gross_loss": 400.0,
+                "profit_factor": 3.5,
+                "net_pl": 1000.0,
+                "ending_balance": 101000.0,
+                "ending_equity": 101000.0
+            }
+            with patch.object(zmq_client, "get_report", return_value=rep_resp):
+                message.reply_text.reset_mock()
+                update, context, message = self._make_message_update(self.auth_id, text="/report")
+                await handlers.cmd_report(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("24-HOUR PERFORMANCE SCORECARD", reply)
+                self.assertIn("70.0%", reply)
+                self.assertIn("3.50", reply)
+
+            # /colors
+            with patch.object(zmq_client, "apply_colors", return_value={"status": "ok", "synced_count": 2}):
+                message.reply_text.reset_mock()
+                update, context, message = self._make_message_update(self.auth_id, text="/colors")
+                await handlers.cmd_colors(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("CHART COLORS SYNCHRONIZED", reply)
+                self.assertIn("2 chart(s)", reply)
+
+            # /news
+            message.reply_text.reset_mock()
+            update, context, message = self._make_message_update(self.auth_id, text="/news")
+            await handlers.cmd_news(update, context)
+            reply = self._get_reply_text(message.reply_text)
+            self.assertIn("Economic Calendar", reply)
+
+        asyncio.run(run())
+
+    def test_cmd_trade_and_history_and_screenshot(self):
+        """Verifies /trade wizard, /history query filters, and /screenshot wizard."""
+        async def run():
+            # /trade wizard
+            update, context, message = self._make_message_update(self.auth_id, text="/trade", args=[])
+            await handlers.cmd_trade(update, context)
+            reply = self._get_reply_text(message.reply_text)
+            self.assertIn("REMOTE MT4 ORDER EXECUTION", reply)
+
+            # /history
+            hist_resp = {
+                "status": "ok",
+                "count": 1,
+                "total_net_pl": 50.0,
+                "trades": [{
+                    "ticket": 777123,
+                    "symbol": "GBPUSD",
+                    "cmd": "BUY",
+                    "lots": 0.10,
+                    "close_price": 1.27000,
+                    "profit": 50.0,
+                    "close_time": "2026.09.07 11:00:00"
+                }]
+            }
+            with patch.object(zmq_client, "get_history", return_value=hist_resp):
+                message.reply_text.reset_mock()
+                context.bot.send_message.reset_mock()
+                update, context, message = self._make_message_update(self.auth_id, text="/history", args=["today"])
+                await handlers.cmd_history(update, context)
+                reply = self._get_reply_text(context.bot.send_message) or self._get_reply_text(message.reply_text)
+                self.assertIn("TRADE HISTORY AUDIT", reply)
+                self.assertIn("777123", reply)
+
+            # /screenshot wizard
+            message.reply_text.reset_mock()
+            update, context, message = self._make_message_update(self.auth_id, text="/screenshot", args=[])
+            await handlers.cmd_screenshot(update, context)
+            reply = self._get_reply_text(message.reply_text)
+            self.assertIn("CHART SNAPSHOT WIZARD", reply)
+
+        asyncio.run(run())
+
+    # --------------------------------------------------------------------------
+    # 10. Slash Actions & Comprehensive Authorization
+    # --------------------------------------------------------------------------
+    def test_slash_actions_parsing(self):
+        """Verifies slash actions /close_123, /half_123, /be_123 dispatch properly."""
+        async def run():
+            update, context, message = self._make_message_update(self.auth_id, text="/close_888123")
+            with patch.object(zmq_client, "close_symbol", return_value={"status": "ok", "closed_count": 1, "failed_count": 0, "realized_pl": 30.0}) as mock_close:
+                await handlers.handle_slash_action(update, context)
+                mock_close.assert_called_once_with("888123")
+
+        asyncio.run(run())
+
+    def test_unauthorized_all_major_commands(self):
+        """Verifies unauthorized chat IDs are rejected on all major commands."""
+        async def run():
+            unauth_cmds = [
+                handlers.cmd_help,
+                handlers.cmd_account,
+                handlers.cmd_positions,
+                handlers.cmd_boost,
+                handlers.cmd_prop,
+                handlers.cmd_closeall,
+                handlers.cmd_pause_bot,
+                handlers.cmd_resume_bot,
+                handlers.cmd_buy,
+                handlers.cmd_sell,
+                handlers.cmd_trade,
+                handlers.cmd_close_symbol,
+                handlers.cmd_modify_sl,
+                handlers.cmd_modify_tp,
+                handlers.cmd_history,
+                handlers.cmd_colors,
+                handlers.cmd_news
+            ]
+            for cmd_fn in unauth_cmds:
+                update, context, message = self._make_message_update(self.unauth_id, text="/test")
+                await cmd_fn(update, context)
+                self.assertTrue(message.reply_text.called, f"Command {cmd_fn.__name__} failed to reply to unauthorized user")
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("ACCESS RESTRICTED", reply, f"Command {cmd_fn.__name__} allowed unauthorized access!")
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()
+

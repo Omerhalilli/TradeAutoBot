@@ -2370,6 +2370,7 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
             }
          }
 
+         Telegram_ProcessTradeEvents();
          return ticket;
       }
       else
@@ -2389,6 +2390,7 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
                g_LastOrderExecutionTime = TimeCurrent();
                PrintFormat("[ORDER FILLED TWO-STEP] Ticket #%d opened with 0/0. Modifying SL/TP...", ticket);
                SafeOrderModify(ticket, currentExecPrice, stopLoss, takeProfit, 0, arrowColor);
+               Telegram_ProcessTradeEvents();
                return ticket;
             }
          }
@@ -2493,6 +2495,7 @@ bool SafeOrderClose(const int ticket, const double volume, const int slippage, c
       if(closed)
       {
          PrintFormat("[ORDER CLOSED] Ticket #%d | Vol: %.2f | Price: %f", ticket, volume, closePrice);
+         Telegram_ProcessTradeEvents();
          return true;
       }
       else
@@ -6739,7 +6742,6 @@ void OnTick()
    MonitorStealthStops();
    UpdateConsecutiveLossTracker();
    EnforceTradeExpiration();
-   Telegram_ProcessTradeEvents();
 
 
    // 2. Bar close evaluation constraint (prevents repainting)

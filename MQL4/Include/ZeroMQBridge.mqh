@@ -370,7 +370,7 @@ string Zmq_ResolveSymbol(string genericName)
    
    if(base == "CURRENT" || base == "") return Symbol();
    
-   // 0. Direct match if broker supports exact name as-is (e.g. EURUSD.az, GOLD#)
+   // 0. Direct match if broker supports exact name as-is (e.g. EURUSD.pro, GOLD#)
    if(MarketInfo(base, MODE_POINT) > 0.0) return base;
    if(SymbolInfoInteger(base, SYMBOL_SELECT) == 1) return base;
    
@@ -408,7 +408,7 @@ string Zmq_ResolveSymbol(string genericName)
       }
    }
    
-   // 4. Derive broker prefix/suffix from chart Symbol() (e.g. "_min", ".az", ".pro", "m")
+   // 4. Derive broker prefix/suffix from chart Symbol() (e.g. "_min", ".raw", ".pro", "m")
    string standards[4];
    standards[0] = "GBPUSD";
    standards[1] = "EURUSD";

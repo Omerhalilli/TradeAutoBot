@@ -33,7 +33,7 @@ class TestScreenshotAndAccessibleSymbols(unittest.TestCase):
     def test_02_account_manager_symbols_cache(self):
         """Verify account_manager stores and returns symbols per account profile."""
         account_manager.set_active_account("1")
-        test_symbols = ["EURUSD.az", "GBPUSD.az", "USDJPY.az", "XAUUSD.az"]
+        test_symbols = ["EURUSD.pro", "GBPUSD.pro", "USDJPY.pro", "XAUUSD.pro"]
         account_manager.set_account_symbols(test_symbols, account_id="1")
         cached = account_manager.get_account_symbols("1")
         self.assertEqual(cached, test_symbols)
@@ -187,26 +187,26 @@ class TestScreenshotAndAccessibleSymbols(unittest.TestCase):
                     in_screenshot = False
 
     def test_08_clean_symbol_broker_suffixes(self):
-        """Verify broker suffixes like .az are preserved correctly."""
-        self.assertEqual(handlers.clean_symbol("EURUSD.az"), "EURUSD.az")
-        self.assertEqual(handlers.clean_symbol("gbpusd.az"), "GBPUSD.az")
-        self.assertEqual(handlers.clean_symbol("GOLD.az"), "XAUUSD.az")
-        self.assertEqual(handlers.clean_symbol("SILVER.az"), "XAGUSD.az")
+        """Verify broker suffixes like .pro are preserved correctly."""
+        self.assertEqual(handlers.clean_symbol("EURUSD.pro"), "EURUSD.pro")
+        self.assertEqual(handlers.clean_symbol("gbpusd.pro"), "GBPUSD.pro")
+        self.assertEqual(handlers.clean_symbol("GOLD.pro"), "XAUUSD.pro")
+        self.assertEqual(handlers.clean_symbol("SILVER.pro"), "XAGUSD.pro")
         self.assertEqual(handlers.clean_symbol("EUR-USD"), "EURUSD")
         self.assertEqual(handlers.clean_symbol("GBP/USD"), "GBPUSD")
         self.assertEqual(handlers.clean_symbol(" crude "), "USOIL")
 
     def test_09_account_manager_add_or_update_preserves_symbols(self):
         """Verify add_or_update_account does not wipe cached symbols."""
-        account_manager.set_account_symbols(["EURUSD.az", "GBPUSD.az"], "1")
+        account_manager.set_account_symbols(["EURUSD.pro", "GBPUSD.pro"], "1")
         acc = account_manager.get_account_by_id("1")
         self.assertIsNotNone(acc)
         # Update name or profile without passing symbols
         updated = account_manager.add_or_update_account(
             "1", acc.account_number, "Broker Updated", acc.profile_name, acc.server, acc.zmq_url
         )
-        self.assertEqual(updated.symbols, ["EURUSD.az", "GBPUSD.az"])
-        self.assertEqual(account_manager.get_account_symbols("1"), ["EURUSD.az", "GBPUSD.az"])
+        self.assertEqual(updated.symbols, ["EURUSD.pro", "GBPUSD.pro"])
+        self.assertEqual(account_manager.get_account_symbols("1"), ["EURUSD.pro", "GBPUSD.pro"])
 
     def test_10_cb_screenshot_tf_photo_caption_support(self):
         """Verify cb_screenshot_tf edits photo caption instead of crashing when executed on a photo message."""

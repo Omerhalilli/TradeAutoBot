@@ -195,9 +195,14 @@ bool Telegram_WriteOutboxPayload(const string textHtml, const string chatId = ""
    return false;
 }
 
-// Low-latency direct HTTP WebRequest post to Telegram API (minimal 1500ms timeout, 0 sleep)
-bool Telegram_DirectPost(const string botToken, const string chatId, const string textHtml, const string replyMarkupJson = "", const int timeoutMs = 1500)
+// WebRequest permission tracking cache to eliminate redundant stalls and log spam when disabled in MT4 options
+static bool g_tgWebRequestDisabled = false;
+
+// Low-latency direct HTTP WebRequest post to Telegram API (minimal 1000ms timeout, 0 sleep)
+bool Telegram_DirectPost(const string botToken, const string chatId, const string textHtml, const string replyMarkupJson = "", const int timeoutMs = 1000)
 {
+   if(IsStopped()) return false;
+   if(g_tgWebRequestDisabled) return false;
    if(StringLen(botToken) == 0 || StringLen(chatId) == 0) return false;
    
    string escapedText = Telegram_JsonEscape(textHtml);
@@ -237,7 +242,8 @@ bool Telegram_DirectPost(const string botToken, const string chatId, const strin
    int err = GetLastError();
    if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060)
    {
-      PrintFormat("[Telegram] WebRequest not permitted in MT4 options (Error %d). Falling back to outbox for Python dispatcher.", err);
+      g_tgWebRequestDisabled = true;
+      PrintFormat("[Telegram] WebRequest not permitted in MT4 options (Error %d). Switched permanently to ultra-low latency outbox dispatcher.", err);
    }
    else
    {
@@ -250,6 +256,7 @@ bool Telegram_DirectPost(const string botToken, const string chatId, const strin
 // Enqueue message into ring buffer
 bool Telegram_QueueEnqueue(const string token, const string chat, const string textHtml, const string markupJson)
 {
+   if(IsStopped()) return false;
    if(g_tgQueueCount >= TG_QUEUE_MAX_SIZE)
    {
       // Buffer full: flush oldest to outbox to prevent message drop
@@ -272,24 +279,25 @@ bool Telegram_QueueEnqueue(const string token, const string chat, const string t
 // Drain pending messages from queue (called from OnTimer)
 void Telegram_ProcessQueue()
 {
+   if(IsStopped()) return;
    if(g_tgQueueCount <= 0) return;
 
    int toProcess = MathMin(3, g_tgQueueCount);
    for(int i = 0; i < toProcess; i++)
    {
-      if(g_tgQueueCount <= 0) break;
+      if(IsStopped() || g_tgQueueCount <= 0) break;
 
       TelegramQueueItem item = g_tgMsgQueue[g_tgQueueHead];
       bool sent = false;
 
-      if(StringLen(item.token) > 0 && StringLen(item.chat) > 0)
+      if(!g_tgWebRequestDisabled && StringLen(item.token) > 0 && StringLen(item.chat) > 0)
       {
-         sent = Telegram_DirectPost(item.token, item.chat, item.textHtml, item.markupJson, 1500);
+         sent = Telegram_DirectPost(item.token, item.chat, item.textHtml, item.markupJson, 1000);
       }
 
       if(!sent)
       {
-         // Direct post failed or token empty -> write to fail-safe outbox immediately
+         // Direct post failed, token empty, or WebRequest disabled -> write to fail-safe outbox immediately (<0.1ms)
          Telegram_WriteOutboxPayload(item.textHtml, item.chat, item.markupJson);
       }
 
@@ -320,6 +328,7 @@ bool Telegram_SendMessage(const string botToken,
                           const int retryDelaySec = 0,
                           const string replyMarkupJson = "")
 {
+   if(IsStopped()) return false;
    if(StringLen(messageTextHtml) == 0) return false;
 
    // Debounce guard: suppress duplicate messages sent within the debounce window
@@ -332,16 +341,16 @@ bool Telegram_SendMessage(const string botToken,
    string activeToken = botToken;
    string activeChat = chatId;
       
-   // If direct WebRequest parameters are missing, write instantly to outbox (<0.5ms)
-   if(StringLen(activeToken) == 0 || StringLen(activeChat) == 0)
+   // If direct WebRequest parameters are missing or WebRequest is disabled in MT4 options, write instantly to outbox (<0.1ms)
+   if(g_tgWebRequestDisabled || StringLen(activeToken) == 0 || StringLen(activeChat) == 0)
    {
       return Telegram_WriteOutboxPayload(messageTextHtml, activeChat, replyMarkupJson);
    }
 
-   // If message queue is currently empty, attempt immediate non-blocking WebRequest (1500ms timeout max)
+   // If message queue is currently empty, attempt immediate non-blocking WebRequest (1000ms timeout max)
    if(g_tgQueueCount == 0)
    {
-      if(Telegram_DirectPost(activeToken, activeChat, messageTextHtml, replyMarkupJson, 1500))
+      if(Telegram_DirectPost(activeToken, activeChat, messageTextHtml, replyMarkupJson, 1000))
       {
          return true; // Sent successfully via WebRequest!
       }
@@ -550,9 +559,10 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    int fileHandle = INVALID_HANDLE;
    int fileSize = 0;
    
-   // Wait up to 2500ms for MT4/MT5 to flush the image file to disk
-   for(int w = 0; w < 25; w++)
+   // High-frequency non-blocking check: wait up to 1000ms in 15ms increments for screenshot flush
+   for(int w = 0; w < 65; w++)
    {
+      if(IsStopped()) return false;
       if(FileIsExist(filename))
       {
          fileHandle = FileOpen(filename, FILE_BIN | FILE_READ);
@@ -567,10 +577,10 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
             fileHandle = INVALID_HANDLE;
          }
       }
-      Sleep(100);
+      Sleep(15);
    }
    
-   if(fileHandle == INVALID_HANDLE || fileSize <= 100)
+   if(IsStopped() || fileHandle == INVALID_HANDLE || fileSize <= 100)
    {
       if(fileHandle != INVALID_HANDLE) FileClose(fileHandle);
       PrintFormat("[Telegram] Failed to open image or image empty: %s (Error %d)", filename, GetLastError());
@@ -631,8 +641,14 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    string resultHeaders = "";
    string url = "https://api.telegram.org/bot" + botToken + "/sendPhoto";
    
+   if(IsStopped())
+   {
+      FileDelete(filename);
+      return false;
+   }
+
    ResetLastError();
-   int res = WebRequest("POST", url, headers, 4000, bodyBytes, resultData, resultHeaders);
+   int res = WebRequest("POST", url, headers, 2500, bodyBytes, resultData, resultHeaders);
    
    // Clean up local screenshot
    FileDelete(filename);
