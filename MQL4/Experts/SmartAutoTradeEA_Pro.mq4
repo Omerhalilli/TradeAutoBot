@@ -488,7 +488,7 @@ struct SymbolBarTracker {
    datetime lastBarTime;
 };
 
-#define MAX_BAR_TRACKERS 128
+#define MAX_BAR_TRACKERS 512
 SymbolBarTracker g_BarTrackers[MAX_BAR_TRACKERS];
 int g_BarTrackersCount = 0;
 
@@ -5100,6 +5100,11 @@ void Telegram_CaptureAndSendScreenshot(int ticket, string caption, string replyM
       Sleep(100);
       Telegram_SendPhoto(TelegramBotToken, TelegramChatID, shotName, caption, replyMarkupJson);
    }
+   else
+   {
+      // Fallback: If screenshot cannot be captured (e.g. headless MT4 / no GUI window), send text alert immediately
+      Telegram_SendMessage(TelegramBotToken, TelegramChatID, caption, 3, 1, replyMarkupJson);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -6841,6 +6846,16 @@ int OnInit()
    {
       IsNewBar(Symbol(), (ENUM_TIMEFRAMES)Period()); // Lock current forming bar into tracker: never trade on startup tick
    }
+
+   // Seed all monitored portfolio symbols into tracker so no symbol can execute on startup half-bar
+   string seedSyms[];
+   int seedCount = DiscoverMarketWatchSymbols(seedSyms, "", AutonomousExcludeSymbols, MaxMarginUsagePct);
+   for(int sIdx = 0; sIdx < seedCount; sIdx++)
+   {
+      SymbolSelect(seedSyms[sIdx], true);
+      IsNewBar(seedSyms[sIdx], PERIOD_H1);
+   }
+
    g_LastAutonomousScanTick = GetTickCount(); // Enforce full startup stabilization delay for background multi-symbol scanner
 
    // === STEP 3: INPUT PARAMETER VALIDATION ===
@@ -7070,16 +7085,16 @@ void Autonomous_MultiSymbolScan()
 
       string sym = scanSymbols[i];
 
+      SymbolSelect(sym, true);
+
       // Bar confirmation: each symbol must be evaluated only on a confirmed new closed bar
       if(!IsNewBar(sym, PERIOD_H1)) continue;
 
       // 5. Check persistent symbol cooldown FIRST
       if(IsSymbolInCooldown(sym, AutonomousCooldownMinutes)) continue;
 
-      SymbolSelect(sym, true);
-
       // 6. Pre-filter before expensive indicator calculations (liquidity, trade permission, margin affordability)
-      if(!PreFilterSymbol(sym, (double)MaxSpreadPoints, 50, PERIOD_H1, true, MaxMarginUsagePct)) continue;
+      if(!PreFilterSymbol(sym, (double)MaxSpreadPoints, 205, PERIOD_H1, true, MaxMarginUsagePct)) continue;
 
       // 7. Exact canonical symbol matching: verify no existing position is open for this pair
       bool hasOpenPosition = false;
@@ -7329,8 +7344,8 @@ void OnTick()
    double ema200 = iMA(Symbol(), Period(), EMA_Slow_Period,   0, MODE_EMA, EMA_AppliedPrice, 1);
    double close1 = iClose(Symbol(), Period(), 1);
 
-   bool buyTrendConfirmed  = (ema200 > 0.0) ? (ema20 > ema50 && ema50 > ema200 && close1 > ema200) : (ema20 > ema50);
-   bool sellTrendConfirmed = (ema200 > 0.0) ? (ema20 < ema50 && ema50 < ema200 && close1 < ema200) : (ema20 < ema50);
+   bool buyTrendConfirmed  = (ema200 > 0.0 && ema20 > ema50 && ema50 > ema200 && close1 > ema200);
+   bool sellTrendConfirmed = (ema200 > 0.0 && ema20 < ema50 && ema50 < ema200 && close1 < ema200);
 
    if(buyScore >= effectiveMinScore && buyScore > sellScore && buyTrendConfirmed && g_ActiveTrendRegime == TREND_STRONG_BULLISH)
    {

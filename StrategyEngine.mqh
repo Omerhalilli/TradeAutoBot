@@ -189,7 +189,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    sig.htfTrend      = "NEUTRAL";
    sig.valid         = false;
 
-   if(iBars(sym, tf) < 60) return sig;
+   if(iBars(sym, tf) < 205) return sig;
 
    double pt = MarketInfo(sym, MODE_POINT);
    if(pt <= 0.0) return sig;
@@ -277,8 +277,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    }
    else
    {
-      if(ema20 > ema50) { buyPoints += 8.0;  sig.trend = "BULLISH"; }
-      if(ema20 < ema50) { sellPoints += 8.0; sig.trend = "BEARISH"; }
+      sig.trend = "NEUTRAL";
    }
 
    // ADX Trend Strength Confirmation (0 - 9 points)
@@ -511,7 +510,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       sig.tpPrice = NormalizeDouble(ask + tpDist, dig);
       
       // Strict Directional Trend Confirmation: EMA 20 > EMA 50 > EMA 200 and Price > EMA 200
-      bool trendConfirmed = (ema200 > 0.0) ? (ema20 > ema50 && ema50 > ema200 && close1 > ema200) : (ema20 > ema50);
+      bool trendConfirmed = (ema200 > 0.0 && ema20 > ema50 && ema50 > ema200 && close1 > ema200);
       if(trendConfirmed && symTradeMode != SYMBOL_TRADE_MODE_SHORTONLY && symTradeMode != SYMBOL_TRADE_MODE_DISABLED && symTradeMode != SYMBOL_TRADE_MODE_CLOSEONLY)
       {
          sig.cmd = OP_BUY;
@@ -528,7 +527,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       sig.tpPrice = NormalizeDouble(bid - tpDist, dig);
       
       // Strict Directional Trend Confirmation: EMA 20 < EMA 50 < EMA 200 and Price < EMA 200
-      bool trendConfirmed = (ema200 > 0.0) ? (ema20 < ema50 && ema50 < ema200 && close1 < ema200) : (ema20 < ema50);
+      bool trendConfirmed = (ema200 > 0.0 && ema20 < ema50 && ema50 < ema200 && close1 < ema200);
       if(trendConfirmed && symTradeMode != SYMBOL_TRADE_MODE_LONGONLY && symTradeMode != SYMBOL_TRADE_MODE_DISABLED && symTradeMode != SYMBOL_TRADE_MODE_CLOSEONLY)
       {
          sig.cmd = OP_SELL;
@@ -619,6 +618,23 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
             return sig; // H4 bullish stack contradicts SELL
          }
       }
+      else
+      {
+         if(sig.cmd == OP_BUY && (h4_ema20 < h4_ema50 || h4_close < h4_ema50))
+         {
+            sig.cmd = -1;
+            sig.valid = false;
+            sig.score = 0;
+            return sig;
+         }
+         if(sig.cmd == OP_SELL && (h4_ema20 > h4_ema50 || h4_close > h4_ema50))
+         {
+            sig.cmd = -1;
+            sig.valid = false;
+            sig.score = 0;
+            return sig;
+         }
+      }
    }
 
    if(tf < PERIOD_D1 && iBars(sym, PERIOD_D1) >= 50)
@@ -643,6 +659,23 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
             sig.valid = false;
             sig.score = 0;
             return sig; // D1 bullish trend contradicts SELL
+         }
+      }
+      else
+      {
+         if(sig.cmd == OP_BUY && (d1_ema20 < d1_ema50 || d1_close < d1_ema50))
+         {
+            sig.cmd = -1;
+            sig.valid = false;
+            sig.score = 0;
+            return sig;
+         }
+         if(sig.cmd == OP_SELL && (d1_ema20 > d1_ema50 || d1_close > d1_ema50))
+         {
+            sig.cmd = -1;
+            sig.valid = false;
+            sig.score = 0;
+            return sig;
          }
       }
    }

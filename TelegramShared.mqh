@@ -672,8 +672,8 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    if(IsStopped() || fileHandle == INVALID_HANDLE || fileSize <= 100)
    {
       if(fileHandle != INVALID_HANDLE) FileClose(fileHandle);
-      PrintFormat("[Telegram] Failed to open image or image empty: %s (Error %d)", filename, GetLastError());
-      return false;
+      PrintFormat("[Telegram] Failed to open image or image empty: %s (Error %d). Falling back to text alert.", filename, GetLastError());
+      return Telegram_WriteOutboxPayload(captionHtml, chatId, replyMarkupJson);
    }
    
    uchar fileBytes[];

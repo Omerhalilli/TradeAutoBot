@@ -368,8 +368,29 @@ int ExecuteOrderSafe(const string sym,
                      const double takeProfit, 
                      const int magic, 
                      const string comment = "AutoBot", 
-                     const int slippagePoints = 15)
+                     const int slippagePoints = 15,
+                     const int maxOpenPositions = 1)
 {
+   // 0. Enforce global active positions limit across portfolio
+   if(GetGlobalActivePositions(magic) >= maxOpenPositions)
+   {
+      PrintFormat("[ORDER REJECTED] Global open positions limit reached (%d >= %d). Dispatch aborted for %s.",
+                  GetGlobalActivePositions(magic), maxOpenPositions, sym);
+      return -1;
+   }
+
+   // Strict symbol protection: verify no active order already exists for this pair
+   for(int opIdx = 0; opIdx < OrdersTotal(); opIdx++)
+   {
+      if(!OrderSelect(opIdx, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+      if(AreSymbolsMatching(OrderSymbol(), sym))
+      {
+         PrintFormat("[ORDER REJECTED] Active position already exists for %s (Ticket #%d). Dispatch aborted.", sym, OrderTicket());
+         return -1;
+      }
+   }
+
    // 1. Connection check
    if(!IsConnected())
    {

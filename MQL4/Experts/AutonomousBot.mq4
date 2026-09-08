@@ -85,7 +85,7 @@ struct SymbolBarTracker {
    datetime lastBarTime;
 };
 
-#define MAX_BAR_TRACKERS 128
+#define MAX_BAR_TRACKERS 512
 SymbolBarTracker g_BarTrackers[MAX_BAR_TRACKERS];
 int g_BarTrackersCount = 0;
 
@@ -146,6 +146,13 @@ int OnInit()
    // 2. Discover Market Watch symbols dynamically
    g_TotalWatchlist = DiscoverMarketWatchSymbols(g_Watchlist, IncludeSymbols, ExcludeSymbols);
    PrintFormat("[AUTONOMOUS BOT] Watchlist initialized with %d active symbols from Market Watch.", g_TotalWatchlist);
+
+   // Seed all watchlist symbols into tracker so no symbol can execute on startup half-bar
+   for(int wIdx = 0; wIdx < g_TotalWatchlist; wIdx++)
+   {
+      SymbolSelect(g_Watchlist[wIdx], true);
+      IsNewBar(g_Watchlist[wIdx], ScanTimeframe);
+   }
 
    // 3. Start timer for staggered round-robin scanner
    EventSetTimer(TimerIntervalSec);
@@ -210,6 +217,8 @@ void ScanNextSymbolBatch(int batchSize = 0)
       g_CurrentScanIndex = (g_CurrentScanIndex + 1) % g_TotalWatchlist;
       g_LastScannedSymbol = sym;
 
+      SymbolSelect(sym, true);
+
       // Bar confirmation: each symbol must be evaluated only on a confirmed new closed bar
       if(!IsNewBar(sym, ScanTimeframe))
       {
@@ -217,7 +226,7 @@ void ScanNextSymbolBatch(int batchSize = 0)
       }
 
       // Pre-filter dormant/disabled symbols before computing indicators
-      if(!PreFilterSymbol(sym, MaxSpreadPoints, 50, ScanTimeframe, UseTimeFilter, MaxMarginUsagePct))
+      if(!PreFilterSymbol(sym, MaxSpreadPoints, 205, ScanTimeframe, UseTimeFilter, MaxMarginUsagePct))
       {
          continue;
       }
@@ -297,7 +306,7 @@ void ScanNextSymbolBatch(int batchSize = 0)
                   scanCount, qualifiedCount, MinConfluenceScore, bestSymbol,
                   (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSig.score, bestSig.analysisScore, bestLots, bestSig.rrRatio);
 
-      int ticket = ExecuteOrderSafe(bestSymbol, bestSig.cmd, bestLots, bestSig.slPrice, bestSig.tpPrice, MagicNumber, TradeComment, SlippagePoints);
+      int ticket = ExecuteOrderSafe(bestSymbol, bestSig.cmd, bestLots, bestSig.slPrice, bestSig.tpPrice, MagicNumber, TradeComment, SlippagePoints, MaxOpenPositions);
       if(ticket > 0)
       {
          RecordSymbolCooldown(bestSymbol);

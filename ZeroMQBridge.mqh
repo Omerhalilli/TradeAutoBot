@@ -822,6 +822,38 @@ string Zmq_HandleOpenOrder(const string reqJson)
    int slippage = (int)Zmq_ExtractJsonNumber(reqJson, "slippage", 5);
    string comment = Zmq_ExtractJsonString(reqJson, "comment");
    if(comment == "") comment = "TelegramTrade";
+
+   // Safeguard for autonomous orders: reject if auto-trading paused or if active position already open on symbol
+   if(StringFind(comment, "Auto_") == 0 || StringFind(comment, "AutoBot") == 0)
+   {
+      if(GlobalVariableCheck("AutoTrading_Paused") && GlobalVariableGet("AutoTrading_Paused") > 0.5)
+      {
+         return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":4109,\"message\":\"Automated trading is paused via Telegram.\"}";
+      }
+      for(int k = 0; k < OrdersTotal(); k++)
+      {
+         if(!OrderSelect(k, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+         if(AreSymbolsMatching(OrderSymbol(), sym))
+         {
+            return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":149,\"message\":\"An open position already exists on " + Zmq_JsonEscape(sym) + ".\"}";
+         }
+      }
+   }
+
+   if(!IsSymbolTradeAllowed(sym))
+   {
+      return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":133,\"message\":\"Trading is not allowed for " + Zmq_JsonEscape(sym) + ".\"}";
+   }
+   long symTradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+   if(cmd == OP_BUY && (symTradeMode == SYMBOL_TRADE_MODE_SHORTONLY || symTradeMode == SYMBOL_TRADE_MODE_DISABLED || symTradeMode == SYMBOL_TRADE_MODE_CLOSEONLY))
+   {
+      return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":133,\"message\":\"Long positions are not allowed on " + Zmq_JsonEscape(sym) + ".\"}";
+   }
+   if(cmd == OP_SELL && (symTradeMode == SYMBOL_TRADE_MODE_LONGONLY || symTradeMode == SYMBOL_TRADE_MODE_DISABLED || symTradeMode == SYMBOL_TRADE_MODE_CLOSEONLY))
+   {
+      return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":133,\"message\":\"Short positions are not allowed on " + Zmq_JsonEscape(sym) + ".\"}";
+   }
    
    color arrowClr = (cmd == OP_BUY) ? clrLimeGreen : clrTomato;
    
@@ -2068,7 +2100,7 @@ string Zmq_HandleScanSymbols(const string reqJson)
       double bid = MarketInfo(sym, MODE_BID);
       double ask = MarketInfo(sym, MODE_ASK);
       if(bid <= 0.0 || ask <= 0.0) continue;
-      if(iBars(sym, tf) < 50) continue;
+      if(iBars(sym, tf) < 205) continue;
       
       double spread = Zmq_GetSpreadPoints(sym);
       int dig = (int)MarketInfo(sym, MODE_DIGITS);

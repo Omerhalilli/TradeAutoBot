@@ -256,6 +256,58 @@ class AutonomousMultiSymbolTrader:
         """Asynchronously triggers portfolio scan in a separate worker thread."""
         return await asyncio.to_thread(self.scan_portfolio, timeframe)
 
+    def is_qualified_candidate(self, item: Dict[str, Any]) -> bool:
+        """
+        Validates whether a market scan result satisfies deep institutional analysis gates:
+        1. Signal must be BUY or SELL with Confluence Score >= 6 and score >= min_score.
+        2. Directional Trend Confirmation: strictly rejects counter-trend ("COUNTER"), opposite, or flat trends.
+        3. Higher Timeframe Confluence: H4/D1 must not contradict entry.
+        4. ADX Trend Strength: must be > 20.0 to reject flat choppy ranges.
+        5. RSI Momentum Corridor: [45.0, 65.0] for BUY, [35.0, 55.0] for SELL to reject exhaustion.
+        """
+        sig = str(item.get("signal", "HOLD")).strip().upper()
+        sc = int(item.get("score", 0))
+        trend_str = str(item.get("trend", "")).strip().upper()
+        htf_str = str(item.get("htf_trend", "")).strip().upper()
+
+        # Rule 1: Signal must be BUY or SELL with score >= 6 and score >= min_score
+        # Score < 6 (e.g. 5) is strictly prohibited from opening a trade
+        if sig not in ("BUY", "SELL") or sc < self.min_score or sc < 6:
+            return False
+
+        # Rule 2: Directional Trend Confirmation (reject opposite, counter-trend, or flat trends)
+        if sig == "BUY" and ("BEAR" in trend_str or "COUNTER" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
+            return False
+        if sig == "SELL" and ("BULL" in trend_str or "COUNTER" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
+            return False
+
+        # Rule 3: Higher Timeframe Confluence (H4 / D1 must not contradict entry)
+        if sig == "BUY" and "BEAR" in htf_str:
+            return False
+        if sig == "SELL" and "BULL" in htf_str:
+            return False
+
+        # Rule 4: ADX Trend Strength Gate (> 20.0 to reject flat choppy ranges)
+        if "adx" in item and item["adx"] is not None:
+            try:
+                if float(item["adx"]) <= 20.0:
+                    return False
+            except (ValueError, TypeError):
+                return False
+
+        # Rule 5: RSI Momentum Corridor (45-65 for BUY, 35-55 for SELL; reject exhaustion)
+        if "rsi" in item and item["rsi"] is not None:
+            try:
+                rsi_val = float(item["rsi"])
+                if sig == "BUY" and (rsi_val < 45.0 or rsi_val > 65.0):
+                    return False
+                if sig == "SELL" and (rsi_val < 35.0 or rsi_val > 55.0):
+                    return False
+            except (ValueError, TypeError):
+                return False
+
+        return True
+
     async def execute_autonomous_cycle(self, bot=None) -> List[Dict[str, Any]]:
         """
         Evaluates scan results and autonomously executes valid confluence trade setups.
@@ -343,50 +395,7 @@ class AutonomousMultiSymbolTrader:
             # Symbol Priority with Safety:
             # Filter valid confluence signals (score >= min_score, stands on 6 or past 6)
             # and sort by score descending, spread ascending, and reward-to-risk ratio descending
-            candidates = []
-            for item in results:
-                sig = str(item.get("signal", "HOLD")).strip().upper()
-                sc = int(item.get("score", 0))
-                trend_str = str(item.get("trend", "")).strip().upper()
-                htf_str = str(item.get("htf_trend", "")).strip().upper()
-
-                # Rule 1: Signal must be BUY or SELL with score >= 6 and score >= min_score
-                # Score < 6 (e.g. 5) is strictly prohibited from opening a trade
-                if sig not in ("BUY", "SELL") or sc < self.min_score or sc < 6:
-                    continue
-
-                # Rule 2: Directional Trend Confirmation (reject opposite, counter-trend, or flat trends)
-                if sig == "BUY" and ("BEAR" in trend_str or "COUNTER" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
-                    continue
-                if sig == "SELL" and ("BULL" in trend_str or "COUNTER" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
-                    continue
-
-                # Rule 3: Higher Timeframe Confluence (H4 / D1 must not contradict entry)
-                if sig == "BUY" and "BEAR" in htf_str:
-                    continue
-                if sig == "SELL" and "BULL" in htf_str:
-                    continue
-
-                # Rule 4: ADX Trend Strength Gate (> 20.0 to reject flat choppy ranges)
-                if "adx" in item:
-                    try:
-                        if float(item["adx"]) <= 20.0:
-                            continue
-                    except (ValueError, TypeError):
-                        pass
-
-                # Rule 5: RSI Momentum Corridor (45-65 for BUY, 35-55 for SELL; reject exhaustion)
-                if "rsi" in item:
-                    try:
-                        rsi_val = float(item["rsi"])
-                        if sig == "BUY" and (rsi_val < 45.0 or rsi_val > 65.0):
-                            continue
-                        if sig == "SELL" and (rsi_val < 35.0 or rsi_val > 55.0):
-                            continue
-                    except (ValueError, TypeError):
-                        pass
-
-                candidates.append(item)
+            candidates = [item for item in results if self.is_qualified_candidate(item)]
 
             def _safety_sort_key(it):
                 sc = int(it.get("score", 0))
@@ -744,8 +753,8 @@ class AutonomousMultiSymbolTrader:
                 f"[{grade} • {analysis_score:.0f}%] | {trend_badge} {trend} | Spd: <code>{spread:.1f}</code>\n"
             )
 
-            # Track top candidate for spotlight
-            if sig in ("BUY", "SELL") and score >= self.min_score and score >= 6:
+            # Track top candidate for spotlight (must satisfy all deep technical analysis gates)
+            if self.is_qualified_candidate(item):
                 rank = (analysis_score * 100.0) + (rr * 50.0) - (spread * 2.0)
                 if rank > best_rank:
                     best_rank = rank

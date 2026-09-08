@@ -879,6 +879,67 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_is_qualified_candidate_filters(self):
+        """Verifies is_qualified_candidate comprehensively enforces all institutional gates."""
+        valid_buy = {
+            "symbol": "EURUSD", "signal": "BUY", "score": 7, "trend": "STRONG BULLISH",
+            "htf_trend": "BULLISH", "adx": 25.0, "rsi": 55.0
+        }
+        self.assertTrue(self.trader.is_qualified_candidate(valid_buy))
+
+        # 1. Score < 6 rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 5}))
+
+        # 2. Counter-trend rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "trend": "COUNTER-TREND BULLISH"}))
+
+        # 3. Opposite trend rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "trend": "BEARISH"}))
+
+        # 4. Flat / Sideways rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "trend": "FLAT"}))
+
+        # 5. HTF contradiction rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "htf_trend": "BEARISH"}))
+
+        # 6. ADX <= 20 rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "adx": 19.5}))
+
+        # 7. RSI outside corridor rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "rsi": 68.0}))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "rsi": 42.0}))
+
+        # 8. Unparseable ADX/RSI rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "adx": "invalid"}))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "rsi": "invalid"}))
+
+        # 9. Valid SELL setup accepted and edge cases verified
+        valid_sell = {
+            "symbol": "GBPUSD", "signal": "SELL", "score": 7, "trend": "STRONG BEARISH",
+            "htf_trend": "BEARISH", "adx": 28.0, "rsi": 45.0
+        }
+        self.assertTrue(self.trader.is_qualified_candidate(valid_sell))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "trend": "BULLISH"}))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "trend": "COUNTER-TREND BEARISH"}))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "htf_trend": "BULLISH"}))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "rsi": 25.0}))  # oversold exhaustion
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "rsi": 60.0}))  # outside corridor
+
+    def test_format_scan_matrix_excludes_unqualified_from_spotlight(self):
+        """Verifies format_scan_matrix will NOT highlight unqualified setups as top opportunity."""
+        scan_data = {
+            "status": "ok",
+            "server_time": "2026.09.08 22:00:00",
+            "results": [
+                {
+                    "symbol": "EURUSD", "signal": "BUY", "score": 8, "trend": "COUNTER-TREND BULLISH",
+                    "analysis_score": 80.0, "spread": 10.0, "sl_pips": 30.0, "tp_pips": 60.0
+                }
+            ]
+        }
+        matrix_text = self.trader.format_scan_matrix(scan_data)
+        self.assertNotIn("TOP RANKED OPPORTUNITY", matrix_text)
+
 
 class TestTelegramAutonomousHandlers(unittest.TestCase):
     def setUp(self):
