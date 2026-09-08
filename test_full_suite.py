@@ -700,7 +700,7 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         symbols_text = autonomous_trader.format_symbols_panel()
         self.assertIn("AUTONOMOUS PORTFOLIO WATCHLIST", symbols_text)
         
-        # Verify mocked autonomous cycle
+        # Verify mocked autonomous cycle with closed bar transition
         mock_scan = {
             "status": "ok",
             "results": [
@@ -711,12 +711,15 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
                     "trend": "STRONG_BULLISH",
                     "spread": 10.0,
                     "sl_pips": 25.0,
-                    "tp_pips": 50.0
+                    "tp_pips": 50.0,
+                    "bar_time": 1788893600
                 }
             ]
         }
         mock_pos = {"status": "ok", "positions": []}
         mock_order = {"status": "ok", "ticket": 999123, "price": 1.08500}
+        autonomous_trader.seen_bar_times["EURUSD"] = 1788890000
+        autonomous_trader.last_traded_bar_times.pop("EURUSD", None)
         
         async def run_cycle():
             with patch.object(autonomous_trader, "is_autotrade_active", return_value=True), \
