@@ -90,7 +90,8 @@ class AutonomousMultiSymbolTrader:
         min_score: int = AUTOTRADE_MIN_SCORE,
         cooldown_sec: int = AUTOTRADE_COOLDOWN_MINUTES * 60,
         max_spread: float = 50.0,
-        max_positions: int = AUTOTRADE_MAX_OPEN_POSITIONS
+        max_positions: int = AUTOTRADE_MAX_OPEN_POSITIONS,
+        require_bar_transition: bool = False
     ):
         self.symbols: List[str] = symbols or list(TRADING_SYMBOLS) or list(DEFAULT_PORTFOLIO_SYMBOLS)
         # Clean symbol strings
@@ -102,12 +103,14 @@ class AutonomousMultiSymbolTrader:
         self.cooldown_sec: int = cooldown_sec
         self.max_spread: float = max_spread
         self.max_positions: int = max_positions
+        self.require_bar_transition: bool = require_bar_transition
         self.is_enabled: bool = True
         self.timeframe: str = "H1"
         self.total_trades_executed: int = 0
         self.last_trade_times: Dict[str, float] = {}
         self.last_failure_times: Dict[str, float] = {}
         self.last_traded_bar_times: Dict[str, int] = {}
+        self.seen_bar_times: Dict[str, int] = {}
         self.last_scan_data: Dict[str, Any] = {}
         self.last_scan_timestamp: float = 0.0
         self._lock = asyncio.Lock()
@@ -176,6 +179,33 @@ class AutonomousMultiSymbolTrader:
         res = zmq_client.scan_symbols(symbols=sym_str, timeframe=tf, timeout_ms=6000)
 
         if res.get("status") == "ok" and "results" in res:
+            # Ensure every result has a valid bar_time, derived from server_time if needed
+            def_bar_time = 0
+            server_time_str = res.get("server_time")
+            if server_time_str:
+                try:
+                    from datetime import datetime, timezone
+                    dt = datetime.strptime(str(server_time_str).strip(), "%Y.%m.%d %H:%M:%S")
+                    if tf == "M15":
+                        dt = dt.replace(minute=(dt.minute // 15) * 15, second=0, microsecond=0)
+                    elif tf == "M30":
+                        dt = dt.replace(minute=(dt.minute // 30) * 30, second=0, microsecond=0)
+                    elif tf == "H4":
+                        dt = dt.replace(hour=(dt.hour // 4) * 4, minute=0, second=0, microsecond=0)
+                    elif tf == "D1":
+                        dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+                    else:  # Default H1
+                        dt = dt.replace(minute=0, second=0, microsecond=0)
+                    def_bar_time = int(dt.replace(tzinfo=timezone.utc).timestamp())
+                except Exception:
+                    def_bar_time = int(time.time() // 3600) * 3600
+            else:
+                def_bar_time = int(time.time() // 3600) * 3600
+
+            for it in res.get("results", []):
+                if not it.get("bar_time"):
+                    it["bar_time"] = def_bar_time
+
             self.last_scan_data = res
             self.last_scan_timestamp = time.time()
             return res
@@ -241,6 +271,23 @@ class AutonomousMultiSymbolTrader:
             if not results:
                 return []
 
+            # Startup bar baseline tracking: seed seen_bar_times for ALL symbols in portfolio
+            if self.require_bar_transition:
+                for item in results:
+                    sym_name = str(item.get("symbol", "")).strip().upper()
+                    raw_name = str(item.get("raw_symbol", sym_name)).strip().upper()
+                    canon_name = canonical_symbol(raw_name)
+                    bt_raw = item.get("bar_time", 0)
+                    try:
+                        bt_val = int(bt_raw) if bt_raw is not None else 0
+                    except (ValueError, TypeError):
+                        bt_val = 0
+                    if bt_val > 0:
+                        if raw_name not in self.seen_bar_times and canon_name not in self.seen_bar_times:
+                            self.seen_bar_times[raw_name] = bt_val
+                            self.seen_bar_times[canon_name] = bt_val
+                            logger.debug(f"AutonomousTrader: Seeded initial startup bar {bt_val} for {raw_name}.")
+
             # 2. Check open positions & account safety
             pos_data = await asyncio.to_thread(zmq_client.get_positions)
             if pos_data.get("status") != "ok":
@@ -288,12 +335,45 @@ class AutonomousMultiSymbolTrader:
                 sig = str(item.get("signal", "HOLD")).strip().upper()
                 sc = int(item.get("score", 0))
                 trend_str = str(item.get("trend", "")).strip().upper()
-                if sig == "BUY" and "BEAR" in trend_str:
+                htf_str = str(item.get("htf_trend", "")).strip().upper()
+
+                # Rule 1: Signal must be BUY or SELL with score >= 6 and score >= min_score
+                # Score < 6 (e.g. 5) is strictly prohibited from opening a trade
+                if sig not in ("BUY", "SELL") or sc < self.min_score or sc < 6:
                     continue
-                if sig == "SELL" and "BULL" in trend_str:
+
+                # Rule 2: Directional Trend Confirmation (reject opposite or flat trends)
+                if sig == "BUY" and ("BEAR" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
                     continue
-                if sig in ("BUY", "SELL") and sc >= self.min_score and sc >= 6:
-                    candidates.append(item)
+                if sig == "SELL" and ("BULL" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
+                    continue
+
+                # Rule 3: Higher Timeframe Confluence (H4 / D1 must not contradict entry)
+                if sig == "BUY" and "BEAR" in htf_str:
+                    continue
+                if sig == "SELL" and "BULL" in htf_str:
+                    continue
+
+                # Rule 4: ADX Trend Strength Gate (> 20.0 to reject flat choppy ranges)
+                if "adx" in item:
+                    try:
+                        if float(item["adx"]) <= 20.0:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+                # Rule 5: RSI Momentum Corridor (45-65 for BUY, 35-55 for SELL; reject exhaustion)
+                if "rsi" in item:
+                    try:
+                        rsi_val = float(item["rsi"])
+                        if sig == "BUY" and (rsi_val < 45.0 or rsi_val > 65.0):
+                            continue
+                        if sig == "SELL" and (rsi_val < 35.0 or rsi_val > 55.0):
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+                candidates.append(item)
 
             def _safety_sort_key(it):
                 sc = int(it.get("score", 0))
@@ -353,21 +433,39 @@ class AutonomousMultiSymbolTrader:
                 if now - last_time < self.cooldown_sec:
                     continue
 
-                # Closed Bar Confirmation: prevent duplicate executions on the same bar
+                # Closed Bar Confirmation: prevent duplicate executions on the same bar and prevent startup entries
                 bar_time = item.get("bar_time")
-                if bar_time is not None:
-                    try:
-                        bt_val = int(bar_time)
-                        if bt_val > 0:
-                            last_bt = max(
-                                self.last_traded_bar_times.get(raw_sym, 0),
-                                self.last_traded_bar_times.get(canon_sym, 0)
-                            )
-                            if last_bt == bt_val:
-                                logger.debug(f"AutonomousTrader: Skipping {raw_sym} - bar {bt_val} already traded.")
-                                continue
-                    except (ValueError, TypeError):
-                        pass
+                try:
+                    bt_val = int(bar_time) if bar_time is not None else 0
+                except (ValueError, TypeError):
+                    bt_val = 0
+
+                if self.require_bar_transition:
+                    if bt_val <= 0:
+                        logger.debug(f"AutonomousTrader: Skipping {raw_sym} - bar time unavailable and bar transition required.")
+                        continue
+
+                    last_seen = max(
+                        self.seen_bar_times.get(raw_sym, 0),
+                        self.seen_bar_times.get(canon_sym, 0)
+                    )
+                    if last_seen == 0:
+                        self.seen_bar_times[raw_sym] = bt_val
+                        self.seen_bar_times[canon_sym] = bt_val
+                        logger.debug(f"AutonomousTrader: Seeded initial bar {bt_val} for {raw_sym}. Awaiting new bar close.")
+                        continue
+                    if bt_val <= last_seen:
+                        logger.debug(f"AutonomousTrader: Skipping {raw_sym} - bar {bt_val} <= last seen {last_seen}. Awaiting bar transition.")
+                        continue
+
+                if bt_val > 0:
+                    last_bt = max(
+                        self.last_traded_bar_times.get(raw_sym, 0),
+                        self.last_traded_bar_times.get(canon_sym, 0)
+                    )
+                    if last_bt == bt_val:
+                        logger.debug(f"AutonomousTrader: Skipping {raw_sym} - bar {bt_val} already traded.")
+                        continue
 
                 # Calculate protective SL & TP (mandatory stops with min 1.5:1 reward-to-risk)
                 sl_pips = float(item.get("sl_pips", 30.0))
@@ -456,6 +554,8 @@ class AutonomousMultiSymbolTrader:
                             if bt_val > 0:
                                 self.last_traded_bar_times[raw_sym] = bt_val
                                 self.last_traded_bar_times[canon_sym] = bt_val
+                                self.seen_bar_times[raw_sym] = bt_val
+                                self.seen_bar_times[canon_sym] = bt_val
                         except (ValueError, TypeError):
                             pass
                     open_symbols.add(raw_sym)
@@ -489,6 +589,14 @@ class AutonomousMultiSymbolTrader:
                     # Enforce 300s failure backoff to prevent spamming the MT4 terminal every cycle
                     self.last_failure_times[raw_sym] = now
                     self.last_failure_times[canon_sym] = now
+                    if bar_time is not None:
+                        try:
+                            bt_val = int(bar_time)
+                            if bt_val > 0:
+                                self.seen_bar_times[raw_sym] = bt_val
+                                self.seen_bar_times[canon_sym] = bt_val
+                        except (ValueError, TypeError):
+                            pass
 
             return executed_trades
 
@@ -788,4 +896,4 @@ class AutonomousMultiSymbolTrader:
 
 
 # Global singleton instance
-autonomous_trader = AutonomousMultiSymbolTrader()
+autonomous_trader = AutonomousMultiSymbolTrader(require_bar_transition=True)

@@ -198,12 +198,23 @@ bool Telegram_WriteOutboxPayload(const string textHtml, const string chatId = ""
    return false;
 }
 
-// Validate bot token format: must be at least 20 chars, contain ':', and not be a placeholder
-bool Telegram_IsValidBotToken(const string token)
+// Clean and normalize bot token: trim whitespace and strip optional leading "bot" prefix
+string Telegram_CleanBotToken(const string token)
 {
    string t = token;
    StringTrimLeft(t);
    StringTrimRight(t);
+   if(StringFind(t, "bot") == 0)      t = StringSubstr(t, 3);
+   else if(StringFind(t, "BOT") == 0)  t = StringSubstr(t, 3);
+   StringTrimLeft(t);
+   StringTrimRight(t);
+   return t;
+}
+
+// Validate bot token format: must be at least 20 chars, contain ':', and not be a placeholder
+bool Telegram_IsValidBotToken(const string token)
+{
+   string t = Telegram_CleanBotToken(token);
    if(StringLen(t) < 20) return false;
    int colonIdx = StringFind(t, ":");
    if(colonIdx <= 0 || colonIdx >= StringLen(t) - 1) return false;
@@ -263,7 +274,8 @@ bool Telegram_DirectPost(const string botToken, const string chatId, const strin
 {
    if(IsStopped()) return false;
    if(g_tgWebRequestDisabled) return false;
-   if(!Telegram_IsValidBotToken(botToken) || StringLen(chatId) == 0) return false;
+   string cleanToken = Telegram_CleanBotToken(botToken);
+   if(!Telegram_IsValidBotToken(cleanToken) || StringLen(chatId) == 0) return false;
    
    string escapedText = Telegram_JsonEscape(textHtml);
    string jsonPayload;
@@ -287,7 +299,7 @@ bool Telegram_DirectPost(const string botToken, const string chatId, const strin
       dataSize--;
    }
    
-   string url = "https://api.telegram.org/bot" + botToken + "/sendMessage";
+   string url = "https://api.telegram.org/bot" + cleanToken + "/sendMessage";
    string headers = "Content-Type: application/json\r\n";
    uchar resultData[];
    string resultHeaders = "";
@@ -300,10 +312,10 @@ bool Telegram_DirectPost(const string botToken, const string chatId, const strin
    }
    
    int err = GetLastError();
-   if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060)
+   if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060 || res == 401 || res == 404)
    {
       g_tgWebRequestDisabled = true;
-      PrintFormat("[Telegram] WebRequest not permitted in MT4 options (Error %d). Switched permanently to ultra-low latency outbox dispatcher.", err);
+      PrintFormat("[Telegram] WebRequest not permitted or token invalid (HTTP %d, Error %d). Switched permanently to ultra-low latency outbox dispatcher.", res, err);
    }
    else
    {
@@ -400,9 +412,10 @@ bool Telegram_SendMessage(const string botToken,
 
    string activeToken = botToken;
    string activeChat = chatId;
+   string cleanActiveToken = Telegram_CleanBotToken(activeToken);
       
-   // If direct WebRequest parameters are missing or WebRequest is disabled in MT4 options, write instantly to outbox (<0.1ms)
-   if(g_tgWebRequestDisabled || StringLen(activeToken) == 0 || StringLen(activeChat) == 0)
+   // If direct WebRequest parameters are missing, invalid, or WebRequest is disabled in MT4 options, write instantly to outbox (<0.1ms)
+   if(g_tgWebRequestDisabled || !Telegram_IsValidBotToken(cleanActiveToken) || StringLen(activeChat) == 0)
    {
       return Telegram_WriteOutboxPayload(messageTextHtml, activeChat, replyMarkupJson);
    }
@@ -410,7 +423,7 @@ bool Telegram_SendMessage(const string botToken,
    // If message queue is currently empty, attempt immediate non-blocking WebRequest (1000ms timeout max)
    if(g_tgQueueCount == 0)
    {
-      if(Telegram_DirectPost(activeToken, activeChat, messageTextHtml, replyMarkupJson, 1000))
+      if(Telegram_DirectPost(cleanActiveToken, activeChat, messageTextHtml, replyMarkupJson, 1000))
       {
          return true; // Sent successfully via WebRequest!
       }
@@ -652,9 +665,11 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    FileReadArray(fileHandle, fileBytes, 0, fileSize);
    FileClose(fileHandle);
    
+   string cleanToken = Telegram_CleanBotToken(botToken);
+
    // Validate token format: if token is empty, placeholder, or invalid, do NOT make failing WebRequest calls that pollute logs.
    // Route photo requests cleanly to the file-based outbox buffer so the Python bot daemon (which has the valid token from .env) handles delivery asynchronously.
-   if(!Telegram_IsValidBotToken(botToken) || g_tgWebRequestDisabled)
+   if(!Telegram_IsValidBotToken(cleanToken) || g_tgWebRequestDisabled)
    {
       PrintFormat("[Telegram] TelegramBotToken is empty/invalid or WebRequest disabled. Routing photo %s cleanly to outbox for Python dispatcher.", filename);
       return Telegram_WriteOutboxPhotoPayload(filename, captionHtml, chatId, replyMarkupJson);
@@ -707,7 +722,7 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    
    uchar resultData[];
    string resultHeaders = "";
-   string url = "https://api.telegram.org/bot" + botToken + "/sendPhoto";
+   string url = "https://api.telegram.org/bot" + cleanToken + "/sendPhoto";
    
    if(IsStopped())
    {
@@ -725,8 +740,18 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    }
    
    string responseBody = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
-   PrintFormat("[Telegram] Direct sendPhoto failed (HTTP Code: %d, Terminal Error: %d, Response: %s). Routing photo %s to fail-safe outbox.",
-               res, GetLastError(), responseBody, filename);
+   int termErr = GetLastError();
+   if(res == 401 || res == 404 || termErr == ERR_FUNCTION_NOT_ALLOWED || termErr == 4060)
+   {
+      g_tgWebRequestDisabled = true;
+      PrintFormat("[Telegram] Direct sendPhoto disabled (HTTP %d, Terminal Error %d). Routing photo %s cleanly to outbox for Python dispatcher.",
+                  res, termErr, filename);
+   }
+   else
+   {
+      PrintFormat("[Telegram] Direct sendPhoto failed (HTTP Code: %d, Terminal Error: %d, Response: %s). Routing photo %s to fail-safe outbox.",
+                  res, termErr, responseBody, filename);
+   }
    // Clean fallback to outbox buffer so Python bot daemon (with valid .env token) delivers photo asynchronously
    return Telegram_WriteOutboxPhotoPayload(filename, captionHtml, chatId, replyMarkupJson);
 }

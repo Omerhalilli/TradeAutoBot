@@ -2077,8 +2077,9 @@ string Zmq_HandleScanSymbols(const string reqJson)
       StrategySignal sig = EvaluateSymbolOpportunity(sym, tf, 6, 1.5, 5.0, 300.0);
       
       string signal = "HOLD";
-      if(sig.cmd == OP_BUY) signal = "BUY";
-      else if(sig.cmd == OP_SELL) signal = "SELL";
+      if(sig.valid && sig.cmd == OP_BUY && sig.score >= 6) signal = "BUY";
+      else if(sig.valid && sig.cmd == OP_SELL && sig.score >= 6) signal = "SELL";
+      else sig.score = 0;
       
       if(validCount > 0) json += ",";
       json += "{";

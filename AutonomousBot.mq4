@@ -76,6 +76,48 @@ int    g_CurrentScanIndex  = 0;
 string g_LastScannedSymbol = "None";
 int    g_LastScannedScore  = 0;
 string g_LastScannedSignal = "HOLD";
+uint   g_LastAutonomousBotTick = 0;
+
+// Multi-Symbol New Bar Tracker (guarantees trade execution only on closed confirmed bars)
+struct SymbolBarTracker {
+   string sym;
+   ENUM_TIMEFRAMES tf;
+   datetime lastBarTime;
+};
+
+#define MAX_BAR_TRACKERS 128
+SymbolBarTracker g_BarTrackers[MAX_BAR_TRACKERS];
+int g_BarTrackersCount = 0;
+
+bool IsNewBar(const string sym, const ENUM_TIMEFRAMES tf)
+{
+   datetime currentBarTime = iTime(sym, tf, 0);
+   if(currentBarTime <= 0) return false;
+   
+   for(int i = 0; i < g_BarTrackersCount; i++)
+   {
+      if(g_BarTrackers[i].sym == sym && g_BarTrackers[i].tf == tf)
+      {
+         if(currentBarTime > g_BarTrackers[i].lastBarTime)
+         {
+            g_BarTrackers[i].lastBarTime = currentBarTime;
+            return true;
+         }
+         return false; // Still inside current forming bar
+      }
+   }
+   
+   // First time encountering this symbol/tf: register current bar time and return false.
+   // Guarantees we NEVER execute trades immediately on startup or on an unconfirmed half-bar!
+   if(g_BarTrackersCount < MAX_BAR_TRACKERS)
+   {
+      g_BarTrackers[g_BarTrackersCount].sym = sym;
+      g_BarTrackers[g_BarTrackersCount].tf = tf;
+      g_BarTrackers[g_BarTrackersCount].lastBarTime = currentBarTime;
+      g_BarTrackersCount++;
+   }
+   return false;
+}
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -84,10 +126,19 @@ int OnInit()
 {
    Print("[AUTONOMOUS BOT] Initializing Ultra-Safe Multi-Symbol Autonomous Bot v2.00...");
 
+   if(MinConfluenceScore < 6 || MinConfluenceScore > 10)
+   {
+      Print("[INIT ERROR] MinConfluenceScore must be between 6 and 10 (score < 6 is strictly prohibited). Current: ", MinConfluenceScore);
+      return(INIT_FAILED);
+   }
+
    if(EmergencyKillSwitch)
    {
       Print("[AUTONOMOUS BOT] ⚠️ EMERGENCY KILL SWITCH IS ACTIVE. Auto-trading disabled.");
    }
+
+   g_BarTrackersCount = 0;
+   g_LastAutonomousBotTick = GetTickCount(); // Enforce startup stabilization delay
 
    // 1. Audit open orders and attach mandatory stops to any unprotected positions
    AuditAndEnforceOpenOrderStops(MagicNumber);
@@ -131,6 +182,15 @@ void ScanNextSymbolBatch(int batchSize = 0)
       return;
    }
 
+   uint nowTick = GetTickCount();
+   if(g_LastAutonomousBotTick == 0)
+   {
+      g_LastAutonomousBotTick = nowTick;
+      return; // Initial startup stabilization delay: never trade immediately on startup
+   }
+   if(nowTick - g_LastAutonomousBotTick < (uint)(TimerIntervalSec * 1000)) return;
+   g_LastAutonomousBotTick = nowTick;
+
    int scanCount = (batchSize > 0) ? MathMin(batchSize, g_TotalWatchlist) : g_TotalWatchlist;
    if(batchSize <= 0) g_CurrentScanIndex = 0;
 
@@ -149,6 +209,12 @@ void ScanNextSymbolBatch(int batchSize = 0)
       string sym = g_Watchlist[g_CurrentScanIndex];
       g_CurrentScanIndex = (g_CurrentScanIndex + 1) % g_TotalWatchlist;
       g_LastScannedSymbol = sym;
+
+      // Bar confirmation: each symbol must be evaluated only on a confirmed new closed bar
+      if(!IsNewBar(sym, ScanTimeframe))
+      {
+         continue;
+      }
 
       // Pre-filter dormant/disabled symbols before computing indicators
       if(!PreFilterSymbol(sym, MaxSpreadPoints, 50, ScanTimeframe, UseTimeFilter, MaxMarginUsagePct))
@@ -224,7 +290,8 @@ void ScanNextSymbolBatch(int batchSize = 0)
    }
 
    // 3. Post-scan decision: If one or more qualified opportunities found, execute the best one!
-   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSymbol != "")
+   int finalEffectiveMinScore = MathMax(6, MinConfluenceScore);
+   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= 6 && bestSig.score >= finalEffectiveMinScore && bestSymbol != "")
    {
       PrintFormat("[AUTONOMOUS PORTFOLIO SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
                   scanCount, qualifiedCount, MinConfluenceScore, bestSymbol,

@@ -549,7 +549,9 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    // 1. Minimum Confluence Score Gate: strictly enforce score >= 6 (score 5 is strictly prohibited)
    if(finalScore < effectiveMinScore || finalScore < 6 || sig.cmd < 0)
    {
+      sig.cmd = -1;
       sig.valid = false;
+      sig.score = 0;
       return sig;
    }
 
@@ -558,18 +560,21 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.score = 0;
       return sig;
    }
    if(sig.cmd == OP_BUY && adx_plus <= adx_minus)
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.score = 0;
       return sig;
    }
    if(sig.cmd == OP_SELL && adx_minus <= adx_plus)
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.score = 0;
       return sig;
    }
 
@@ -578,57 +583,65 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.score = 0;
       return sig;
    }
    if(sig.cmd == OP_SELL && (rsi < 35.0 || rsi > 55.0))
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.score = 0;
       return sig;
    }
 
    // 4. Higher Timeframe Confluence Gate (H4 and D1 must not contradict entry)
-   if(iBars(sym, PERIOD_H4) >= 50)
+   if(tf < PERIOD_H4 && iBars(sym, PERIOD_H4) >= 50)
    {
+      double h4_ema20  = iMA(sym, PERIOD_H4, 20,  0, MODE_EMA, PRICE_CLOSE, 1);
       double h4_ema50  = iMA(sym, PERIOD_H4, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
       double h4_ema200 = iMA(sym, PERIOD_H4, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
       double h4_close  = iClose(sym, PERIOD_H4, 1);
 
       if(h4_ema200 > 0.0)
       {
-         if(sig.cmd == OP_BUY && ((h4_ema50 < h4_ema200 && h4_close < h4_ema50) || h4_close < h4_ema200))
+         if(sig.cmd == OP_BUY && ((h4_ema20 < h4_ema50 && h4_ema50 < h4_ema200) || (h4_ema50 < h4_ema200 && h4_close < h4_ema50) || h4_close < h4_ema200))
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.score = 0;
             return sig; // H4 bearish stack contradicts BUY
          }
-         if(sig.cmd == OP_SELL && ((h4_ema50 > h4_ema200 && h4_close > h4_ema50) || h4_close > h4_ema200))
+         if(sig.cmd == OP_SELL && ((h4_ema20 > h4_ema50 && h4_ema50 > h4_ema200) || (h4_ema50 > h4_ema200 && h4_close > h4_ema50) || h4_close > h4_ema200))
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.score = 0;
             return sig; // H4 bullish stack contradicts SELL
          }
       }
    }
 
-   if(iBars(sym, PERIOD_D1) >= 50)
+   if(tf < PERIOD_D1 && iBars(sym, PERIOD_D1) >= 50)
    {
+      double d1_ema20  = iMA(sym, PERIOD_D1, 20,  0, MODE_EMA, PRICE_CLOSE, 1);
       double d1_ema50  = iMA(sym, PERIOD_D1, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
       double d1_ema200 = iMA(sym, PERIOD_D1, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
       double d1_close  = iClose(sym, PERIOD_D1, 1);
 
       if(d1_ema200 > 0.0)
       {
-         if(sig.cmd == OP_BUY && ((d1_ema50 < d1_ema200 && d1_close < d1_ema50) || d1_close < d1_ema200))
+         if(sig.cmd == OP_BUY && ((d1_ema20 < d1_ema50 && d1_ema50 < d1_ema200) || (d1_ema50 < d1_ema200 && d1_close < d1_ema50) || d1_close < d1_ema200))
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.score = 0;
             return sig; // D1 bearish trend contradicts BUY
          }
-         if(sig.cmd == OP_SELL && ((d1_ema50 > d1_ema200 && d1_close > d1_ema50) || d1_close > d1_ema200))
+         if(sig.cmd == OP_SELL && ((d1_ema20 > d1_ema50 && d1_ema50 > d1_ema200) || (d1_ema50 > d1_ema200 && d1_close > d1_ema50) || d1_close > d1_ema200))
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.score = 0;
             return sig; // D1 bullish trend contradicts SELL
          }
       }
@@ -637,19 +650,25 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    // 5. Volatility gate for actionable trade execution
    if(minATRPips > 0.0 && atrPips < minATRPips)
    {
+      sig.cmd = -1;
       sig.valid = false;
+      sig.score = 0;
       return sig; // Insufficient ATR volatility for trade entry
    }
    if(maxATRPips > 0.0 && atrPips > maxATRPips)
    {
+      sig.cmd = -1;
       sig.valid = false;
+      sig.score = 0;
       return sig; // Excessive volatility spike
    }
 
    // 6. Mandatory stops verification: never allow 0 SL or 0 TP
    if(sig.slPrice <= 0.0 || sig.tpPrice <= 0.0)
    {
+      sig.cmd = -1;
       sig.valid = false;
+      sig.score = 0;
       return sig;
    }
 

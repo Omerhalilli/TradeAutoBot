@@ -651,6 +651,146 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_score_5_strictly_prohibited(self):
+        """Verifies that evaluation score 5 is strictly prohibited from opening a trade."""
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD",
+                    "score": 5,  # Score 5 MUST NEVER trade!
+                    "signal": "BUY",
+                    "trend": "STRONG_BULLISH",
+                    "spread": 10.0,
+                    "sl_pips": 30.0,
+                    "tp_pips": 60.0
+                },
+                {
+                    "symbol": "GBPUSD",
+                    "score": 5,
+                    "signal": "SELL",
+                    "trend": "STRONG_BEARISH",
+                    "spread": 12.0,
+                    "sl_pips": 30.0,
+                    "tp_pips": 60.0
+                }
+            ]
+        }
+        mock_positions = {"status": "ok", "positions": []}
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
+    def test_deep_analysis_gates_reject_invalid_setups(self):
+        """Verifies deep analysis rejects ADX <= 20, RSI outside corridor, trend contradiction, and HTF contradiction."""
+        # 1. ADX <= 20 rejected
+        item_flat_adx = {
+            "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "BULLISH",
+            "adx": 18.0, "rsi": 52.0, "htf_trend": "BULLISH", "spread": 10.0
+        }
+        # 2. Overbought RSI (> 65) on BUY rejected
+        item_overbought_rsi = {
+            "symbol": "GBPUSD", "score": 8, "signal": "BUY", "trend": "BULLISH",
+            "adx": 28.0, "rsi": 72.0, "htf_trend": "BULLISH", "spread": 10.0
+        }
+        # 3. Oversold RSI (< 45) on BUY rejected
+        item_oversold_buy_rsi = {
+            "symbol": "USDJPY", "score": 8, "signal": "BUY", "trend": "BULLISH",
+            "adx": 28.0, "rsi": 40.0, "htf_trend": "BULLISH", "spread": 10.0
+        }
+        # 4. Trend contradiction rejected
+        item_trend_contradiction = {
+            "symbol": "AUDUSD", "score": 8, "signal": "BUY", "trend": "BEARISH",
+            "adx": 28.0, "rsi": 52.0, "htf_trend": "BULLISH", "spread": 10.0
+        }
+        # 5. HTF contradiction rejected
+        item_htf_contradiction = {
+            "symbol": "USDCAD", "score": 8, "signal": "BUY", "trend": "BULLISH",
+            "adx": 28.0, "rsi": 52.0, "htf_trend": "BEARISH", "spread": 10.0
+        }
+
+        mock_scan = {
+            "status": "ok",
+            "results": [item_flat_adx, item_overbought_rsi, item_oversold_buy_rsi,
+                        item_trend_contradiction, item_htf_contradiction]
+        }
+        mock_positions = {"status": "ok", "positions": []}
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
+    def test_require_bar_transition_startup_protection(self):
+        """Verifies that require_bar_transition seeds initial forming bar on startup and waits for a new bar."""
+        trader = AutonomousMultiSymbolTrader(
+            symbols=["EURUSD"],
+            min_score=6,
+            require_bar_transition=True
+        )
+
+        mock_scan_bar1 = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "STRONG_BULLISH",
+                    "adx": 28.0, "rsi": 52.0, "htf_trend": "BULLISH", "spread": 10.0,
+                    "sl_pips": 30.0, "tp_pips": 60.0, "bar_time": 1788890000
+                }
+            ]
+        }
+        mock_scan_bar2 = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "STRONG_BULLISH",
+                    "adx": 28.0, "rsi": 52.0, "htf_trend": "BULLISH", "spread": 10.0,
+                    "sl_pips": 30.0, "tp_pips": 60.0, "bar_time": 1788893600  # New Bar!
+                }
+            ]
+        }
+        mock_positions = {"status": "ok", "positions": []}
+        mock_order_res = {"status": "ok", "ticket": 888001, "price": 1.0850}
+
+        async def run_test():
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_scan_bar1), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order", return_value=mock_order_res) as mock_open:
+                # Cycle 1 on startup: initial bar is seeded into seen_bar_times; NO trade executed!
+                trades1 = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades1), 0)
+                mock_open.assert_not_called()
+                self.assertEqual(trader.seen_bar_times.get("EURUSD"), 1788890000)
+
+                # Cycle 2 during same forming bar: NO trade executed!
+                trades2 = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades2), 0)
+                mock_open.assert_not_called()
+
+            # Cycle 3 with NEW bar: trade is executed!
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_scan_bar2), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order", return_value=mock_order_res) as mock_open:
+                trades3 = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades3), 1)
+                self.assertEqual(trades3[0]["ticket"], 888001)
+                self.assertEqual(mock_open.call_count, 1)
+                self.assertEqual(trader.last_traded_bar_times.get("EURUSD"), 1788893600)
+
+        asyncio.run(run_test())
+
 
 class TestTelegramAutonomousHandlers(unittest.TestCase):
     def setUp(self):

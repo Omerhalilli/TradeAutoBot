@@ -192,11 +192,12 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 try:
                     if photo_path and os.path.exists(photo_path):
+                        caption_text = text[:1020] if text and len(text) > 1024 else text
                         with open(photo_path, "rb") as pf:
                             await context.bot.send_photo(
                                 chat_id=cid,
                                 photo=pf,
-                                caption=text if text else None,
+                                caption=caption_text if caption_text else None,
                                 parse_mode=ParseMode.HTML if parse_mode == "HTML" else None,
                                 reply_markup=reply_markup
                             )
@@ -343,9 +344,9 @@ def create_application():
     # Schedule background news alerts, MT4 outbox poller, and autonomous multi-symbol trading
     if app.job_queue:
         app.job_queue.run_repeating(news_alert_job, interval=60, first=10)
-        app.job_queue.run_repeating(outbox_alert_job, interval=0.1, first=1)
-        app.job_queue.run_repeating(autonomous_trading_job, interval=15, first=5)
-        logger.info(f"News alert (60s), MT4 outbox (100ms), and autonomous trader (15s) background schedulers registered")
+        app.job_queue.run_repeating(outbox_alert_job, interval=0.5, first=1, job_kwargs={"max_instances": 2})
+        app.job_queue.run_repeating(autonomous_trading_job, interval=15, first=20)
+        logger.info(f"News alert (60s), MT4 outbox (500ms), and autonomous trader (15s, initial delay 20s) background schedulers registered")
 
     return app
 

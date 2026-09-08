@@ -479,6 +479,7 @@ double   g_MaxLot               = 100.0;
 bool     g_AutoTradingRuntimeActive = true;
 datetime g_LastBarProcessedTime = 0;
 datetime g_LastOrderExecutionTime = 0;
+uint     g_LastAutonomousScanTick = 0;
 
 // Multi-Symbol New Bar Tracker (guarantees trade execution only on closed confirmed bars)
 struct SymbolBarTracker {
@@ -5470,6 +5471,7 @@ void AnalyzeHistoricalPerformance(SPerformanceTelemetry &telemetry)
 //+------------------------------------------------------------------+
 bool ValidateHigherTimeframeTrend(const ENUM_TIMEFRAMES htf, const ENUM_SIGNAL_DECISION signal)
 {
+   if(htf <= (ENUM_TIMEFRAMES)Period()) return true; // Only evaluate timeframes strictly higher than current chart
    if(iBars(Symbol(), htf) < 50) return true;
 
    double htfEma20  = iMA(Symbol(), htf, EMA_Fast_Period,   0, MODE_EMA, EMA_AppliedPrice, 1);
@@ -5479,10 +5481,10 @@ bool ValidateHigherTimeframeTrend(const ENUM_TIMEFRAMES htf, const ENUM_SIGNAL_D
 
    if(signal == SIGNAL_LONG)
    {
-      // Higher timeframe must not contradict BUY: reject if bearish stack or price below EMA 200
+      // Higher timeframe must not contradict BUY: reject if bearish stack, price below EMA 50 in downtrend, or price below EMA 200
       if(htfEma200 > 0.0)
       {
-         if((htfEma20 < htfEma50 && htfEma50 < htfEma200) || htfClose < htfEma200)
+         if((htfEma20 < htfEma50 && htfEma50 < htfEma200) || (htfEma50 < htfEma200 && htfClose < htfEma50) || htfClose < htfEma200)
          {
             PrintFormat("[HTF VETO] Long signal contradicts %s bearish trend stack/EMA200", EnumToString(htf));
             return false;
@@ -5496,10 +5498,10 @@ bool ValidateHigherTimeframeTrend(const ENUM_TIMEFRAMES htf, const ENUM_SIGNAL_D
    }
    else if(signal == SIGNAL_SHORT)
    {
-      // Higher timeframe must not contradict SELL: reject if bullish stack or price above EMA 200
+      // Higher timeframe must not contradict SELL: reject if bullish stack, price above EMA 50 in uptrend, or price above EMA 200
       if(htfEma200 > 0.0)
       {
-         if((htfEma20 > htfEma50 && htfEma50 > htfEma200) || htfClose > htfEma200)
+         if((htfEma20 > htfEma50 && htfEma50 > htfEma200) || (htfEma50 > htfEma200 && htfClose > htfEma50) || htfClose > htfEma200)
          {
             PrintFormat("[HTF VETO] Short signal contradicts %s bullish trend stack/EMA200", EnumToString(htf));
             return false;
@@ -6812,12 +6814,14 @@ int OnInit()
 
    // === STEP 2: RUNTIME FLAG INITIALIZATION ===
    g_AutoTradingRuntimeActive = UseAutoTrading;
+   g_BarTrackersCount = 0; // Reset bar tracker collection for clean startup
    datetime currentBar0 = iTime(Symbol(), Period(), 0);
    g_LastBarProcessedTime = (currentBar0 > 0) ? currentBar0 : 0;
    if(currentBar0 > 0)
    {
       IsNewBar(Symbol(), (ENUM_TIMEFRAMES)Period()); // Lock current forming bar into tracker: never trade on startup tick
    }
+   g_LastAutonomousScanTick = GetTickCount(); // Enforce full startup stabilization delay for background multi-symbol scanner
 
    // === STEP 3: INPUT PARAMETER VALIDATION ===
    if(MinRequiredScore < 6 || MinRequiredScore > 10)
@@ -6976,15 +6980,14 @@ void Autonomous_MultiSymbolScan()
       return;
    }
    
-   static uint s_lastAutonomousScanTick = 0;
    uint nowTick = GetTickCount();
-   if(s_lastAutonomousScanTick == 0)
+   if(g_LastAutonomousScanTick == 0)
    {
-      s_lastAutonomousScanTick = nowTick;
+      g_LastAutonomousScanTick = nowTick;
       return; // Initial startup stabilization delay: never trade immediately on startup
    }
-   if(nowTick - s_lastAutonomousScanTick < (uint)(AutonomousScanIntervalSec * 1000)) return;
-   s_lastAutonomousScanTick = nowTick;
+   if(nowTick - g_LastAutonomousScanTick < (uint)(AutonomousScanIntervalSec * 1000)) return;
+   g_LastAutonomousScanTick = nowTick;
 
    // 3. Build watchlist: dynamic discovery from Market Watch or whitelist
    string scanSymbols[];
@@ -7299,36 +7302,31 @@ void OnTick()
    int finalWinningScore = 0;
    int effectiveMinScore = MathMax(6, MinRequiredScore);
 
-   // Strict Directional Trend Confirmation: EMA 20 > EMA 50 > EMA 200 for BUY, or EMA 20 < EMA 50 < EMA 200 for SELL
+   // Strict Directional Trend Confirmation: EMA 20 > EMA 50 > EMA 200 and Price > EMA 200 for BUY, or EMA 20 < EMA 50 < EMA 200 and Price < EMA 200 for SELL
    // If score is < 6 (e.g. 5), opening a trade is STRICTLY PROHIBITED
-   if(buyScore >= effectiveMinScore && buyScore > sellScore)
+   double ema20  = iMA(Symbol(), Period(), EMA_Fast_Period,   0, MODE_EMA, EMA_AppliedPrice, 1);
+   double ema50  = iMA(Symbol(), Period(), EMA_Medium_Period, 0, MODE_EMA, EMA_AppliedPrice, 1);
+   double ema200 = iMA(Symbol(), Period(), EMA_Slow_Period,   0, MODE_EMA, EMA_AppliedPrice, 1);
+   double close1 = iClose(Symbol(), Period(), 1);
+
+   bool buyTrendConfirmed  = (ema200 > 0.0) ? (ema20 > ema50 && ema50 > ema200 && close1 > ema200) : (ema20 > ema50);
+   bool sellTrendConfirmed = (ema200 > 0.0) ? (ema20 < ema50 && ema50 < ema200 && close1 < ema200) : (ema20 < ema50);
+
+   if(buyScore >= effectiveMinScore && buyScore > sellScore && buyTrendConfirmed && g_ActiveTrendRegime == TREND_STRONG_BULLISH)
    {
-      if(g_ActiveTrendRegime == TREND_STRONG_BULLISH)
-      {
-         decision = SIGNAL_LONG;
-         finalWinningScore = buyScore;
-         g_LastSignalVerdict = "BUY";
-      }
-      else
-      {
-         g_LastSignalVerdict = "NONE";
-      }
+      decision = SIGNAL_LONG;
+      finalWinningScore = buyScore;
+      g_LastSignalVerdict = "BUY";
    }
-   else if(sellScore >= effectiveMinScore && sellScore > buyScore)
+   else if(sellScore >= effectiveMinScore && sellScore > buyScore && sellTrendConfirmed && g_ActiveTrendRegime == TREND_STRONG_BEARISH)
    {
-      if(g_ActiveTrendRegime == TREND_STRONG_BEARISH)
-      {
-         decision = SIGNAL_SHORT;
-         finalWinningScore = sellScore;
-         g_LastSignalVerdict = "SELL";
-      }
-      else
-      {
-         g_LastSignalVerdict = "NONE";
-      }
+      decision = SIGNAL_SHORT;
+      finalWinningScore = sellScore;
+      g_LastSignalVerdict = "SELL";
    }
    else
    {
+      decision = SIGNAL_NEUTRAL;
       g_LastSignalVerdict = "NONE";
    }
 
