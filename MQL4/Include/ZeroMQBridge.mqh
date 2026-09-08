@@ -7,6 +7,7 @@
 
 #include <Zmq/Zmq.mqh>
 #include <SymbolManager.mqh>
+#include <RiskController.mqh>
 
 //+------------------------------------------------------------------+
 //| INPUT / CONFIG                                                   |
@@ -1241,6 +1242,8 @@ string Zmq_HandleResetSafeguards()
    g_DailyTargetCircuitTripped = false;
    g_PropLockoutActive = false;
    g_AutoTradingRuntimeActive = true;
+   
+   ResetRiskSafeguards();
    
    PrintFormat("[SAFEGUARDS RESET] Account #%d risk anchors reset to live equity $%.2f", accNum, curEquity);
    

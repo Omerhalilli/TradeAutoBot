@@ -318,7 +318,7 @@ bool IsSessionActiveForSymbol(string sym)
       return true;
    }
    
-   return true; // Outside core hours, PreFilterSymbol spread check provides secondary guard
+   return false; // Outside active liquid session hours
 }
 
 //+------------------------------------------------------------------+

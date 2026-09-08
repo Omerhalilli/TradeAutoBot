@@ -68,8 +68,9 @@ class RiskManager:
             if self._consecutive_losses >= max_losses:
                 cooldown_sec = getattr(self.config.risk, "consecutive_loss_cooldown_sec", 1800)
                 self._consecutive_pause_until = time.time() + cooldown_sec
+                self._consecutive_losses = 0  # Reset streak counter so next sequence requires full count
                 logger.warning(
-                    f"RiskManager: {self._consecutive_losses} consecutive losses reached. "
+                    f"RiskManager: {max_losses} consecutive losses reached. "
                     f"Cooldown activated for {cooldown_sec} seconds."
                 )
         else:
@@ -132,6 +133,42 @@ class RiskManager:
         if time.time() < self._consecutive_pause_until:
             result.passed = False
             result.reason = f"Consecutive loss cooldown is active until {time.ctime(self._consecutive_pause_until)}."
+            return result
+
+        # Check 0f: Maximum Risk Per Trade (e.g. 0.5% of equity/balance)
+        sym_upper = symbol.upper()
+        pip_size = 0.01 if ("JPY" in sym_upper or "XAU" in sym_upper or "OIL" in sym_upper) else 0.0001
+        sl_pips = sl_dist / pip_size if pip_size > 0 else 30.0
+        pip_val = 100.0 if "XAU" in sym_upper else (9.0 if "JPY" in sym_upper else 10.0)
+        est_trade_risk_cash = sl_pips * pip_val * lots
+        trade_risk_pct = (est_trade_risk_cash / equity * 100.0) if equity > 0 else 0.0
+        result.risk_pct = round(trade_risk_pct, 2)
+
+        max_risk_pct = getattr(self.config.risk, "max_account_risk_pct", 0.5)
+        # Allow minor rounding tolerance up to 1.1x max risk for minimum broker lot size (0.01)
+        if trade_risk_pct > max_risk_pct * 1.10 and lots > 0.01:
+            result.passed = False
+            result.reason = f"Calculated trade risk ({trade_risk_pct:.2f}%) exceeds maximum per-trade limit ({max_risk_pct:.2f}%)."
+            return result
+
+        # Check 0g: Global Portfolio Risk Limit (Cap total risk across all open positions)
+        total_open_risk_cash = 0.0
+        for p in open_positions:
+            p_lots = float(p.get("lots", 0.0))
+            p_price = float(p.get("price", p.get("open_price", 0.0)))
+            p_sl = float(p.get("sl", 0.0))
+            p_sym = str(p.get("symbol", "")).upper()
+            if p_sl > 0 and p_price > 0 and p_lots > 0:
+                p_pip_sz = 0.01 if ("JPY" in p_sym or "XAU" in p_sym or "OIL" in p_sym) else 0.0001
+                p_pips = abs(p_price - p_sl) / p_pip_sz
+                p_pv = 100.0 if "XAU" in p_sym else (9.0 if "JPY" in p_sym else 10.0)
+                total_open_risk_cash += p_pips * p_pv * p_lots
+
+        portfolio_risk_pct = ((total_open_risk_cash + est_trade_risk_cash) / equity * 100.0) if equity > 0 else 0.0
+        max_global_risk = getattr(self.config.risk, "max_global_risk_pct", 2.0)
+        if portfolio_risk_pct > (max_global_risk + 0.05) and lots > 0.01:
+            result.passed = False
+            result.reason = f"Projected portfolio risk ({portfolio_risk_pct:.2f}%) exceeds global limit ({max_global_risk:.2f}%)."
             return result
 
         # Check 1: Daily Loss Circuit Breaker

@@ -213,6 +213,7 @@ MAX_MARGIN_USAGE_PCT: float = float(_get_setting("MAX_MARGIN_USAGE_PCT", "RISK",
 MIN_RISK_REWARD_RATIO: float = float(_get_setting("MIN_RISK_REWARD_RATIO", "RISK", "min_risk_reward_ratio", 1.5))
 MAX_CONSECUTIVE_LOSSES: int = int(_get_setting("MAX_CONSECUTIVE_LOSSES", "RISK", "max_consecutive_losses", 3))
 CONSECUTIVE_LOSS_COOLDOWN_SEC: int = int(_get_setting("CONSECUTIVE_LOSS_COOLDOWN_SEC", "RISK", "consecutive_loss_cooldown_sec", 1800))
+MAX_GLOBAL_RISK_PCT: float = float(_get_setting("MAX_GLOBAL_RISK_PCT", "RISK", "max_global_risk_pct", 2.0))
 MAX_LOTS_PER_SYMBOL: float = float(_get_setting("MAX_LOTS_PER_SYMBOL", "RISK", "max_lots_per_symbol", 5.0))
 MAX_TOTAL_LOTS: float = float(_get_setting("MAX_TOTAL_LOTS", "RISK", "max_total_lots", 15.0))
 ENABLE_TRAILING_STOP: bool = str(_get_setting("ENABLE_TRAILING_STOP", "RISK", "enable_trailing_stop", "true")).lower() in ("true", "1", "yes")

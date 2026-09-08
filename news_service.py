@@ -236,5 +236,54 @@ class EconomicNewsService:
 
         return due_events
 
+    def is_news_imminent_for_currency(self, currencies: List[str], window_minutes: int = 30) -> bool:
+        """
+        Determines whether high-impact economic news is occurring within window_minutes (lead/lag).
+        Also maintains the MT4 flag file news_blocked.flag for MQL4 safety gates.
+        """
+        try:
+            events = self.fetch_events()
+            now_utc = datetime.now(timezone.utc)
+            curr_set = {str(c).upper().strip() for c in currencies if str(c).strip()}
+
+            is_blocked = False
+            for ev in events:
+                if ev.get("impact") != "High":
+                    continue
+                ev_country = str(ev.get("country", "")).upper().strip()
+                if curr_set and ev_country not in curr_set and "ALL" not in curr_set:
+                    continue
+
+                ev_time = ev.get("utc_datetime")
+                if not ev_time:
+                    continue
+
+                diff_minutes = abs((ev_time - now_utc).total_seconds()) / 60.0
+                if diff_minutes <= window_minutes:
+                    is_blocked = True
+                    break
+
+            # Sync MT4 flag file if MT4 files directory exists
+            try:
+                from config import MT4_FILES_DIR
+                if MT4_FILES_DIR and os.path.exists(MT4_FILES_DIR):
+                    flag_file = os.path.join(MT4_FILES_DIR, "news_blocked.flag")
+                    if is_blocked and not os.path.exists(flag_file):
+                        with open(flag_file, "w", encoding="utf-8") as f:
+                            f.write(f"BLOCKED\nTimestamp={int(now_utc.timestamp())}\n")
+                    elif not is_blocked and os.path.exists(flag_file):
+                        try:
+                            os.remove(flag_file)
+                        except OSError:
+                            pass
+            except Exception:
+                pass
+
+            return is_blocked
+        except Exception as e:
+            logger.debug(f"is_news_imminent_for_currency exception: {e}")
+            return False
+
 # Global singleton news service
 news_service = EconomicNewsService()
+

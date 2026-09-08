@@ -224,16 +224,50 @@ void UpdateChartHUD()
    double freeMargin = AccountFreeMargin();
    double marginLevel = (AccountMargin() > 0.0) ? ((equity / AccountMargin()) * 100.0) : 0.0;
 
-   double peakEq = GlobalVariableCheck("AT_PEAK_EQUITY") ? GlobalVariableGet("AT_PEAK_EQUITY") : equity;
+   string gvPeak = GetAccountRiskGVKey("AT_PEAK_EQ");
+   double peakEq = GlobalVariableCheck(gvPeak) ? GlobalVariableGet(gvPeak) : (GlobalVariableCheck("AT_PEAK_EQUITY") ? GlobalVariableGet("AT_PEAK_EQUITY") : equity);
    double peakDD = (peakEq > 0.0) ? (((peakEq - equity) / peakEq) * 100.0) : 0.0;
 
-   double dayPeak = GlobalVariableCheck("AT_CB_PEAK_D") ? GlobalVariableGet("AT_CB_PEAK_D") : equity;
+   string gvDayP = GetAccountRiskGVKey("AT_CB_PEAK_D");
+   double dayPeak = GlobalVariableCheck(gvDayP) ? GlobalVariableGet(gvDayP) : (GlobalVariableCheck("AT_CB_PEAK_D") ? GlobalVariableGet("AT_CB_PEAK_D") : equity);
    double dayDD   = (dayPeak > 0.0) ? (((dayPeak - equity) / dayPeak) * 100.0) : 0.0;
 
+   string gvDayStart = GetAccountRiskGVKey("AT_CB_STARTEQ_D");
+   double dayStartEq = GlobalVariableCheck(gvDayStart) ? GlobalVariableGet(gvDayStart) : (GlobalVariableCheck("AT_CB_STARTEQ_D") ? GlobalVariableGet("AT_CB_STARTEQ_D") : equity);
+   if(dayStartEq <= 0.0) dayStartEq = equity;
+
+   // Remaining Daily Loss Allowance calculation
+   double maxDailyDollar = dayStartEq * (MaxDailyLossPct / 100.0);
+   double currentDailyLossDollar = MathMax(0.0, dayPeak - equity);
+   double remainingDailyLossDollar = MathMax(0.0, maxDailyDollar - currentDailyLossDollar);
+   double remainingDailyLossPct = (dayStartEq > 0.0) ? ((remainingDailyLossDollar / dayStartEq) * 100.0) : 0.0;
+
+   // Total Portfolio Exposure calculation
+   double totalRiskExposure = 0.0;
+   int totOrders = OrdersTotal();
+   for(int o = 0; o < totOrders; o++)
+   {
+      if(!OrderSelect(o, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+      if(MagicNumber != -1 && OrderMagicNumber() != MagicNumber) continue;
+
+      string oSym = OrderSymbol();
+      double oOpen = OrderOpenPrice();
+      double oSL = OrderStopLoss();
+      double oPipPt = GetSymbolPipSize(oSym);
+      double oPipVal = GetSymbolPipValue(oSym);
+      double oSLPips = (oSL > 0.0 && oPipPt > 0.0) ? (MathAbs(oOpen - oSL) / oPipPt) : 30.0;
+      totalRiskExposure += (oSLPips * oPipVal * OrderLots());
+   }
+   double totalExposurePct = (equity > 0.0) ? ((totalRiskExposure / equity) * 100.0) : 0.0;
+
    int activePos = GetGlobalActivePositions(MagicNumber);
-   bool isDDHalted = GlobalVariableCheck("AT_DD_HALTED") && (GlobalVariableGet("AT_DD_HALTED") > 0.5);
-   bool isDayHalted = GlobalVariableCheck("AT_CB_TRIPPED_D") && (GlobalVariableGet("AT_CB_TRIPPED_D") > 0.5);
-   bool isPaused = GlobalVariableCheck("AT_CONSEC_PAUSE_UNTIL") && (TimeCurrent() < (datetime)GlobalVariableGet("AT_CONSEC_PAUSE_UNTIL"));
+   bool isDDHalted = (GlobalVariableCheck(GetAccountRiskGVKey("AT_DD_HALT")) && GlobalVariableGet(GetAccountRiskGVKey("AT_DD_HALT")) > 0.5) ||
+                     (GlobalVariableCheck("AT_DD_HALTED") && GlobalVariableGet("AT_DD_HALTED") > 0.5);
+   bool isDayHalted = (GlobalVariableCheck(GetAccountRiskGVKey("AT_CB_TRIPPED_D")) && GlobalVariableGet(GetAccountRiskGVKey("AT_CB_TRIPPED_D")) > 0.5) ||
+                      (GlobalVariableCheck("AT_CB_TRIPPED_D") && GlobalVariableGet("AT_CB_TRIPPED_D") > 0.5);
+   bool isPaused = (GlobalVariableCheck(GetAccountRiskGVKey("AT_CONSEC_PAUSE")) && (TimeCurrent() < (datetime)GlobalVariableGet(GetAccountRiskGVKey("AT_CONSEC_PAUSE")))) ||
+                   (GlobalVariableCheck("AT_CONSEC_PAUSE_UNTIL") && (TimeCurrent() < (datetime)GlobalVariableGet("AT_CONSEC_PAUSE_UNTIL")));
 
    string statusStr = "🟢 ACTIVE & SCANNING";
    if(EmergencyKillSwitch) statusStr = "🚨 KILL SWITCH ACTIVE (HALTED)";
@@ -250,6 +284,8 @@ void UpdateChartHUD()
       "Free Margin: $%.2f | Margin Level: %.1f%%\n" +
       "Peak Equity: $%.2f | Peak Drawdown: %.2f%% (Limit: %.1f%%)\n" +
       "Intraday Drawdown: %.2f%% (Limit: %.1f%%)\n" +
+      "Remaining Daily Allowance: $%.2f (%.2f%%)\n" +
+      "Total Risk Exposure: $%.2f (%.2f%% / Limit: %.1f%%)\n" +
       "-----------------------------------------------\n" +
       "Open Positions: %d / %d (Max)\n" +
       "Max Risk Per Trade: %.1f%% | Max Global Risk: %.1f%%\n" +
@@ -259,6 +295,8 @@ void UpdateChartHUD()
       "===============================================",
       statusStr, balance, equity, freeMargin, marginLevel,
       peakEq, peakDD, MaxDrawdownPct, dayDD, MaxDailyLossPct,
+      remainingDailyLossDollar, remainingDailyLossPct,
+      totalRiskExposure, totalExposurePct, MaxGlobalRiskPct,
       activePos, MaxOpenPositions, MaxRiskPerTradePct, MaxGlobalRiskPct,
       MinConfluenceScore, MinRewardToRisk, MaxSpreadPoints,
       g_TotalWatchlist, g_LastScannedSymbol, g_LastScannedSignal, g_LastScannedScore

@@ -2422,7 +2422,14 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
          {
             if(!SafeOrderModify(ticket, currentExecPrice, stopLoss, takeProfit, 0, arrowColor))
             {
-               PrintFormat("[ECN WARNING] Failed to attach SL/TP on Ticket #%d after execution.", ticket);
+               PrintFormat("[CRITICAL SAFETY ERROR] Failed to attach SL/TP on Ticket #%d. Liquidating naked position immediately!", ticket);
+               double closePrice = (command == OP_BUY ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK));
+               bool closed = OrderClose(ticket, volume, closePrice, slippage, clrRed);
+               if(!closed)
+               {
+                  PrintFormat("[FATAL] Immediate liquidation failed for Ticket #%d! Error: %d", ticket, GetLastError());
+               }
+               return -1;
             }
          }
 

@@ -110,6 +110,22 @@ class AutonomousMultiSymbolTrader:
         self.last_scan_data: Dict[str, Any] = {}
         self.last_scan_timestamp: float = 0.0
         self._lock = asyncio.Lock()
+        self._risk_manager = None
+        self._position_sizer = None
+
+    @property
+    def risk_manager(self):
+        if self._risk_manager is None:
+            from autotrade.risk.risk_manager import RiskManager
+            self._risk_manager = RiskManager()
+        return self._risk_manager
+
+    @property
+    def position_sizer(self):
+        if self._position_sizer is None:
+            from autotrade.risk.position_sizer import PositionSizer
+            self._position_sizer = PositionSizer()
+        return self._position_sizer
 
     def is_autotrade_active(self) -> bool:
         """Reads external flag file and checks internal state."""
@@ -245,18 +261,42 @@ class AutonomousMultiSymbolTrader:
             executed_trades: List[Dict[str, Any]] = []
             now = time.time()
 
+            # Retrieve account balance/equity metrics for accurate risk sizing & checks
+            try:
+                acc_data = await asyncio.to_thread(zmq_client.get_account)
+            except Exception:
+                acc_data = {}
+            if not isinstance(acc_data, dict) or acc_data.get("status") != "ok":
+                acc_data = {"status": "ok", "balance": 10000.0, "equity": 10000.0, "margin_free": 10000.0}
+            acc_equity = float(acc_data.get("equity", acc_data.get("balance", 10000.0)))
+
+            # Symbol Priority with Safety:
+            # Filter valid confluence signals (score >= min_score, stands on 6 or past 6)
+            # and sort by score descending, spread ascending, and reward-to-risk ratio descending
+            candidates = []
             for item in results:
+                sig = str(item.get("signal", "HOLD")).strip().upper()
+                sc = int(item.get("score", 0))
+                if sig in ("BUY", "SELL") and sc >= self.min_score:
+                    candidates.append(item)
+
+            def _safety_sort_key(it):
+                sc = int(it.get("score", 0))
+                sp = float(it.get("spread", 999.0))
+                sl_p = float(it.get("sl_pips", 30.0))
+                tp_p = float(it.get("tp_pips", 60.0))
+                rr = (tp_p / sl_p) if sl_p > 0 else 1.0
+                return (-sc, sp, -rr)
+
+            candidates.sort(key=_safety_sort_key)
+
+            for item in candidates:
                 raw_sym = str(item.get("symbol", "")).strip().upper()
                 canon_sym = canonical_symbol(raw_sym)
                 score = int(item.get("score", 0))
                 signal = str(item.get("signal", "HOLD")).strip().upper()
                 spread = float(item.get("spread", 0.0))
 
-                # Filtering checks
-                if signal not in ("BUY", "SELL"):
-                    continue
-                if score < self.min_score:
-                    continue
                 if raw_sym in open_symbols or canon_sym in canonical_open_symbols:
                     continue  # Already in an active trade on this symbol
                 
@@ -303,10 +343,51 @@ class AutonomousMultiSymbolTrader:
                 if sl_pips <= 0.0 or tp_pips <= 0.0:
                     continue  # Refuse trade without valid stops
 
-                # Determine lot size safely
-                lots = float(DEFAULT_FIXED_LOT)
+                entry_ref = float(item.get("ask" if signal == "BUY" else "bid", 0.0))
+                if entry_ref <= 0.0:
+                    entry_ref = 1.2500 if "GBP" in canon_sym else (1.0800 if "EUR" in canon_sym else (2350.0 if "XAU" in canon_sym else (150.0 if "JPY" in canon_sym else 1.0000)))
+
+                pip_unit = 0.01 if ("JPY" in canon_sym or "XAU" in canon_sym or "OIL" in canon_sym) else 0.0001
+                sl_dist = sl_pips * pip_unit
+                tp_dist = tp_pips * pip_unit
+                sl_price = round(entry_ref - sl_dist, 5) if signal == "BUY" else round(entry_ref + sl_dist, 5)
+                tp_price = round(entry_ref + tp_dist, 5) if signal == "BUY" else round(entry_ref - tp_dist, 5)
+
+                # Determine lot size safely via percentage-based risk sizing (0.5% default)
+                lots = self.position_sizer.calculate_lot_size(
+                    symbol=raw_sym,
+                    method="percentage_risk",
+                    balance=acc_equity,
+                    entry_price=entry_ref,
+                    stop_loss=sl_price
+                )
                 if lots <= 0.0:
                     lots = 0.01
+
+                # News blackout filter
+                is_news = False
+                try:
+                    from news_service import news_service
+                    is_news = news_service.is_news_imminent_for_currency([cand_base, cand_quote])
+                except Exception:
+                    pass
+
+                # Pre-flight institutional risk check (drawdown, margin, daily loss, consecutive cooldown, correlation)
+                risk_res = self.risk_manager.evaluate_order_risk(
+                    symbol=raw_sym,
+                    cmd=signal,
+                    lots=lots,
+                    price=entry_ref,
+                    sl=sl_price,
+                    tp=tp_price,
+                    account_info=acc_data,
+                    open_positions=open_positions,
+                    is_news_imminent=is_news
+                )
+                if not risk_res.passed:
+                    logger.info(f"AutonomousTrader: Pre-flight risk veto for {raw_sym}: {risk_res.reason}")
+                    continue
+                lots = risk_res.adjusted_lots
 
                 # Execute order directly on MetaTrader
                 logger.info(

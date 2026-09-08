@@ -213,7 +213,8 @@ class SourceCompiler:
 
         mq4_files = [
             os.path.join(self.root_dir, "SmartAutoTradeEA_Pro.mq4"),
-            os.path.join(self.root_dir, "MT4_ZeroMQ_Bridge.mq4")
+            os.path.join(self.root_dir, "MT4_ZeroMQ_Bridge.mq4"),
+            os.path.join(self.root_dir, "AutonomousBot.mq4")
         ]
         
         results = {}

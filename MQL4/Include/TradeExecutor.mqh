@@ -330,6 +330,7 @@ void Executor_ManageOpenPositions(int magicFilter = -1,
          if(cmd == OP_BUY)
          {
             newSL = NormalizeDouble(bid - (trailStepPips * pipPt), dig);
+            if(newSL < openPrice) newSL = openPrice;
             if(newSL > currentSL + (pipPt * 2.0) && newSL < bid)
             {
                needsTrail = true;
@@ -338,6 +339,7 @@ void Executor_ManageOpenPositions(int magicFilter = -1,
          else if(cmd == OP_SELL)
          {
             newSL = NormalizeDouble(ask + (trailStepPips * pipPt), dig);
+            if(newSL > openPrice) newSL = openPrice;
             if((currentSL <= 0.0 || newSL < currentSL - (pipPt * 2.0)) && newSL > ask)
             {
                needsTrail = true;

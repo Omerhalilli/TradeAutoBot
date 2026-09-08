@@ -212,13 +212,23 @@ int CloseAllPositions(int magicFilter = -1, int slippage = 15, string reason = "
 }
 
 //+------------------------------------------------------------------+
+//| Get Account-Specific Global Variable Key                         |
+//+------------------------------------------------------------------+
+string GetAccountRiskGVKey(string prefix)
+{
+   return StringFormat("%s_%d", prefix, AccountNumber());
+}
+
+//+------------------------------------------------------------------+
 //| Peak Equity Drawdown Limit (Global Account Protection)          |
 //| Stops bot and liquidates all positions if drawdown >= limit      |
+//| Trading halts until manually reset or equity recovers above safe |
+//| threshold (e.g. <= 5.0% drawdown).                               |
 //+------------------------------------------------------------------+
-bool CheckPeakDrawdownLimit(double maxDrawdownPct = 10.0, int magicFilter = -1, bool autoLiquidate = true)
+bool CheckPeakDrawdownLimit(double maxDrawdownPct = 10.0, int magicFilter = -1, bool autoLiquidate = true, double recoveryThresholdPct = 5.0)
 {
-   string gvPeakKey = "AT_PEAK_EQUITY";
-   string gvHaltKey = "AT_DD_HALTED";
+   string gvPeakKey = GetAccountRiskGVKey("AT_PEAK_EQ");
+   string gvHaltKey = GetAccountRiskGVKey("AT_DD_HALT");
 
    double currentEquity = AccountEquity();
    if(currentEquity <= 0.0) currentEquity = AccountBalance();
@@ -235,17 +245,31 @@ bool CheckPeakDrawdownLimit(double maxDrawdownPct = 10.0, int magicFilter = -1, 
       peakEquity = currentEquity;
       GlobalVariableSet(gvPeakKey, peakEquity);
    }
+   GlobalVariableSet("AT_PEAK_EQUITY", peakEquity);
 
-   // If already tripped, halt trading
-   if(GlobalVariableCheck(gvHaltKey) && GlobalVariableGet(gvHaltKey) > 0.5)
+   double ddPct = (peakEquity > 0.0) ? (((peakEquity - currentEquity) / peakEquity) * 100.0) : 0.0;
+
+   // Check if already tripped
+   bool isHalted = (GlobalVariableCheck(gvHaltKey) && GlobalVariableGet(gvHaltKey) > 0.5) ||
+                   (GlobalVariableCheck("AT_DD_HALTED") && GlobalVariableGet("AT_DD_HALTED") > 0.5);
+   if(isHalted)
    {
+      // Auto-recovery: resume trading if equity recovers above safe threshold
+      if(ddPct <= recoveryThresholdPct)
+      {
+         GlobalVariableDel(gvHaltKey);
+         GlobalVariableDel("AT_DD_HALTED");
+         PrintFormat("[MAX DRAWDOWN CIRCUIT BREAKER] Equity recovered above safe threshold (DD: %.2f%% <= %.2f%%). Resuming trading.",
+                     ddPct, recoveryThresholdPct);
+         return false;
+      }
       return true;
    }
 
-   double ddPct = (peakEquity > 0.0) ? (((peakEquity - currentEquity) / peakEquity) * 100.0) : 0.0;
    if(ddPct >= maxDrawdownPct)
    {
       GlobalVariableSet(gvHaltKey, 1.0);
+      GlobalVariableSet("AT_DD_HALTED", 1.0);
       PrintFormat("[MAX DRAWDOWN CIRCUIT BREAKER] Peak drawdown limit breached: %.2f%% >= %.2f%% (Peak: $%.2f, Equity: $%.2f). Halting bot!",
                   ddPct, maxDrawdownPct, peakEquity, currentEquity);
 
@@ -263,7 +287,7 @@ bool CheckPeakDrawdownLimit(double maxDrawdownPct = 10.0, int magicFilter = -1, 
          "• <b>Drawdown:</b> <b>%.2f%%</b> (Limit: <b>%.2f%%</b>)\n" +
          "• <b>Action:</b> All open positions liquidated. Autonomous trading HALTED.\n" +
          "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-         "<i>Use /reset_risk to reset safeguards after reviewing.</i>",
+         "<i>Use /reset_risk to reset safeguards or deposit funds to recover above safe threshold.</i>",
          peakEquity, currentEquity, ddPct, maxDrawdownPct
       );
       Telegram_WriteOutboxPayload(alertMsg, "", "");
@@ -288,18 +312,18 @@ bool CheckPeriodicLossLimits(double maxDailyLossPct = 2.0, double maxWeeklyLossP
    datetime monthStart = iTime(Symbol(), PERIOD_MN1, 0);
    if(monthStart <= 0) monthStart = today;
 
-   string gvDayDate    = "AT_CB_DATE_D";
-   string gvDayPeak    = "AT_CB_PEAK_D";
-   string gvDayStartEq = "AT_CB_STARTEQ_D";
-   string gvDayTrip    = "AT_CB_TRIPPED_D";
+   string gvDayDate    = GetAccountRiskGVKey("AT_CB_DATE_D");
+   string gvDayPeak    = GetAccountRiskGVKey("AT_CB_PEAK_D");
+   string gvDayStartEq = GetAccountRiskGVKey("AT_CB_STARTEQ_D");
+   string gvDayTrip    = GetAccountRiskGVKey("AT_CB_TRIPPED_D");
 
-   string gvWeekDate    = "AT_CB_DATE_W";
-   string gvWeekStartEq = "AT_CB_STARTEQ_W";
-   string gvWeekTrip    = "AT_CB_TRIPPED_W";
+   string gvWeekDate    = GetAccountRiskGVKey("AT_CB_DATE_W");
+   string gvWeekStartEq = GetAccountRiskGVKey("AT_CB_STARTEQ_W");
+   string gvWeekTrip    = GetAccountRiskGVKey("AT_CB_TRIPPED_W");
 
-   string gvMonthDate    = "AT_CB_DATE_M";
-   string gvMonthStartEq = "AT_CB_STARTEQ_M";
-   string gvMonthTrip    = "AT_CB_TRIPPED_M";
+   string gvMonthDate    = GetAccountRiskGVKey("AT_CB_DATE_M");
+   string gvMonthStartEq = GetAccountRiskGVKey("AT_CB_STARTEQ_M");
+   string gvMonthTrip    = GetAccountRiskGVKey("AT_CB_TRIPPED_M");
 
    double currentEquity = AccountEquity();
    if(currentEquity <= 0.0) currentEquity = AccountBalance();
@@ -311,6 +335,7 @@ bool CheckPeriodicLossLimits(double maxDailyLossPct = 2.0, double maxWeeklyLossP
       GlobalVariableSet(gvDayPeak, currentEquity);
       GlobalVariableSet(gvDayStartEq, currentEquity);
       GlobalVariableSet(gvDayTrip, 0.0);
+      GlobalVariableSet("AT_CB_TRIPPED_D", 0.0);
    }
 
    // Reset week stats on new week
@@ -319,6 +344,7 @@ bool CheckPeriodicLossLimits(double maxDailyLossPct = 2.0, double maxWeeklyLossP
       GlobalVariableSet(gvWeekDate, (double)weekStart);
       GlobalVariableSet(gvWeekStartEq, currentEquity);
       GlobalVariableSet(gvWeekTrip, 0.0);
+      GlobalVariableSet("AT_CB_TRIPPED_W", 0.0);
    }
 
    // Reset month stats on new month
@@ -327,12 +353,17 @@ bool CheckPeriodicLossLimits(double maxDailyLossPct = 2.0, double maxWeeklyLossP
       GlobalVariableSet(gvMonthDate, (double)monthStart);
       GlobalVariableSet(gvMonthStartEq, currentEquity);
       GlobalVariableSet(gvMonthTrip, 0.0);
+      GlobalVariableSet("AT_CB_TRIPPED_M", 0.0);
    }
 
    // Check if already tripped
-   if(GlobalVariableCheck(gvDayTrip) && GlobalVariableGet(gvDayTrip) > 0.5) return true;
-   if(GlobalVariableCheck(gvWeekTrip) && GlobalVariableGet(gvWeekTrip) > 0.5) return true;
-   if(GlobalVariableCheck(gvMonthTrip) && GlobalVariableGet(gvMonthTrip) > 0.5) return true;
+   bool dayTripped = (GlobalVariableCheck(gvDayTrip) && GlobalVariableGet(gvDayTrip) > 0.5) ||
+                     (GlobalVariableCheck("AT_CB_TRIPPED_D") && GlobalVariableGet("AT_CB_TRIPPED_D") > 0.5);
+   bool weekTripped = (GlobalVariableCheck(gvWeekTrip) && GlobalVariableGet(gvWeekTrip) > 0.5) ||
+                      (GlobalVariableCheck("AT_CB_TRIPPED_W") && GlobalVariableGet("AT_CB_TRIPPED_W") > 0.5);
+   bool monthTripped = (GlobalVariableCheck(gvMonthTrip) && GlobalVariableGet(gvMonthTrip) > 0.5) ||
+                       (GlobalVariableCheck("AT_CB_TRIPPED_M") && GlobalVariableGet("AT_CB_TRIPPED_M") > 0.5);
+   if(dayTripped || weekTripped || monthTripped) return true;
 
    // Update intraday peak
    double dayPeak = GlobalVariableGet(gvDayPeak);
@@ -390,6 +421,7 @@ bool CheckPeriodicLossLimits(double maxDailyLossPct = 2.0, double maxWeeklyLossP
    if(dayLossPct >= maxDailyLossPct || dayPeakDDPct >= maxDailyLossPct)
    {
       GlobalVariableSet(gvDayTrip, 1.0);
+      GlobalVariableSet("AT_CB_TRIPPED_D", 1.0);
       PrintFormat("[CIRCUIT BREAKER HALT] Daily loss limit breached: dd=%.2f%%, netLoss=%.2f%% >= %.2f%%. Halted until midnight.",
                   dayPeakDDPct, dayLossPct, maxDailyLossPct);
       string alertMsg = StringFormat(
@@ -409,8 +441,18 @@ bool CheckPeriodicLossLimits(double maxDailyLossPct = 2.0, double maxWeeklyLossP
    if(weekLossPct >= maxWeeklyLossPct)
    {
       GlobalVariableSet(gvWeekTrip, 1.0);
+      GlobalVariableSet("AT_CB_TRIPPED_W", 1.0);
       PrintFormat("[CIRCUIT BREAKER HALT] Weekly loss limit breached: %.2f%% >= %.2f%%. Halted until next week.",
                   weekLossPct, maxWeeklyLossPct);
+      string alertMsg = StringFormat(
+         "🚨 <b>WEEKLY LOSS LIMIT BREACHED</b>\n" +
+         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+         "• <b>Weekly Loss:</b> <b>%.2f%%</b> (Limit: <b>%.2f%%</b>)\n" +
+         "• <b>Action:</b> Trading paused for remainder of the week.\n" +
+         "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+         weekLossPct, maxWeeklyLossPct
+      );
+      Telegram_WriteOutboxPayload(alertMsg, "", "");
       return true;
    }
 
@@ -418,8 +460,18 @@ bool CheckPeriodicLossLimits(double maxDailyLossPct = 2.0, double maxWeeklyLossP
    if(monthLossPct >= maxMonthlyLossPct)
    {
       GlobalVariableSet(gvMonthTrip, 1.0);
+      GlobalVariableSet("AT_CB_TRIPPED_M", 1.0);
       PrintFormat("[CIRCUIT BREAKER HALT] Monthly loss limit breached: %.2f%% >= %.2f%%. Halted until next month.",
                   monthLossPct, maxMonthlyLossPct);
+      string alertMsg = StringFormat(
+         "🚨 <b>MONTHLY LOSS LIMIT BREACHED</b>\n" +
+         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+         "• <b>Monthly Loss:</b> <b>%.2f%%</b> (Limit: <b>%.2f%%</b>)\n" +
+         "• <b>Action:</b> Trading paused for remainder of the month.\n" +
+         "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+         monthLossPct, maxMonthlyLossPct
+      );
+      Telegram_WriteOutboxPayload(alertMsg, "", "");
       return true;
    }
 
@@ -437,10 +489,11 @@ bool CheckDailyLossCircuitBreaker(double maxDailyLossPct = 2.0, int magicFilter 
 //+------------------------------------------------------------------+
 bool CheckConsecutiveLossStreak(int maxConsecutiveLosses = 3, int pauseMinutes = 30, int magicFilter = -1)
 {
-   string gvPauseKey = "AT_CONSEC_PAUSE_UNTIL";
+   string gvPauseKey    = GetAccountRiskGVKey("AT_CONSEC_PAUSE");
+   string gvLastTimeKey = GetAccountRiskGVKey("AT_CONSEC_LAST_TIME");
    datetime now = TimeCurrent();
 
-   // Check if pause is currently active
+   // 1. Check if pause is currently active
    if(GlobalVariableCheck(gvPauseKey))
    {
       datetime pauseUntil = (datetime)GlobalVariableGet(gvPauseKey);
@@ -451,10 +504,29 @@ bool CheckConsecutiveLossStreak(int maxConsecutiveLosses = 3, int pauseMinutes =
       else
       {
          GlobalVariableDel(gvPauseKey); // Cooldown expired
+         GlobalVariableDel("AT_CONSEC_PAUSE_UNTIL");
+      }
+   }
+   else if(GlobalVariableCheck("AT_CONSEC_PAUSE_UNTIL"))
+   {
+      datetime legacyUntil = (datetime)GlobalVariableGet("AT_CONSEC_PAUSE_UNTIL");
+      if(now < legacyUntil)
+      {
+         return true;
+      }
+      else
+      {
+         GlobalVariableDel("AT_CONSEC_PAUSE_UNTIL");
       }
    }
 
-   // Scan trade history backwards to count consecutive losses
+   datetime lastPenalizedTime = 0;
+   if(GlobalVariableCheck(gvLastTimeKey))
+   {
+      lastPenalizedTime = (datetime)GlobalVariableGet(gvLastTimeKey);
+   }
+
+   // 2. Scan trade history backwards to count consecutive losses closed AFTER last penalized pause
    int streak = 0;
    int histTotal = OrdersHistoryTotal();
    for(int i = histTotal - 1; i >= 0; i--)
@@ -462,6 +534,13 @@ bool CheckConsecutiveLossStreak(int maxConsecutiveLosses = 3, int pauseMinutes =
       if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY)) continue;
       if(magicFilter != -1 && OrderMagicNumber() != magicFilter) continue;
       if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+
+      datetime closeTime = OrderCloseTime();
+      if(closeTime <= lastPenalizedTime)
+      {
+         // Stop scanning: this trade was already part of an earlier penalized streak or occurred before last pause
+         break;
+      }
 
       double netProfit = OrderProfit() + OrderCommission() + OrderSwap();
       if(netProfit < 0.0)
@@ -471,6 +550,8 @@ bool CheckConsecutiveLossStreak(int maxConsecutiveLosses = 3, int pauseMinutes =
          {
             datetime pauseUntilTime = now + (datetime)(pauseMinutes * 60);
             GlobalVariableSet(gvPauseKey, (double)pauseUntilTime);
+            GlobalVariableSet("AT_CONSEC_PAUSE_UNTIL", (double)pauseUntilTime);
+            GlobalVariableSet(gvLastTimeKey, (double)now);
             PrintFormat("[CONSECUTIVE LOSS PAUSE] %d consecutive losses detected. Trading paused for %d minutes.",
                         streak, pauseMinutes);
             string alertMsg = StringFormat(
@@ -610,6 +691,15 @@ bool IsNewsBlackoutActive(int leadMinutes = 30, int lagMinutes = 30)
    {
       if(GlobalVariableGet("AT_NEWS_BLOCKED") > 0.5) return true;
    }
+   string accGv = GetAccountRiskGVKey("AT_NEWS_BLOCKED");
+   if(GlobalVariableCheck(accGv))
+   {
+      if(GlobalVariableGet(accGv) > 0.5) return true;
+   }
+   if(FileIsExist("news_blocked.flag"))
+   {
+      return true;
+   }
    return false;
 }
 
@@ -646,7 +736,17 @@ void ResetRiskSafeguards()
    GlobalVariableDel("AT_CB_TRIPPED_M");
    GlobalVariableDel("AT_CONSEC_PAUSE_UNTIL");
    GlobalVariableSet("AT_PEAK_EQUITY", AccountEquity());
-   PrintFormat("[RISK SAFEGUARDS RESET] Safeguards reset. Calibrated peak equity to $%.2f", AccountEquity());
+
+   // Account-specific keys
+   GlobalVariableDel(GetAccountRiskGVKey("AT_DD_HALT"));
+   GlobalVariableDel(GetAccountRiskGVKey("AT_CB_TRIPPED_D"));
+   GlobalVariableDel(GetAccountRiskGVKey("AT_CB_TRIPPED_W"));
+   GlobalVariableDel(GetAccountRiskGVKey("AT_CB_TRIPPED_M"));
+   GlobalVariableDel(GetAccountRiskGVKey("AT_CONSEC_PAUSE"));
+   GlobalVariableDel(GetAccountRiskGVKey("AT_CONSEC_LAST_TIME"));
+   GlobalVariableSet(GetAccountRiskGVKey("AT_PEAK_EQ"), AccountEquity());
+
+   PrintFormat("[RISK SAFEGUARDS RESET] Account #%d safeguards reset. Calibrated peak equity to $%.2f", AccountNumber(), AccountEquity());
 }
 
 //+------------------------------------------------------------------+

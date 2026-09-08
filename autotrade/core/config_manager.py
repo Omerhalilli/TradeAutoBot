@@ -50,6 +50,7 @@ class ZmqConfig:
 class RiskLimitsConfig:
     """Institutional Prop-Firm & Account Safeguard Parameters."""
     max_account_risk_pct: float = 0.5         # Max risk % per single trade (0.5%)
+    max_global_risk_pct: float = 2.0          # Max portfolio exposure limit across open orders (2.0%)
     max_daily_loss_pct: float = 2.0           # Halt threshold if daily drawdown >= 2%
     max_total_drawdown_pct: float = 10.0      # Global peak equity kill-switch drawdown (10%)
     max_open_positions: int = 1               # Maximum concurrent open orders (1)
@@ -237,7 +238,8 @@ class ConfigManager:
             self.config.mt4_files_dir = self._resolve_mt4_files(explicit_files)
 
             # Risk Limits
-            self.config.risk.max_account_risk_pct = float(get_val("MAX_ACCOUNT_RISK_PCT", "RISK", "max_account_risk_pct", 2.0))
+            self.config.risk.max_account_risk_pct = float(get_val("MAX_ACCOUNT_RISK_PCT", "RISK", "max_account_risk_pct", 0.5))
+            self.config.risk.max_global_risk_pct = float(get_val("MAX_GLOBAL_RISK_PCT", "RISK", "max_global_risk_pct", 2.0))
             self.config.risk.max_daily_loss_pct = float(get_val("MAX_DAILY_LOSS_PCT", "RISK", "max_daily_loss_pct", 4.0))
             self.config.risk.max_total_drawdown_pct = float(get_val("MAX_TOTAL_DRAWDOWN_PCT", "RISK", "max_total_drawdown_pct", 8.0))
             self.config.risk.max_open_positions = int(get_val("MAX_OPEN_POSITIONS", "RISK", "max_open_positions", 10))
