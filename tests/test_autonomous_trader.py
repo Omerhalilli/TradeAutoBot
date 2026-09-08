@@ -1100,6 +1100,198 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
         asyncio.run(run_test())
 
 
+    def test_timeframe_durations_and_boundary_calculations(self):
+        """Verifies timeframe second mappings, seconds-until-next-bar, and startup seeding."""
+        trader = AutonomousMultiSymbolTrader(timeframe="H1", scan_on_bar_close_only=True)
+        self.assertEqual(trader.get_timeframe_seconds("H1"), 3600)
+        self.assertEqual(trader.get_timeframe_seconds("M30"), 1800)
+        self.assertEqual(trader.get_timeframe_seconds("M15"), 900)
+        self.assertEqual(trader.get_timeframe_seconds("M5"), 300)
+        self.assertEqual(trader.get_timeframe_seconds("M1"), 60)
+        self.assertEqual(trader.get_timeframe_seconds("H4"), 14400)
+        self.assertEqual(trader.get_timeframe_seconds("D1"), 86400)
+
+        # Test countdown to next boundary on H1
+        # E.g. at 09:15:00 (3600 * 10 + 900 = 36900)
+        ts_mid_bar = 36900.0
+        secs_left = trader.get_seconds_until_next_bar(now=ts_mid_bar)
+        self.assertEqual(secs_left, 2700.0)  # 45 minutes left
+
+        # Startup seeding: first call registers boundary and returns False (no trade on startup)
+        self.assertEqual(trader.last_scanned_bar_boundary, 0)
+        self.assertFalse(trader.is_new_bar_boundary(now=ts_mid_bar))
+        self.assertEqual(trader.last_scanned_bar_boundary, 36000)
+
+        # Mid-bar call within same hour (e.g. 09:45:00 = 38700) -> returns False
+        self.assertFalse(trader.is_new_bar_boundary(now=38700.0))
+        self.assertEqual(trader.last_scanned_bar_boundary, 36000)
+
+        # Candle boundary crossing (10:00:00 = 39600) -> returns True!
+        self.assertTrue(trader.is_new_bar_boundary(now=39600.0))
+        self.assertEqual(trader.last_scanned_bar_boundary, 39600)
+
+        # Still inside hour 10 (10:15:00 = 40500) -> returns False
+        self.assertFalse(trader.is_new_bar_boundary(now=40500.0))
+
+        # Next candle boundary (11:00:00 = 43200) -> returns True!
+        self.assertTrue(trader.is_new_bar_boundary(now=43200.0))
+        self.assertEqual(trader.last_scanned_bar_boundary, 43200)
+
+    def test_m30_timeframe_boundary_synchronization(self):
+        """Verifies 30-minute boundary synchronization (e.g. 1:30, 2:00)."""
+        trader = AutonomousMultiSymbolTrader(timeframe="M30", scan_on_bar_close_only=True)
+        # Start at 01:10 (ts = 4200)
+        self.assertFalse(trader.is_new_bar_boundary(now=4200.0))
+        self.assertEqual(trader.last_scanned_bar_boundary, 3600)  # Seeded to 01:00
+
+        # At 01:25 (ts = 5100) -> mid-bar, returns False
+        self.assertFalse(trader.is_new_bar_boundary(now=5100.0))
+
+        # At 01:30 (ts = 5400) -> exactly 30 min mark, returns True!
+        self.assertTrue(trader.is_new_bar_boundary(now=5400.0))
+        self.assertEqual(trader.last_scanned_bar_boundary, 5400)
+
+        # At 01:45 (ts = 6300) -> mid-bar, returns False
+        self.assertFalse(trader.is_new_bar_boundary(now=6300.0))
+
+        # At 02:00 (ts = 7200) -> top of the hour, returns True!
+        self.assertTrue(trader.is_new_bar_boundary(now=7200.0))
+        self.assertEqual(trader.last_scanned_bar_boundary, 7200)
+
+    def test_set_timeframe_and_toggle_scan_on_bar_close_only(self):
+        """Verifies setting timeframe resets boundary and toggling scan_on_bar_close_only."""
+        trader = AutonomousMultiSymbolTrader(timeframe="H1")
+        trader.last_scanned_bar_boundary = 36000
+
+        # Valid timeframe change resets anchor
+        self.assertTrue(trader.set_timeframe("M30"))
+        self.assertEqual(trader.timeframe, "M30")
+        self.assertEqual(trader.last_scanned_bar_boundary, 0)
+
+        # Invalid timeframe rejected
+        self.assertFalse(trader.set_timeframe("INVALID_TF"))
+        self.assertEqual(trader.timeframe, "M30")
+
+        # Toggle scan_on_bar_close_only
+        trader.set_scan_on_bar_close_only(False)
+        self.assertFalse(trader.scan_on_bar_close_only)
+        # When disabled, is_new_bar_boundary always returns True
+        self.assertTrue(trader.is_new_bar_boundary(now=12345.0))
+
+        trader.set_scan_on_bar_close_only(True)
+        self.assertTrue(trader.scan_on_bar_close_only)
+
+    def test_run_cycle_async_bar_boundary_gate(self):
+        """Verifies run_cycle_async executes only at candle boundary unless forced."""
+        trader = AutonomousMultiSymbolTrader(timeframe="H1", scan_on_bar_close_only=True)
+        # Startup seeding
+        trader.is_new_bar_boundary(now=36000.0)
+
+        async def run_test():
+            with patch.object(trader, "execute_autonomous_cycle", new_callable=AsyncMock) as mock_exec:
+                # Mid-bar timestamp (no boundary): should NOT execute
+                with patch("time.time", return_value=37000.0):
+                    await trader.run_cycle_async()
+                    mock_exec.assert_not_called()
+
+                # Forced execution: bypasses boundary check
+                with patch("time.time", return_value=37000.0):
+                    await trader.run_cycle_async(force=True)
+                    mock_exec.assert_called_once()
+
+                mock_exec.reset_mock()
+
+                # Boundary crossed (10:00:00 = 39600): should execute!
+                with patch("time.time", return_value=39600.0):
+                    await trader.run_cycle_async()
+                    mock_exec.assert_called_once()
+
+        asyncio.run(run_test())
+
+    def test_cmd_timeframe_handler(self):
+        """Verifies /timeframe command view and update behavior."""
+        async def run_test():
+            # View status (no args)
+            update, context = self._make_mock_update(args=[])
+            await handlers.cmd_timeframe(update, context)
+            update.message.reply_text.assert_called_once()
+            status_text = update.message.reply_text.call_args[0][0]
+            self.assertIn("AUTONOMOUS TIMEFRAME STATUS", status_text)
+            self.assertIn(autonomous_trader.timeframe, status_text)
+
+            # Set valid timeframe
+            update_set, context_set = self._make_mock_update(args=["M30"])
+            await handlers.cmd_timeframe(update_set, context_set)
+            update_set.message.reply_text.assert_called_once()
+            set_text = update_set.message.reply_text.call_args[0][0]
+            self.assertIn("AUTONOMOUS TIMEFRAME UPDATED", set_text)
+            self.assertIn("M30", set_text)
+            self.assertEqual(autonomous_trader.timeframe, "M30")
+
+            # Restore H1
+            update_h1, context_h1 = self._make_mock_update(args=["H1"])
+            await handlers.cmd_timeframe(update_h1, context_h1)
+            self.assertEqual(autonomous_trader.timeframe, "H1")
+
+            # Invalid timeframe
+            update_inv, context_inv = self._make_mock_update(args=["INVALID"])
+            await handlers.cmd_timeframe(update_inv, context_inv)
+            inv_text = update_inv.message.reply_text.call_args[0][0]
+            self.assertIn("Invalid timeframe", inv_text)
+
+        asyncio.run(run_test())
+
+    def test_cmd_autotrade_tf_and_barclose_subcommands(self):
+        """Verifies /autotrade tf <TF> and /autotrade barclose <on|off> subcommands."""
+        async def run_test():
+            # /autotrade tf M30
+            update, context = self._make_mock_update(args=["tf", "M30"])
+            await handlers.cmd_autotrade(update, context)
+            sent_text = update.message.reply_text.call_args[0][0]
+            self.assertIn("Autonomous Scan Timeframe set to:", sent_text)
+            self.assertIn("M30", sent_text)
+            self.assertEqual(autonomous_trader.timeframe, "M30")
+
+            # /autotrade barclose off
+            update_bc_off, context_bc_off = self._make_mock_update(args=["barclose", "off"])
+            await handlers.cmd_autotrade(update_bc_off, context_bc_off)
+            self.assertFalse(autonomous_trader.scan_on_bar_close_only)
+
+            # /autotrade barclose on
+            update_bc_on, context_bc_on = self._make_mock_update(args=["barclose", "on"])
+            await handlers.cmd_autotrade(update_bc_on, context_bc_on)
+            self.assertTrue(autonomous_trader.scan_on_bar_close_only)
+
+            # Restore H1
+            autonomous_trader.set_timeframe("H1")
+
+        asyncio.run(run_test())
+
+    def test_manual_scan_runs_on_demand_mid_bar(self):
+        """Verifies /scan runs on-demand at any time without waiting for candle boundary."""
+        async def run_test():
+            mock_scan = {
+                "status": "ok",
+                "server_time": "2026.09.08 14:23:45",
+                "results": [
+                    {
+                        "symbol": "EURUSD", "score": 7, "signal": "BUY", "trend": "STRONG_BULLISH",
+                        "spread": 12.0, "sl_pips": 25.0, "tp_pips": 50.0, "adx": 25.0, "rsi": 50.0
+                    }
+                ]
+            }
+            update, context = self._make_mock_update(args=[])
+            with patch.object(autonomous_trader, "scan_portfolio_async", return_value=mock_scan):
+                await handlers.cmd_scan(update, context)
+                update.message.reply_text.assert_called_once()
+                scan_text = update.message.reply_text.call_args[0][0]
+                self.assertIn("AUTONOMOUS MULTI-SYMBOL SCANNER", scan_text)
+                self.assertIn("EURUSD", scan_text)
+                self.assertIn("Score: <b>7/10</b>", scan_text)
+
+        asyncio.run(run_test())
+
+
 if __name__ == "__main__":
     unittest.main()
 

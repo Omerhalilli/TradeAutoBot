@@ -444,6 +444,7 @@ input double             HybridTolerance_H4_Plus       = 25.0;              // H
 //--- [15. AUTONOMOUS MULTI-SYMBOL TRADING ENGINE]
 input string             Sec_AutonomousMultiSymbol     = "=== [15] AUTONOMOUS MULTI-SYMBOL ENGINE ===";
 input bool               EnableAutonomousMultiSymbol   = true;              // Autonomous Multi-Symbol Engine (True = Monitor Portfolio)
+input bool               ScanOnBarCloseOnly            = true;              // Synchronize Multi-Symbol Scan to Bar Close Only (Candle Boundaries)
 input int                MaxOpenPositions              = 1;                 // Strict Global Open Positions Limit across ALL symbols
 input int                MaxExposurePerCurrency        = 1;                 // Maximum Open Positions per Currency (e.g. USD)
 input string             AutonomousWatchlist           = "MARKET_WATCH";    // Monitored Portfolio Symbols ("MARKET_WATCH" or "ALL" for all account symbols, or comma list)
@@ -6853,7 +6854,7 @@ int OnInit()
    for(int sIdx = 0; sIdx < seedCount; sIdx++)
    {
       SymbolSelect(seedSyms[sIdx], true);
-      IsNewBar(seedSyms[sIdx], PERIOD_H1);
+      IsNewBar(seedSyms[sIdx], (ENUM_TIMEFRAMES)Period());
    }
 
    g_LastAutonomousScanTick = GetTickCount(); // Enforce full startup stabilization delay for background multi-symbol scanner
@@ -7015,14 +7016,47 @@ void Autonomous_MultiSymbolScan()
       return;
    }
    
-   uint nowTick = GetTickCount();
-   if(g_LastAutonomousScanTick == 0)
+   // Automatically detect active chart timeframe
+   ENUM_TIMEFRAMES activeTF = (ENUM_TIMEFRAMES)Period();
+
+   static datetime s_lastMultiSymbolBarTime = 0;
+   if(ScanOnBarCloseOnly)
    {
-      g_LastAutonomousScanTick = nowTick;
-      return; // Initial startup stabilization delay: never trade immediately on startup
+      datetime currentBarTime = iTime(Symbol(), activeTF, 0);
+      if(currentBarTime <= 0)
+      {
+         int tfSec = activeTF * 60;
+         if(tfSec > 0) currentBarTime = (datetime)((long)TimeCurrent() / tfSec * tfSec);
+      }
+      if(currentBarTime <= 0) return;
+
+      if(s_lastMultiSymbolBarTime == 0)
+      {
+         // Initial startup: lock to current forming bar so no trade occurs on startup
+         s_lastMultiSymbolBarTime = currentBarTime;
+         return;
+      }
+
+      if(currentBarTime <= s_lastMultiSymbolBarTime)
+      {
+         return; // Inside current forming bar: between bar closes, no new entry scans take place!
+      }
+
+      s_lastMultiSymbolBarTime = currentBarTime;
+      PrintFormat("[AUTONOMOUS MULTI-SYMBOL] 🕯️ New candle boundary confirmed on %s (%s). Executing portfolio surveillance scan...",
+                  Symbol(), EnumToString(activeTF));
    }
-   if(nowTick - g_LastAutonomousScanTick < (uint)(AutonomousScanIntervalSec * 1000)) return;
-   g_LastAutonomousScanTick = nowTick;
+   else
+   {
+      uint nowTick = GetTickCount();
+      if(g_LastAutonomousScanTick == 0)
+      {
+         g_LastAutonomousScanTick = nowTick;
+         return; // Initial startup stabilization delay: never trade immediately on startup
+      }
+      if(nowTick - g_LastAutonomousScanTick < (uint)(AutonomousScanIntervalSec * 1000)) return;
+      g_LastAutonomousScanTick = nowTick;
+   }
 
    // 3. Build watchlist: dynamic discovery from Market Watch or whitelist
    string scanSymbols[];
@@ -7087,14 +7121,14 @@ void Autonomous_MultiSymbolScan()
 
       SymbolSelect(sym, true);
 
-      // Bar confirmation: each symbol must be evaluated only on a confirmed new closed bar
-      if(!IsNewBar(sym, PERIOD_H1)) continue;
+      // When not in strict bar-close mode, verify symbol-level new bar
+      if(!ScanOnBarCloseOnly && !IsNewBar(sym, activeTF)) continue;
 
       // 5. Check persistent symbol cooldown FIRST
       if(IsSymbolInCooldown(sym, AutonomousCooldownMinutes)) continue;
 
       // 6. Pre-filter before expensive indicator calculations (liquidity, trade permission, margin affordability)
-      if(!PreFilterSymbol(sym, (double)MaxSpreadPoints, 205, PERIOD_H1, true, MaxMarginUsagePct)) continue;
+      if(!PreFilterSymbol(sym, (double)MaxSpreadPoints, 205, activeTF, true, MaxMarginUsagePct)) continue;
 
       // 7. Exact canonical symbol matching: verify no existing position is open for this pair
       bool hasOpenPosition = false;
@@ -7115,7 +7149,7 @@ void Autonomous_MultiSymbolScan()
 
       // 9. Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
       // Score < 6 (e.g. 5) is strictly prohibited from opening a trade
-      StrategySignal sig = EvaluateSymbolOpportunity(sym, PERIOD_H1, effectiveMinScore, 1.5, 10.0, 150.0);
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, activeTF, effectiveMinScore, 1.5, 10.0, 150.0);
       if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.score < 6) continue;
 
       double entryPrice = (sig.cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);

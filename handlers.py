@@ -1521,6 +1521,20 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 banner = f"➖ Symbol <code>{sym}</code> removed from autonomous watchlist.\n\n"
             else:
                 banner = f"⚠️ Symbol <code>{sym}</code> not found or minimum watchlist size reached.\n\n"
+        elif sub in ["tf", "timeframe"] and len(args) > 1:
+            new_tf = args[1].strip().upper()
+            if autonomous_trader.set_timeframe(new_tf):
+                banner = f"⏱️ <b>Autonomous Scan Timeframe set to:</b> <code>{new_tf}</code> ({autonomous_trader.get_timeframe_seconds()}s).\n<i>Scans are synchronized strictly to {new_tf} candle boundaries.</i>\n\n"
+            else:
+                banner = f"⚠️ Invalid timeframe <code>{new_tf}</code>. Valid options: M1, M5, M15, M30, H1, H4, D1\n\n"
+        elif sub in ["barclose", "boundary"] and len(args) > 1:
+            opt = args[1].strip().lower()
+            if opt in ["on", "true", "enable", "yes", "1"]:
+                autonomous_trader.set_scan_on_bar_close_only(True)
+                banner = "🔒 <b>Strict Bar-Close Scanning: ENABLED</b>\n<i>Scans will only occur at candle close/open boundaries.</i>\n\n"
+            elif opt in ["off", "false", "disable", "no", "0"]:
+                autonomous_trader.set_scan_on_bar_close_only(False)
+                banner = "⚡ <b>Strict Bar-Close Scanning: DISABLED</b>\n<i>Scans will run periodically.</i>\n\n"
 
     text = banner + autonomous_trader.format_status_panel()
     is_active = autonomous_trader.is_autotrade_active()
@@ -1542,6 +1556,39 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         ]
     ])
     await send_or_edit(update, context, text, reply_markup=kb)
+
+@restricted
+async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Configures or displays active autonomous trading timeframe."""
+    args = context.args or []
+    if args:
+        new_tf = args[0].strip().upper()
+        if autonomous_trader.set_timeframe(new_tf):
+            text = (
+                f"⏱️ <b>AUTONOMOUS TIMEFRAME UPDATED</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"• <b>Active Timeframe:</b> <code>{new_tf}</code>\n"
+                f"• <b>Candle Duration:</b> <code>{autonomous_trader.get_timeframe_seconds()} seconds</code>\n"
+                f"• <b>Bar-Close Synchronized:</b> <code>{'YES (Strict Candle Close Only)' if autonomous_trader.scan_on_bar_close_only else 'NO'}</code>\n"
+                f"• <b>Next Scheduled Scan:</b> <code>in {int(autonomous_trader.get_seconds_until_next_bar() // 60)}m {int(autonomous_trader.get_seconds_until_next_bar() % 60):02d}s</code>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"<i>Surveillance scans will now execute strictly at {new_tf} bar boundaries.</i>"
+            )
+        else:
+            text = f"⚠️ Invalid timeframe <code>{new_tf}</code>. Supported timeframes: M1, M5, M15, M30, H1, H4, D1"
+    else:
+        tf_sec = autonomous_trader.get_timeframe_seconds()
+        secs_left = autonomous_trader.get_seconds_until_next_bar()
+        text = (
+            f"⏱️ <b>AUTONOMOUS TIMEFRAME STATUS</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"• <b>Active Timeframe:</b> <code>{autonomous_trader.timeframe}</code> ({tf_sec // 60} minutes)\n"
+            f"• <b>Synchronization:</b> <code>{'Strict Bar Close Only' if autonomous_trader.scan_on_bar_close_only else 'Continuous Interval'}</code>\n"
+            f"• <b>Next Scheduled Scan:</b> <code>in {int(secs_left // 60)}m {int(secs_left % 60):02d}s</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>Use <code>/timeframe &lt;M15|M30|H1|H4|D1&gt;</code> or <code>/autotrade tf &lt;TF&gt;</code> to change.</i>"
+        )
+    await send_or_edit(update, context, text)
 
 @restricted
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

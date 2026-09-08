@@ -19,6 +19,8 @@ from config import (
     AUTOTRADE_MAX_OPEN_POSITIONS,
     AUTOTRADE_COOLDOWN_MINUTES,
     AUTOTRADE_MIN_SCORE,
+    AUTOTRADE_TIMEFRAME,
+    AUTOTRADE_SCAN_ON_BAR_CLOSE_ONLY,
     MAX_OPEN_POSITIONS,
     MAX_LOTS_PER_SYMBOL,
     TRADING_SYMBOLS,
@@ -28,6 +30,18 @@ from config import (
 from zmq_client import zmq_client
 
 logger = logging.getLogger("autotrade.core.autonomous_trader")
+
+TIMEFRAME_SECONDS: Dict[str, int] = {
+    "M1": 60,
+    "M5": 300,
+    "M15": 900,
+    "M30": 1800,
+    "H1": 3600,
+    "H4": 14400,
+    "D1": 86400,
+    "W1": 604800,
+    "MN1": 2592000,
+}
 
 DEFAULT_PORTFOLIO_SYMBOLS = [
     "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD", "XAUUSD"
@@ -91,7 +105,9 @@ class AutonomousMultiSymbolTrader:
         cooldown_sec: int = AUTOTRADE_COOLDOWN_MINUTES * 60,
         max_spread: float = 50.0,
         max_positions: int = AUTOTRADE_MAX_OPEN_POSITIONS,
-        require_bar_transition: bool = False
+        require_bar_transition: bool = False,
+        timeframe: str = AUTOTRADE_TIMEFRAME,
+        scan_on_bar_close_only: bool = AUTOTRADE_SCAN_ON_BAR_CLOSE_ONLY
     ):
         self.symbols: List[str] = symbols or list(TRADING_SYMBOLS) or list(DEFAULT_PORTFOLIO_SYMBOLS)
         # Clean symbol strings
@@ -105,7 +121,11 @@ class AutonomousMultiSymbolTrader:
         self.max_positions: int = max_positions
         self.require_bar_transition: bool = require_bar_transition
         self.is_enabled: bool = True
-        self.timeframe: str = "H1"
+        self.timeframe: str = str(timeframe).strip().upper() if timeframe else "H1"
+        if self.timeframe not in TIMEFRAME_SECONDS:
+            self.timeframe = "H1"
+        self.scan_on_bar_close_only: bool = scan_on_bar_close_only
+        self.last_scanned_bar_boundary: int = 0
         self.total_trades_executed: int = 0
         self.last_trade_times: Dict[str, float] = {}
         self.last_failure_times: Dict[str, float] = {}
@@ -116,6 +136,66 @@ class AutonomousMultiSymbolTrader:
         self._lock = asyncio.Lock()
         self._risk_manager = None
         self._position_sizer = None
+
+    def get_timeframe_seconds(self, tf: Optional[str] = None) -> int:
+        """Returns duration of specified or active timeframe in seconds."""
+        t = (tf or self.timeframe).strip().upper()
+        return TIMEFRAME_SECONDS.get(t, 3600)
+
+    def get_seconds_until_next_bar(self, now: Optional[float] = None) -> float:
+        """Returns seconds remaining until the next candle boundary for active timeframe."""
+        cur = time.time() if now is None else float(now)
+        tf_sec = self.get_timeframe_seconds()
+        boundary = int(cur // tf_sec) * tf_sec
+        next_boundary = boundary + tf_sec
+        return max(0.0, float(next_boundary - cur))
+
+    def is_new_bar_boundary(self, now: Optional[float] = None) -> bool:
+        """
+        Validates if current time crosses into a new candle boundary on active timeframe.
+        Guarantees that between bar closes, no autonomous scans or trades take place.
+        """
+        if not self.scan_on_bar_close_only:
+            return True
+
+        cur = time.time() if now is None else float(now)
+        tf_sec = self.get_timeframe_seconds()
+        current_boundary = int(cur // tf_sec) * tf_sec
+
+        if self.last_scanned_bar_boundary == 0:
+            # Seed startup bar boundary: lock forming candle so startup trades cannot occur
+            self.last_scanned_bar_boundary = current_boundary
+            logger.info(
+                f"AutonomousTrader: Seeded startup bar boundary at {current_boundary} "
+                f"({self.timeframe} = {tf_sec}s). First synchronized scan in {self.get_seconds_until_next_bar(cur):.1f}s."
+            )
+            return False
+
+        if current_boundary > self.last_scanned_bar_boundary:
+            self.last_scanned_bar_boundary = current_boundary
+            logger.info(
+                f"AutonomousTrader: 🕯️ Candle boundary reached for {self.timeframe} ({current_boundary}). "
+                f"Triggering synchronized multi-symbol market surveillance scan..."
+            )
+            return True
+
+        return False
+
+    def set_timeframe(self, tf: str) -> bool:
+        """Updates active timeframe for scanning and resets boundary anchor."""
+        clean_tf = str(tf).strip().upper()
+        if clean_tf not in TIMEFRAME_SECONDS:
+            return False
+        self.timeframe = clean_tf
+        # Reset boundary anchor so next scan synchronizes to new timeframe candle
+        self.last_scanned_bar_boundary = 0
+        logger.info(f"AutonomousTrader: Timeframe set to {self.timeframe} ({self.get_timeframe_seconds()}s).")
+        return True
+
+    def set_scan_on_bar_close_only(self, enabled: bool) -> None:
+        """Toggles strict candle-boundary scan synchronization."""
+        self.scan_on_bar_close_only = bool(enabled)
+        logger.info(f"AutonomousTrader: Scan on bar close only set to {self.scan_on_bar_close_only}.")
 
     @property
     def risk_manager(self):
@@ -660,8 +740,12 @@ class AutonomousMultiSymbolTrader:
             except Exception as ex:
                 logger.error(f"Failed to dispatch autonomous execution alert to chat {chat_id}: {ex}")
 
-    async def run_cycle_async(self, bot=None) -> None:
+    async def run_cycle_async(self, bot=None, force: bool = False) -> None:
         """Asynchronous entry point for periodic background scheduler."""
+        if not self.is_autotrade_active():
+            return
+        if not force and self.scan_on_bar_close_only and not self.is_new_bar_boundary():
+            return
         try:
             await self.execute_autonomous_cycle(bot=bot)
         except Exception as ex:
@@ -672,12 +756,20 @@ class AutonomousMultiSymbolTrader:
         active = self.is_autotrade_active()
         status_badge = "🟢 <b>ACTIVE & SCANNING</b>" if active else "⏸️ <b>PAUSED</b>"
         sym_list = ", ".join(self.symbols)
+        tf_sec = self.get_timeframe_seconds()
+        secs_left = self.get_seconds_until_next_bar()
+        mins_left = int(secs_left // 60)
+        rem_secs = int(secs_left % 60)
+        countdown_str = f"{mins_left}m {rem_secs:02d}s"
+        sync_mode = "🕯️ <b>Strict Bar-Close Only</b>" if self.scan_on_bar_close_only else "⚡ <b>Continuous Interval</b>"
 
         msg = (
             "🤖 <b>AUTONOMOUS MULTI-SYMBOL TRADING ENGINE</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>System State:</b> {status_badge}\n"
-            f"• <b>Timeframe:</b> <code>{self.timeframe}</code>\n"
+            f"• <b>Timeframe:</b> <code>{self.timeframe}</code> ({tf_sec // 60}m candles)\n"
+            f"• <b>Scan Synchronization:</b> {sync_mode}\n"
+            f"• <b>Next Bar Boundary Scan:</b> <code>in {countdown_str}</code>\n"
             f"• <b>Confluence Threshold:</b> <b>Score ≥ {self.min_score}/10</b>\n"
             f"• <b>Execution Mode:</b> <b>Autonomous Direct Execution</b>\n"
             f"• <b>Max Spread Filter:</b> <code>{self.max_spread:.0f} points</code>\n"
@@ -688,7 +780,7 @@ class AutonomousMultiSymbolTrader:
             f"🌐 <b>Portfolio Watchlist ({len(self.symbols)} Assets):</b>\n"
             f"<code>{sym_list}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "<i>💡 When an actionable setup is detected on any symbol, the bot trades itself directly without prompting.</i>"
+            "<i>💡 Scans synchronize strictly to candle boundaries (e.g. 9:00, 10:00 on H1; or 1:30, 2:00 on M30), eliminating mid-bar noise.</i>"
         )
         return msg
 
@@ -700,11 +792,17 @@ class AutonomousMultiSymbolTrader:
 
         results = data.get("results", [])
         server_time = data.get("server_time", time.strftime("%Y.%m.%d %H:%M:%S"))
+        secs_left = self.get_seconds_until_next_bar()
+        mins_left = int(secs_left // 60)
+        rem_secs = int(secs_left % 60)
+        countdown_str = f"{mins_left}m {rem_secs:02d}s"
+        sync_desc = f"Bar-Close Synchronized ({self.timeframe})" if self.scan_on_bar_close_only else "Interval"
 
         msg = (
             "⚡ <b>AUTONOMOUS MULTI-SYMBOL SCANNER</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🕒 <b>Scan Time:</b> <code>{server_time}</code> | <b>TF:</b> <code>{self.timeframe}</code>\n"
+            f"🕒 <b>Scan Time:</b> <code>{server_time}</code> | <b>TF:</b> <code>{self.timeframe}</code> ({sync_desc})\n"
+            f"⏳ <b>Next Scheduled Scan:</b> <code>in {countdown_str}</code>\n"
             f"🌐 <b>Portfolio:</b> <b>{len(results)} Assets</b> | <b>Threshold:</b> <b>Score ≥ {self.min_score}/10 (60%)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )

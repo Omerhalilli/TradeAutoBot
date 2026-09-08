@@ -85,6 +85,7 @@ async def post_init(application) -> None:
             BotCommand("news", "📅 High-Impact Economic Calendar"),
             BotCommand("autotrade", "🤖 Autonomous Multi-Symbol Trading Panel"),
             BotCommand("scan", "📡 Scan Multi-Symbol Portfolio Confluence"),
+            BotCommand("timeframe", "⏱️ Timeframe & Bar-Close Synchronization"),
             BotCommand("symbols", "🌐 View/Manage Autonomous Watchlist"),
             BotCommand("pause", "⏸️ Pause Auto-Trading Entries"),
             BotCommand("resume", "▶️ Resume Auto-Trading Entries"),
@@ -306,6 +307,7 @@ def create_application():
     app.add_handler(CommandHandler(["resume", "resume_bot"], handlers.cmd_resume_bot))
     app.add_handler(CommandHandler(["autotrade", "auto"], handlers.cmd_autotrade))
     app.add_handler(CommandHandler(["scan", "scanner"], handlers.cmd_scan))
+    app.add_handler(CommandHandler(["timeframe", "tf"], handlers.cmd_timeframe))
     app.add_handler(CommandHandler(["symbols", "watchlist"], handlers.cmd_symbols))
     app.add_handler(CommandHandler(["news", "calendar"], handlers.cmd_news))
 
@@ -345,8 +347,8 @@ def create_application():
     if app.job_queue:
         app.job_queue.run_repeating(news_alert_job, interval=60, first=10)
         app.job_queue.run_repeating(outbox_alert_job, interval=0.5, first=1, job_kwargs={"max_instances": 2})
-        app.job_queue.run_repeating(autonomous_trading_job, interval=15, first=20)
-        logger.info(f"News alert (60s), MT4 outbox (500ms), and autonomous trader (15s, initial delay 20s) background schedulers registered")
+        app.job_queue.run_repeating(autonomous_trading_job, interval=5, first=5)
+        logger.info(f"News alert (60s), MT4 outbox (500ms), and autonomous trader (candle-synchronized, 5s boundary poll) background schedulers registered")
 
     return app
 

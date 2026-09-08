@@ -40,7 +40,8 @@ input double             MaxATRPips                    = 150.0;             // M
 input int                CooldownMinutes               = 60;                // Per-Symbol Trade Cooldown (Minutes)
 input string             IncludeSymbols                = "";                // Whitelist Symbols (empty = all Market Watch)
 input string             ExcludeSymbols                = "*RUB*,*TRY*,*ZAR*"; // Blacklist Wildcards (Exotics/High-Swap)
-input ENUM_TIMEFRAMES    ScanTimeframe                 = PERIOD_H1;         // Confluence Scoring Timeframe
+input ENUM_TIMEFRAMES    ScanTimeframe                 = PERIOD_CURRENT;    // Confluence Scoring Timeframe (PERIOD_CURRENT = Auto Chart TF)
+input bool               ScanOnBarCloseOnly            = true;              // Synchronize Scanner to Bar Close Only (Strict Candle Boundaries)
 input int                BatchSize                     = 0;                 // Scanner Batch Size (0 = Full Watchlist Scan Every Cycle)
 input int                TimerIntervalSec              = 2;                 // Scanner Timer Interval (Seconds)
 
@@ -77,6 +78,7 @@ string g_LastScannedSymbol = "None";
 int    g_LastScannedScore  = 0;
 string g_LastScannedSignal = "HOLD";
 uint   g_LastAutonomousBotTick = 0;
+datetime g_LastChartScanBarTime = 0;
 
 // Multi-Symbol New Bar Tracker (guarantees trade execution only on closed confirmed bars)
 struct SymbolBarTracker {
@@ -140,21 +142,31 @@ int OnInit()
    g_BarTrackersCount = 0;
    g_LastAutonomousBotTick = GetTickCount(); // Enforce startup stabilization delay
 
+   ENUM_TIMEFRAMES activeTF = (ScanTimeframe == PERIOD_CURRENT || ScanTimeframe == 0) ? (ENUM_TIMEFRAMES)Period() : ScanTimeframe;
+   datetime currentChartBar = iTime(Symbol(), activeTF, 0);
+   if(currentChartBar <= 0)
+   {
+      int tfSec = activeTF * 60;
+      if(tfSec > 0) currentChartBar = (datetime)((long)TimeCurrent() / tfSec * tfSec);
+   }
+   g_LastChartScanBarTime = currentChartBar; // Seed startup bar: guarantees zero trade execution on initial half-bar
+
    // 1. Audit open orders and attach mandatory stops to any unprotected positions
    AuditAndEnforceOpenOrderStops(MagicNumber);
 
    // 2. Discover Market Watch symbols dynamically
    g_TotalWatchlist = DiscoverMarketWatchSymbols(g_Watchlist, IncludeSymbols, ExcludeSymbols);
-   PrintFormat("[AUTONOMOUS BOT] Watchlist initialized with %d active symbols from Market Watch.", g_TotalWatchlist);
+   PrintFormat("[AUTONOMOUS BOT] Initialized on %s (%s). Scan Mode: %s. Watchlist: %d active symbols.",
+               Symbol(), EnumToString(activeTF), (ScanOnBarCloseOnly ? "Strict Bar-Close Only" : "Continuous Interval"), g_TotalWatchlist);
 
    // Seed all watchlist symbols into tracker so no symbol can execute on startup half-bar
    for(int wIdx = 0; wIdx < g_TotalWatchlist; wIdx++)
    {
       SymbolSelect(g_Watchlist[wIdx], true);
-      IsNewBar(g_Watchlist[wIdx], ScanTimeframe);
+      IsNewBar(g_Watchlist[wIdx], activeTF);
    }
 
-   // 3. Start timer for staggered round-robin scanner
+   // 3. Start timer for real-time risk guardian and synchronized scanner
    EventSetTimer(TimerIntervalSec);
 
    return(INIT_SUCCEEDED);
@@ -189,14 +201,19 @@ void ScanNextSymbolBatch(int batchSize = 0)
       return;
    }
 
+   ENUM_TIMEFRAMES activeTF = (ScanTimeframe == PERIOD_CURRENT || ScanTimeframe == 0) ? (ENUM_TIMEFRAMES)Period() : ScanTimeframe;
+
    uint nowTick = GetTickCount();
-   if(g_LastAutonomousBotTick == 0)
+   if(!ScanOnBarCloseOnly)
    {
+      if(g_LastAutonomousBotTick == 0)
+      {
+         g_LastAutonomousBotTick = nowTick;
+         return; // Initial startup stabilization delay: never trade immediately on startup
+      }
+      if(nowTick - g_LastAutonomousBotTick < (uint)(TimerIntervalSec * 1000)) return;
       g_LastAutonomousBotTick = nowTick;
-      return; // Initial startup stabilization delay: never trade immediately on startup
    }
-   if(nowTick - g_LastAutonomousBotTick < (uint)(TimerIntervalSec * 1000)) return;
-   g_LastAutonomousBotTick = nowTick;
 
    int scanCount = (batchSize > 0) ? MathMin(batchSize, g_TotalWatchlist) : g_TotalWatchlist;
    if(batchSize <= 0) g_CurrentScanIndex = 0;
@@ -219,14 +236,14 @@ void ScanNextSymbolBatch(int batchSize = 0)
 
       SymbolSelect(sym, true);
 
-      // Bar confirmation: each symbol must be evaluated only on a confirmed new closed bar
-      if(!IsNewBar(sym, ScanTimeframe))
+      // When not in strict bar-close mode, verify symbol-level new bar
+      if(!ScanOnBarCloseOnly && !IsNewBar(sym, activeTF))
       {
          continue;
       }
 
       // Pre-filter dormant/disabled symbols before computing indicators
-      if(!PreFilterSymbol(sym, MaxSpreadPoints, 205, ScanTimeframe, UseTimeFilter, MaxMarginUsagePct))
+      if(!PreFilterSymbol(sym, MaxSpreadPoints, 205, activeTF, UseTimeFilter, MaxMarginUsagePct))
       {
          continue;
       }
@@ -259,7 +276,7 @@ void ScanNextSymbolBatch(int batchSize = 0)
 
       // Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
       int effectiveMinScore = MathMax(6, MinConfluenceScore);
-      StrategySignal sig = EvaluateSymbolOpportunity(sym, ScanTimeframe, effectiveMinScore, MinRewardToRisk, MinATRPips, MaxATRPips);
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, activeTF, effectiveMinScore, MinRewardToRisk, MinATRPips, MaxATRPips);
       g_LastScannedScore  = sig.score;
       g_LastScannedSignal = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
 
@@ -389,6 +406,15 @@ void UpdateChartHUD()
    else if(isPaused)       statusStr = "⚠️ CONSECUTIVE LOSS COOLDOWN";
    else if(activePos >= MaxOpenPositions) statusStr = "🔒 POSITION LIMIT REACHED";
 
+   ENUM_TIMEFRAMES activeTF = (ScanTimeframe == PERIOD_CURRENT || ScanTimeframe == 0) ? (ENUM_TIMEFRAMES)Period() : ScanTimeframe;
+   int tfSec = activeTF * 60;
+   datetime curTime = TimeCurrent();
+   datetime curBoundary = (tfSec > 0) ? (datetime)((long)curTime / tfSec * tfSec) : 0;
+   int secToNext = (tfSec > 0 && curBoundary > 0) ? (int)((curBoundary + tfSec) - curTime) : 0;
+   if(secToNext < 0) secToNext = 0;
+   string nextScanStr = StringFormat("%dm %02ds", secToNext / 60, secToNext % 60);
+   string scanModeStr = ScanOnBarCloseOnly ? StringFormat("Bar-Close (%s)", EnumToString(activeTF)) : "Continuous Interval";
+
    string hud = StringFormat(
       "=== ULTRA-SAFE AUTONOMOUS TRADING BOT v2.00 ===\n" +
       "Status: %s\n" +
@@ -403,6 +429,7 @@ void UpdateChartHUD()
       "Open Positions: %d / %d (Max)\n" +
       "Max Risk Per Trade: %.1f%% | Max Global Risk: %.1f%%\n" +
       "Min Score: %d/10 | Min RR: 1:%.1f | Max Spread: %.0f pts\n" +
+      "Scan Synchronization: %s (Next: %s)\n" +
       "Monitored Symbols: %d active\n" +
       "Last Scanned: %s (Signal: %s, Score: %d/10)\n" +
       "===============================================",
@@ -412,6 +439,7 @@ void UpdateChartHUD()
       totalRiskExposure, totalExposurePct, MaxGlobalRiskPct,
       activePos, MaxOpenPositions, MaxRiskPerTradePct, MaxGlobalRiskPct,
       MinConfluenceScore, MinRewardToRisk, MaxSpreadPoints,
+      scanModeStr, nextScanStr,
       g_TotalWatchlist, g_LastScannedSymbol, g_LastScannedSignal, g_LastScannedScore
    );
 
@@ -477,6 +505,7 @@ void OnTimer()
    }
 
    // 9. Active position lifecycle management (Break-Even, Trailing Stop, Partial Close)
+   // Runs every 2 seconds on timer so active positions are protected continuously
    Executor_ManageOpenPositions(
       MagicNumber,
       UseBreakEven,
@@ -500,14 +529,56 @@ void OnTimer()
       return; // Portfolio position limit reached
    }
 
-   // 12. Staggered time-sliced round-robin batch scan
-   ScanNextSymbolBatch(BatchSize);
+   // 12. Bar close boundary synchronization check
+   ENUM_TIMEFRAMES activeTF = (ScanTimeframe == PERIOD_CURRENT || ScanTimeframe == 0) ? (ENUM_TIMEFRAMES)Period() : ScanTimeframe;
+   if(ScanOnBarCloseOnly)
+   {
+      datetime currentBarTime = iTime(Symbol(), activeTF, 0);
+      if(currentBarTime <= 0)
+      {
+         int tfSec = activeTF * 60;
+         if(tfSec > 0) currentBarTime = (datetime)((long)TimeCurrent() / tfSec * tfSec);
+      }
+      if(currentBarTime <= 0) return;
+
+      if(g_LastChartScanBarTime == 0)
+      {
+         g_LastChartScanBarTime = currentBarTime;
+         return; // Seeded initial startup bar
+      }
+
+      if(currentBarTime <= g_LastChartScanBarTime)
+      {
+         return; // Inside current forming bar: between bar closes, no new entry scans take place!
+      }
+
+      // New candle boundary confirmed!
+      g_LastChartScanBarTime = currentBarTime;
+      PrintFormat("[AUTONOMOUS BOT] 🕯️ New bar confirmed on %s (%s). Executing full watchlist surveillance scan...",
+                  Symbol(), EnumToString(activeTF));
+   }
+
+   // 13. Multi-symbol market surveillance scan
+   ScanNextSymbolBatch(ScanOnBarCloseOnly ? 0 : BatchSize);
 }
 
 //+------------------------------------------------------------------+
-//| Expert tick function (passive monitoring)                        |
+//| Expert tick function (real-time tick protection)                 |
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Multi-symbol surveillance delegated to OnTimer to avoid chart thread blocking
+   // Real-time trade management on every incoming tick for continuous protection
+   Executor_ManageOpenPositions(
+      MagicNumber,
+      UseBreakEven,
+      BreakEvenTriggerPips,
+      BreakEvenLockPips,
+      UseTrailingStop,
+      TrailingStartPips,
+      TrailingStepPips,
+      UsePartialClose,
+      PartialCloseTriggerPips,
+      PartialCloseRatio,
+      SlippagePoints
+   );
 }
