@@ -190,13 +190,22 @@ class AutonomousMultiSymbolTrader:
                 "spread": 0.0,
                 "digits": 5,
                 "trend": "MONITORING",
+                "pattern": "NONE",
+                "htf_trend": "NEUTRAL",
                 "buy_score": 0,
                 "sell_score": 0,
+                "buy_score_100": 0.0,
+                "sell_score_100": 0.0,
+                "analysis_score": 0.0,
                 "score": 0,
                 "signal": "HOLD",
                 "sl_pips": 30.0,
                 "tp_pips": 60.0,
+                "rr_ratio": 2.0,
                 "rsi": 50.0,
+                "macd": 0.0,
+                "stoch_k": 50.0,
+                "adx": 0.0,
                 "atr": 0.0020
             })
         fallback = {

@@ -497,7 +497,8 @@ async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 f"<b>#{ticket} • {icon} {lots:.2f} {sym}</b>\n"
                 f"   In: <code>{open_p}</code> ➜ Now: <code>{curr_p}</code>\n"
                 f"   SL: {sl_str} | TP: {tp_str}\n"
-                f"   Net P/L: <b>{p_sign}${profit:,.2f}</b>\n\n"
+                f"   Net P/L: <b>{p_sign}${profit:,.2f}</b>\n"
+                f"   ⚡ Actions: /close_{ticket} • /be_{ticket} • /half_{ticket}\n\n"
             )
 
         if page_idx == total_pages - 1:

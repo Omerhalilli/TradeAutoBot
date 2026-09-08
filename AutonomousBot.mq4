@@ -41,7 +41,7 @@ input int                CooldownMinutes               = 60;                // P
 input string             IncludeSymbols                = "";                // Whitelist Symbols (empty = all Market Watch)
 input string             ExcludeSymbols                = "*RUB*,*TRY*,*ZAR*"; // Blacklist Wildcards (Exotics/High-Swap)
 input ENUM_TIMEFRAMES    ScanTimeframe                 = PERIOD_H1;         // Confluence Scoring Timeframe
-input int                BatchSize                     = 3;                 // Round-Robin Time-Sliced Batch Size
+input int                BatchSize                     = 0;                 // Scanner Batch Size (0 = Full Watchlist Scan Every Cycle)
 input int                TimerIntervalSec              = 2;                 // Scanner Timer Interval (Seconds)
 
 //--- [03] TRADE MANAGEMENT & LIFECYCLE
@@ -132,6 +132,7 @@ void ScanNextSymbolBatch(int batchSize = 0)
    }
 
    int scanCount = (batchSize > 0) ? MathMin(batchSize, g_TotalWatchlist) : g_TotalWatchlist;
+   if(batchSize <= 0) g_CurrentScanIndex = 0;
 
    StrategySignal bestSig;
    bestSig.valid = false;

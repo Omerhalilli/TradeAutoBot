@@ -499,6 +499,9 @@ class TestTelegramCommands(unittest.TestCase):
                 reply = self._get_reply_text(context.bot.send_message) or self._get_reply_text(message.reply_text)
                 self.assertIn("888100", reply)
                 self.assertIn("GBPUSD", reply)
+                self.assertIn("/close_888100", reply)
+                self.assertIn("/be_888100", reply)
+                self.assertIn("/half_888100", reply)
 
         asyncio.run(run())
 

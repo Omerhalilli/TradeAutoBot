@@ -77,6 +77,27 @@ string DetectCandlePattern(string sym, ENUM_TIMEFRAMES tf, int &candleBuy, int &
    double upperWick1 = h1 - MathMax(o1, c1);
    double lowerWick1 = MathMin(o1, c1) - l1;
 
+   // Doji Family (body <= 10% of candle range)
+   if(body1 <= (0.10 * range1))
+   {
+      if(lowerWick1 >= (0.65 * range1))
+      {
+         candleBuy += 4;
+         patternName = "DRAGONFLY_DOJI";
+         return patternName;
+      }
+      else if(upperWick1 >= (0.65 * range1))
+      {
+         candleSell += 4;
+         patternName = "GRAVESTONE_DOJI";
+         return patternName;
+      }
+      candleBuy  += 1;
+      candleSell += 1;
+      patternName = "DOJI";
+      return patternName;
+   }
+
    // 1. Bullish Engulfing: previous bearish, current wraps previous body
    if(c2 < o2 && c1 > o1 && c1 >= o2 && o1 <= c2)
    {
@@ -91,15 +112,15 @@ string DetectCandlePattern(string sym, ENUM_TIMEFRAMES tf, int &candleBuy, int &
       patternName = "BEARISH_ENGULFING";
       return patternName;
    }
-   // 3. Hammer: long lower shadow, small body, small upper shadow
-   if(lowerWick1 >= (2.0 * body1) && upperWick1 <= (0.2 * range1))
+   // 3. Hammer: long lower shadow, small real body (> 10% range), small upper shadow
+   if(body1 > (0.10 * range1) && lowerWick1 >= (2.0 * body1) && upperWick1 <= (0.20 * range1))
    {
       candleBuy += 5;
       patternName = "HAMMER";
       return patternName;
    }
-   // 4. Shooting Star: long upper shadow, small body, small lower shadow
-   if(upperWick1 >= (2.0 * body1) && lowerWick1 <= (0.2 * range1))
+   // 4. Shooting Star: long upper shadow, small real body (> 10% range), small lower shadow
+   if(body1 > (0.10 * range1) && upperWick1 >= (2.0 * body1) && lowerWick1 <= (0.20 * range1))
    {
       candleSell += 5;
       patternName = "SHOOTING_STAR";
@@ -117,14 +138,6 @@ string DetectCandlePattern(string sym, ENUM_TIMEFRAMES tf, int &candleBuy, int &
    {
       candleSell += 6;
       patternName = "EVENING_STAR";
-      return patternName;
-   }
-   // 7. Doji: indecision candle with narrow body
-   if(body1 <= (0.10 * range1))
-   {
-      candleBuy  += 1;
-      candleSell += 1;
-      patternName = "DOJI";
       return patternName;
    }
 
@@ -224,17 +237,9 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    sig.adx     = NormalizeDouble(adx_main, 2);
    sig.atr     = atr;
 
-   // Volatility Filter: avoid dead chop (< minATRPips) or news volatility spikes (> maxATRPips)
+   // Volatility metrics: normalize ATR in pips for scoring and stop sizing
    double atrPips = (pipPt > 0.0) ? (atr / pipPt) : 0.0;
    sig.atrPips = NormalizeDouble(atrPips, 1);
-   if(minATRPips > 0.0 && atrPips < minATRPips)
-   {
-      return sig; // Dead/ranging market
-   }
-   if(maxATRPips > 0.0 && atrPips > maxATRPips)
-   {
-      return sig; // Excessive news volatility
-   }
 
    // -----------------------------------------------------------------
    // 0 - 100 INSTITUTIONAL SCORING MODULES
@@ -351,11 +356,11 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       double low1 = iLow(sym, tf, 1);
       double high1 = iHigh(sym, tf, 1);
 
-      if(low1 <= bb_low && close1 > bb_low) buyPoints += 6.0; // Bounce off lower band
+      if(low1 <= bb_low && close1 > bb_low) buyPoints += 8.0; // Strong bounce off lower band
       else if(close1 > bb_mid) buyPoints += 4.0;
 
-      if(high1 >= bb_up && close1 < bb_up) sellPoints += 6.0; // Rejection from upper band
-      else if(close1 < bb_mid) sellPoints += 4.0;
+      if(high1 >= bb_up && close1 < bb_up) sellPoints += 8.0; // Strong rejection from upper band
+      else if(close1 < bb_mid && low1 > bb_low) sellPoints += 4.0; // Bearish side of bands without conflicting lower bounce
    }
 
    // ATR expansion check (0 - 5 points)
@@ -473,29 +478,9 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    sig.analysisScore = NormalizeDouble(finalAnalysis, 1);
    sig.score         = finalScore;
 
-   // Confluence Threshold: must stand on 6 or past 6 (>= minConfluenceScore)
-   if(finalScore < minConfluenceScore)
-   {
-      return sig; // Insufficient confluence for trade execution
-   }
-
-   if(buyScore10 >= minConfluenceScore && buyScore10 > sellScore10)
-   {
-      sig.cmd = OP_BUY;
-      sig.entryPrice = ask;
-   }
-   else if(sellScore10 >= minConfluenceScore && sellScore10 > buyScore10)
-   {
-      sig.cmd = OP_SELL;
-      sig.entryPrice = bid;
-   }
-   else
-   {
-      return sig; // Indecisive or tied direction
-   }
-
    // -----------------------------------------------------------------
    // Dynamic ATR-based Stop Loss & Take Profit Calculation
+   // (Calculated for telemetry, monitoring, and prospective execution)
    // -----------------------------------------------------------------
    double slDist = (atr > 0.0) ? (atr * 1.5) : (pipPt * 30.0);
    double tpDist = (atr > 0.0) ? (atr * 3.0) : (pipPt * 60.0);
@@ -518,15 +503,46 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
 
    sig.rrRatio = (sig.slPips > 0.0) ? NormalizeDouble(sig.tpPips / sig.slPips, 2) : 2.0;
 
-   if(sig.cmd == OP_BUY)
+   // Directional assignment & prospective stops
+   if(buyScore10 > sellScore10)
    {
+      sig.entryPrice = ask;
+      sig.slPrice = NormalizeDouble(ask - slDist, dig);
+      sig.tpPrice = NormalizeDouble(ask + tpDist, dig);
+      if(buyScore10 >= minConfluenceScore) sig.cmd = OP_BUY;
+   }
+   else if(sellScore10 > buyScore10)
+   {
+      sig.entryPrice = bid;
+      sig.slPrice = NormalizeDouble(bid + slDist, dig);
+      sig.tpPrice = NormalizeDouble(bid - tpDist, dig);
+      if(sellScore10 >= minConfluenceScore) sig.cmd = OP_SELL;
+   }
+   else
+   {
+      sig.entryPrice = (ask + bid) / 2.0;
       sig.slPrice = NormalizeDouble(sig.entryPrice - slDist, dig);
       sig.tpPrice = NormalizeDouble(sig.entryPrice + tpDist, dig);
+      sig.cmd = -1; // Tied direction
    }
-   else if(sig.cmd == OP_SELL)
+
+   // Volatility gate for actionable trade execution
+   if(minATRPips > 0.0 && atrPips < minATRPips)
    {
-      sig.slPrice = NormalizeDouble(sig.entryPrice + slDist, dig);
-      sig.tpPrice = NormalizeDouble(sig.entryPrice - tpDist, dig);
+      sig.valid = false;
+      return sig; // Insufficient ATR volatility for trade entry
+   }
+   if(maxATRPips > 0.0 && atrPips > maxATRPips)
+   {
+      sig.valid = false;
+      return sig; // Excessive volatility spike
+   }
+
+   // Confluence Threshold: must stand on 6 or past 6 (>= minConfluenceScore)
+   if(finalScore < minConfluenceScore || sig.cmd < 0)
+   {
+      sig.valid = false;
+      return sig; // Insufficient confluence for trade execution
    }
 
    // Mandatory stops verification: never allow 0 SL or 0 TP

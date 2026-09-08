@@ -260,7 +260,7 @@ def create_application():
     app.add_handler(CommandHandler(["buy", "openbuy"], handlers.cmd_buy))
     app.add_handler(CommandHandler(["sell", "opensell"], handlers.cmd_sell))
     app.add_handler(CommandHandler(["trade", "order"], handlers.cmd_trade))
-    app.add_handler(CommandHandler(["boost", "turbo"], handlers.cmd_boost))
+    app.add_handler(CommandHandler(["boost", "turbo", "boost_boost"], handlers.cmd_boost))
     app.add_handler(CommandHandler(["accounts", "switch"], handlers.cmd_accounts))
     app.add_handler(CommandHandler(["status", "account"], handlers.cmd_account))
     app.add_handler(CommandHandler("positions", handlers.cmd_positions))
