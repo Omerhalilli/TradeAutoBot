@@ -291,7 +291,7 @@ def create_application():
     # Callback Query Handlers
     app.add_handler(CallbackQueryHandler(handlers.cb_quick_trade, pattern=r"^trade:(buy|sell):"))
     app.add_handler(CallbackQueryHandler(handlers.cb_switch_account, pattern=r"^switch_acc:"))
-    app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^(nav_|boost_colors)"))
+    app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^(nav_|boost_colors|scan_sym:)"))
     app.add_handler(CallbackQueryHandler(handlers.cb_autotrade_toggle, pattern=r"^autotrade_toggle:(pause|resume)$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_setrisk, pattern=r"^setrisk:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_reset_safeguards, pattern=r"^recalibrate_safeguards$"))

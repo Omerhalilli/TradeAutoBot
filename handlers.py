@@ -220,6 +220,7 @@ def get_nav_keyboard(active_section: str = "status") -> InlineKeyboardMarkup:
     b_status = "📊 Status" if active_section != "status" else "📊 • Status •"
     b_pos = "💼 Positions" if active_section != "positions" else "💼 • Positions •"
     b_prop = "🛡️ Prop Guard" if active_section != "prop" else "🛡️ • Prop Guard •"
+    b_goal = "🎯 Profit Goal" if active_section != "goal" else "🎯 • Goal •"
     b_report = "📈 24h Report" if active_section != "report" else "📈 • Report •"
     b_boost = "⚡ Turbo Boost" if active_section != "boost" else "⚡ • Boost •"
     b_auto = "🤖 AutoTrade" if active_section != "autotrade" else "🤖 • AutoTrade •"
@@ -234,19 +235,20 @@ def get_nav_keyboard(active_section: str = "status") -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(b_auto, callback_data="nav_autotrade"),
             InlineKeyboardButton(b_scan, callback_data="nav_scan"),
-            InlineKeyboardButton(b_report, callback_data="nav_report")
+            InlineKeyboardButton(b_goal, callback_data="nav_goal")
         ],
         [
-            InlineKeyboardButton("📸 Screenshot", callback_data="nav_shot"),
+            InlineKeyboardButton(b_report, callback_data="nav_report"),
             InlineKeyboardButton(b_boost, callback_data="nav_boost"),
             InlineKeyboardButton("📜 History", callback_data="hist_filter:10")
         ],
         [
+            InlineKeyboardButton("📸 Screenshot", callback_data="nav_shot"),
             InlineKeyboardButton("📅 News", callback_data="news_filter:today"),
-            InlineKeyboardButton("🔄 Refresh", callback_data=f"nav_refresh:{active_section}"),
             InlineKeyboardButton("👥 Switch Account", callback_data="switch_acc:panel")
         ],
         [
+            InlineKeyboardButton("🔄 Refresh", callback_data=f"nav_refresh:{active_section}"),
             InlineKeyboardButton("🚨 Emergency Panic", callback_data="nav_panic")
         ]
     ]
@@ -2345,7 +2347,7 @@ async def cb_nav_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     elif data in ["nav_scan", "nav_refresh:scan"]:
         context.args = []
         await cmd_scan(update, context)
-    elif data.startswith("scan_sym:"):
+    elif data.startswith("scan_sym:") or data.startswith("nav_scan_sym:"):
         target = data.split(":", 1)[1]
         context.args = [target]
         await cmd_scan(update, context)

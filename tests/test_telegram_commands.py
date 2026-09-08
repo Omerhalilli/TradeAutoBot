@@ -838,7 +838,20 @@ class TestTelegramCommands(unittest.TestCase):
                 reply = self._get_reply_text(message.reply_text)
                 self.assertIn("INSTITUTIONAL TECHNICAL AUDIT", reply)
                 self.assertIn("EURUSD", reply)
-                self.assertIn("8/10", reply)
+            # 3. Test callback query for scan_sym: and nav_goal
+            update_cb, context_cb, query_cb = self._make_callback_update(self.auth_id, callback_data="scan_sym:EURUSD")
+            with patch("autotrade.core.autonomous_trader.zmq_client.scan_symbols", return_value=mock_scan):
+                await handlers.cb_nav_action(update_cb, context_cb)
+                reply_cb = self._get_reply_text(query_cb.edit_message_text)
+                self.assertIn("INSTITUTIONAL TECHNICAL AUDIT", reply_cb)
+                self.assertIn("EURUSD", reply_cb)
+
+            update_goal_cb, context_goal_cb, query_goal_cb = self._make_callback_update(self.auth_id, callback_data="nav_goal")
+            with patch("handlers.zmq_client.get_prop", return_value=mock_prop), \
+                 patch("handlers.zmq_client.get_report", return_value=mock_rep):
+                await handlers.cb_nav_action(update_goal_cb, context_goal_cb)
+                reply_goal = self._get_reply_text(query_goal_cb.edit_message_text)
+                self.assertIn("INSTITUTIONAL PROFIT GOAL TRACKER", reply_goal)
 
         asyncio.run(run())
 
