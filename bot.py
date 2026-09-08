@@ -146,6 +146,7 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             # File already claimed or deleted by another poll iteration
             continue
 
+        photo_path = None
         try:
             with open(proc_file, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read().strip()
@@ -169,12 +170,19 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     kb_rows.append([InlineKeyboardButton(btn.get("text", ""), callback_data=btn.get("callback_data")) for btn in row])
                 if kb_rows:
                     reply_markup = InlineKeyboardMarkup(kb_rows)
+            photo_file = data.get("photo") or data.get("photo_file") or data.get("image")
+            photo_path = None
+            if photo_file:
+                candidate_path = os.path.join(MT4_FILES_DIR, os.path.basename(str(photo_file)))
+                if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 100:
+                    photo_path = candidate_path
 
             target_chats = [chat_id] if (chat_id and str(chat_id).strip()) else ALLOWED_CHAT_IDS
             curr_ts = time.time()
             for cid in target_chats:
                 cid_str = str(cid)
-                sig = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+                dedup_content = text + (f":photo:{os.path.basename(str(photo_file))}" if photo_file else "")
+                sig = hashlib.sha256(dedup_content.encode("utf-8", errors="replace")).hexdigest()
                 cache_key = (cid_str, sig)
                 last_time = _recent_outbox_dispatches.get(cache_key, 0.0)
                 diff = curr_ts - last_time
@@ -183,13 +191,23 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     continue
 
                 try:
-                    await context.bot.send_message(
-                        chat_id=cid,
-                        text=text,
-                        parse_mode=ParseMode.HTML if parse_mode == "HTML" else None,
-                        reply_markup=reply_markup,
-                        disable_web_page_preview=True
-                    )
+                    if photo_path and os.path.exists(photo_path):
+                        with open(photo_path, "rb") as pf:
+                            await context.bot.send_photo(
+                                chat_id=cid,
+                                photo=pf,
+                                caption=text if text else None,
+                                parse_mode=ParseMode.HTML if parse_mode == "HTML" else None,
+                                reply_markup=reply_markup
+                            )
+                    else:
+                        await context.bot.send_message(
+                            chat_id=cid,
+                            text=text,
+                            parse_mode=ParseMode.HTML if parse_mode == "HTML" else None,
+                            reply_markup=reply_markup,
+                            disable_web_page_preview=True
+                        )
                     _recent_outbox_dispatches[cache_key] = time.time()
                 except Exception as e:
                     logger.error(f"Error sending outbox alert to chat {cid}: {e}")
@@ -202,6 +220,11 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                     os.remove(proc_file)
             except Exception:
                 pass
+            if photo_path and os.path.exists(photo_path):
+                try:
+                    os.remove(photo_path)
+                except Exception:
+                    pass
 
     # Prune old entries from debounce cache in-place to preserve dict identity
     if len(_recent_outbox_dispatches) > 200:

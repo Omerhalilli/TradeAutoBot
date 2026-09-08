@@ -198,6 +198,63 @@ bool Telegram_WriteOutboxPayload(const string textHtml, const string chatId = ""
    return false;
 }
 
+// Validate bot token format: must be at least 20 chars, contain ':', and not be a placeholder
+bool Telegram_IsValidBotToken(const string token)
+{
+   string t = token;
+   StringTrimLeft(t);
+   StringTrimRight(t);
+   if(StringLen(t) < 20) return false;
+   int colonIdx = StringFind(t, ":");
+   if(colonIdx <= 0 || colonIdx >= StringLen(t) - 1) return false;
+   if(StringFind(t, "your_") >= 0 || StringFind(t, "YOUR_") >= 0 ||
+      StringFind(t, "placeholder") >= 0 || StringFind(t, "xxx") >= 0 ||
+      StringFind(t, "BOT_TOKEN") >= 0) return false;
+   return true;
+}
+
+// Write photo payload directly to MT4 Files outbox for Python dispatcher (<0.5ms)
+bool Telegram_WriteOutboxPhotoPayload(const string photoFilename, const string captionHtml, const string chatId = "", const string replyMarkupJson = "")
+{
+   string escapedText = Telegram_JsonEscape(captionHtml);
+   string escapedPhoto = Telegram_JsonEscape(photoFilename);
+   string jsonPayload;
+   if(StringLen(replyMarkupJson) > 0)
+   {
+      jsonPayload = StringFormat("{\"chat_id\":\"%s\",\"photo\":\"%s\",\"caption\":\"%s\",\"text\":\"%s\",\"parse_mode\":\"HTML\",\"reply_markup\":%s}",
+                                 chatId, escapedPhoto, escapedText, escapedText, replyMarkupJson);
+   }
+   else
+   {
+      jsonPayload = StringFormat("{\"chat_id\":\"%s\",\"photo\":\"%s\",\"caption\":\"%s\",\"text\":\"%s\",\"parse_mode\":\"HTML\"}",
+                                 chatId, escapedPhoto, escapedText, escapedText);
+   }
+   
+   uchar postData[];
+   StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
+   int dataSize = ArraySize(postData);
+   if(dataSize > 0 && postData[dataSize - 1] == 0)
+   {
+      ArrayResize(postData, dataSize - 1);
+      dataSize--;
+   }
+   
+   string uniqueOutName = StringFormat("tg_out_%u_%d.json", (uint)GetTickCount(), MathRand());
+   int uHandle = FileOpen(uniqueOutName, FILE_WRITE|FILE_BIN);
+   if(uHandle != INVALID_HANDLE)
+   {
+      FileWriteArray(uHandle, postData, 0, dataSize);
+      FileClose(uHandle);
+      PrintFormat("[Telegram] Queued photo (%s) to fail-safe outbox for Python dispatcher: %s", photoFilename, uniqueOutName);
+      return true;
+   }
+   else
+   {
+      PrintFormat("[Telegram] ERROR: Failed to write photo outbox file %s (Error %d)", uniqueOutName, GetLastError());
+   }
+   return false;
+}
+
 // WebRequest permission tracking cache to eliminate redundant stalls and log spam when disabled in MT4 options
 static bool g_tgWebRequestDisabled = false;
 
@@ -206,7 +263,7 @@ bool Telegram_DirectPost(const string botToken, const string chatId, const strin
 {
    if(IsStopped()) return false;
    if(g_tgWebRequestDisabled) return false;
-   if(StringLen(botToken) == 0 || StringLen(chatId) == 0) return false;
+   if(!Telegram_IsValidBotToken(botToken) || StringLen(chatId) == 0) return false;
    
    string escapedText = Telegram_JsonEscape(textHtml);
    string jsonPayload;
@@ -595,6 +652,14 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    FileReadArray(fileHandle, fileBytes, 0, fileSize);
    FileClose(fileHandle);
    
+   // Validate token format: if token is empty, placeholder, or invalid, do NOT make failing WebRequest calls that pollute logs.
+   // Route photo requests cleanly to the file-based outbox buffer so the Python bot daemon (which has the valid token from .env) handles delivery asynchronously.
+   if(!Telegram_IsValidBotToken(botToken) || g_tgWebRequestDisabled)
+   {
+      PrintFormat("[Telegram] TelegramBotToken is empty/invalid or WebRequest disabled. Routing photo %s cleanly to outbox for Python dispatcher.", filename);
+      return Telegram_WriteOutboxPhotoPayload(filename, captionHtml, chatId, replyMarkupJson);
+   }
+   
    string boundary = "--------------------MqlBoundary9876543210";
    string headers = "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
    
@@ -653,17 +718,17 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    ResetLastError();
    int res = WebRequest("POST", url, headers, 2500, bodyBytes, resultData, resultHeaders);
    
-   // Clean up local screenshot
-   FileDelete(filename);
-   
    if(res == 200)
    {
+      FileDelete(filename);
       return true;
    }
    
    string responseBody = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
-   PrintFormat("[Telegram] sendPhoto failed. HTTP Code: %d, Terminal Error: %d, Response: %s", res, GetLastError(), responseBody);
-   return false;
+   PrintFormat("[Telegram] Direct sendPhoto failed (HTTP Code: %d, Terminal Error: %d, Response: %s). Routing photo %s to fail-safe outbox.",
+               res, GetLastError(), responseBody, filename);
+   // Clean fallback to outbox buffer so Python bot daemon (with valid .env token) delivers photo asynchronously
+   return Telegram_WriteOutboxPhotoPayload(filename, captionHtml, chatId, replyMarkupJson);
 }
 
 //+------------------------------------------------------------------+

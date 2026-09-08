@@ -479,6 +479,47 @@ double   g_MaxLot               = 100.0;
 bool     g_AutoTradingRuntimeActive = true;
 datetime g_LastBarProcessedTime = 0;
 datetime g_LastOrderExecutionTime = 0;
+
+// Multi-Symbol New Bar Tracker (guarantees trade execution only on closed confirmed bars)
+struct SymbolBarTracker {
+   string sym;
+   ENUM_TIMEFRAMES tf;
+   datetime lastBarTime;
+};
+
+#define MAX_BAR_TRACKERS 128
+SymbolBarTracker g_BarTrackers[MAX_BAR_TRACKERS];
+int g_BarTrackersCount = 0;
+
+bool IsNewBar(const string sym, const ENUM_TIMEFRAMES tf)
+{
+   datetime currentBarTime = iTime(sym, tf, 0);
+   if(currentBarTime <= 0) return false;
+   
+   for(int i = 0; i < g_BarTrackersCount; i++)
+   {
+      if(g_BarTrackers[i].sym == sym && g_BarTrackers[i].tf == tf)
+      {
+         if(currentBarTime > g_BarTrackers[i].lastBarTime)
+         {
+            g_BarTrackers[i].lastBarTime = currentBarTime;
+            return true;
+         }
+         return false; // Still inside current forming bar
+      }
+   }
+   
+   // First time encountering this symbol/tf: register current bar time and return false.
+   // Guarantees we NEVER execute trades immediately on startup or on an unconfirmed half-bar!
+   if(g_BarTrackersCount < MAX_BAR_TRACKERS)
+   {
+      g_BarTrackers[g_BarTrackersCount].sym = sym;
+      g_BarTrackers[g_BarTrackersCount].tf = tf;
+      g_BarTrackers[g_BarTrackersCount].lastBarTime = currentBarTime;
+      g_BarTrackersCount++;
+   }
+   return false;
+}
 datetime g_DayAnchorDate        = 0;
 double   g_StartingDayEquity    = 0.0;
 double   g_StartingDayBalance   = 0.0;
@@ -1148,11 +1189,41 @@ bool ValidateTradeFilters(const ENUM_SIGNAL_DECISION proposedSignal)
    }
 
 
-   // 0.2 Multi-Timeframe Alignment Gate (H1 & H4)
-   if(UseMultiTimeframeMatrix)
+   // 0.2 Multi-Timeframe Alignment Gate (H4 & D1 must not contradict entry)
+   if(!ValidateHigherTimeframeTrend(PERIOD_H4, proposedSignal)) return false;
+   if(!ValidateHigherTimeframeTrend(PERIOD_D1, proposedSignal)) return false;
+
+   // 0.3 ADX Trend Strength Gate: reject flat choppy ranges <= 20.0
+   g_CalculatedADX = iADX(Symbol(), Period(), ADX_Period, PRICE_CLOSE, MODE_MAIN, 1);
+   if(g_CalculatedADX <= 20.0)
    {
-      if(!ValidateHigherTimeframeTrend(PERIOD_H1, proposedSignal)) return false;
-      if(!ValidateHigherTimeframeTrend(PERIOD_H4, proposedSignal)) return false;
+      PrintFormat("[FILTER VETO] ADX trend strength %.1f <= 20.0. Market is flat/choppy.", g_CalculatedADX);
+      return false;
+   }
+   double adxPlus  = iADX(Symbol(), Period(), ADX_Period, PRICE_CLOSE, MODE_PLUSDI, 1);
+   double adxMinus = iADX(Symbol(), Period(), ADX_Period, PRICE_CLOSE, MODE_MINUSDI, 1);
+   if(proposedSignal == SIGNAL_LONG && adxPlus <= adxMinus)
+   {
+      PrintFormat("[FILTER VETO] Long entry rejected: ADX +DI (%.1f) <= -DI (%.1f)", adxPlus, adxMinus);
+      return false;
+   }
+   if(proposedSignal == SIGNAL_SHORT && adxMinus <= adxPlus)
+   {
+      PrintFormat("[FILTER VETO] Short entry rejected: ADX -DI (%.1f) <= +DI (%.1f)", adxMinus, adxPlus);
+      return false;
+   }
+
+   // 0.4 RSI Momentum Gate: strictly in valid continuation range (45-65 for BUY, 35-55 for SELL; reject if overbought/oversold)
+   g_CalculatedRSI = iRSI(Symbol(), Period(), RSI_Period, RSI_AppliedPrice, 1);
+   if(proposedSignal == SIGNAL_LONG && (g_CalculatedRSI < 45.0 || g_CalculatedRSI > 65.0))
+   {
+      PrintFormat("[FILTER VETO] Long entry rejected: RSI %.1f outside valid range [45.0 - 65.0] (exhaustion/counter-trend)", g_CalculatedRSI);
+      return false;
+   }
+   if(proposedSignal == SIGNAL_SHORT && (g_CalculatedRSI < 35.0 || g_CalculatedRSI > 55.0))
+   {
+      PrintFormat("[FILTER VETO] Short entry rejected: RSI %.1f outside valid range [35.0 - 55.0] (exhaustion/counter-trend)", g_CalculatedRSI);
+      return false;
    }
 
 
@@ -5399,30 +5470,47 @@ void AnalyzeHistoricalPerformance(SPerformanceTelemetry &telemetry)
 //+------------------------------------------------------------------+
 bool ValidateHigherTimeframeTrend(const ENUM_TIMEFRAMES htf, const ENUM_SIGNAL_DECISION signal)
 {
+   if(iBars(Symbol(), htf) < 50) return true;
+
    double htfEma20  = iMA(Symbol(), htf, EMA_Fast_Period,   0, MODE_EMA, EMA_AppliedPrice, 1);
    double htfEma50  = iMA(Symbol(), htf, EMA_Medium_Period, 0, MODE_EMA, EMA_AppliedPrice, 1);
    double htfEma200 = iMA(Symbol(), htf, EMA_Slow_Period,   0, MODE_EMA, EMA_AppliedPrice, 1);
-
+   double htfClose  = iClose(Symbol(), htf, 1);
 
    if(signal == SIGNAL_LONG)
    {
-      // Higher timeframe must not be in a confirmed strong downtrend
-      if(htfEma20 < htfEma50 && htfEma50 < htfEma200)
+      // Higher timeframe must not contradict BUY: reject if bearish stack or price below EMA 200
+      if(htfEma200 > 0.0)
       {
-         PrintFormat("[HTF VETO] Long signal contradicts %s strong bearish trend stack", EnumToString(htf));
+         if((htfEma20 < htfEma50 && htfEma50 < htfEma200) || htfClose < htfEma200)
+         {
+            PrintFormat("[HTF VETO] Long signal contradicts %s bearish trend stack/EMA200", EnumToString(htf));
+            return false;
+         }
+      }
+      else if(htfEma20 < htfEma50)
+      {
+         PrintFormat("[HTF VETO] Long signal contradicts %s bearish alignment", EnumToString(htf));
          return false;
       }
    }
    else if(signal == SIGNAL_SHORT)
    {
-      // Higher timeframe must not be in a confirmed strong uptrend
-      if(htfEma20 > htfEma50 && htfEma50 > htfEma200)
+      // Higher timeframe must not contradict SELL: reject if bullish stack or price above EMA 200
+      if(htfEma200 > 0.0)
       {
-         PrintFormat("[HTF VETO] Short signal contradicts %s strong bullish trend stack", EnumToString(htf));
+         if((htfEma20 > htfEma50 && htfEma50 > htfEma200) || htfClose > htfEma200)
+         {
+            PrintFormat("[HTF VETO] Short signal contradicts %s bullish trend stack/EMA200", EnumToString(htf));
+            return false;
+         }
+      }
+      else if(htfEma20 > htfEma50)
+      {
+         PrintFormat("[HTF VETO] Short signal contradicts %s bullish alignment", EnumToString(htf));
          return false;
       }
    }
-
 
    return true;
 }
@@ -6724,12 +6812,22 @@ int OnInit()
 
    // === STEP 2: RUNTIME FLAG INITIALIZATION ===
    g_AutoTradingRuntimeActive = UseAutoTrading;
-   g_LastBarProcessedTime     = 0; // Reset bar lock so new timeframe bar processes immediately!
+   datetime currentBar0 = iTime(Symbol(), Period(), 0);
+   g_LastBarProcessedTime = (currentBar0 > 0) ? currentBar0 : 0;
+   if(currentBar0 > 0)
+   {
+      IsNewBar(Symbol(), (ENUM_TIMEFRAMES)Period()); // Lock current forming bar into tracker: never trade on startup tick
+   }
 
    // === STEP 3: INPUT PARAMETER VALIDATION ===
-   if(MinRequiredScore < 1 || MinRequiredScore > 10)
+   if(MinRequiredScore < 6 || MinRequiredScore > 10)
    {
-      Print("[INIT ERROR] MinRequiredScore must be between 1 and 10. Current: ", MinRequiredScore);
+      Print("[INIT ERROR] MinRequiredScore must be between 6 and 10 (score < 6 is strictly prohibited). Current: ", MinRequiredScore);
+      return(INIT_FAILED);
+   }
+   if(AutonomousMinConfluenceScore < 6 || AutonomousMinConfluenceScore > 10)
+   {
+      Print("[INIT ERROR] AutonomousMinConfluenceScore must be between 6 and 10 (score < 6 is strictly prohibited). Current: ", AutonomousMinConfluenceScore);
       return(INIT_FAILED);
    }
    if(MagicNumber <= 0)
@@ -6880,6 +6978,11 @@ void Autonomous_MultiSymbolScan()
    
    static uint s_lastAutonomousScanTick = 0;
    uint nowTick = GetTickCount();
+   if(s_lastAutonomousScanTick == 0)
+   {
+      s_lastAutonomousScanTick = nowTick;
+      return; // Initial startup stabilization delay: never trade immediately on startup
+   }
    if(nowTick - s_lastAutonomousScanTick < (uint)(AutonomousScanIntervalSec * 1000)) return;
    s_lastAutonomousScanTick = nowTick;
 
@@ -6925,6 +7028,8 @@ void Autonomous_MultiSymbolScan()
    
    if(numSymbols <= 0) return;
 
+   int effectiveMinScore = MathMax(6, AutonomousMinConfluenceScore);
+
    // 4. Scan all configured symbols one by one and rank best opportunity
    StrategySignal bestSig;
    bestSig.valid = false;
@@ -6941,6 +7046,9 @@ void Autonomous_MultiSymbolScan()
       if(GetGlobalActivePositions(MagicNumber) >= MaxOpenPositions) return;
 
       string sym = scanSymbols[i];
+
+      // Bar confirmation: each symbol must be evaluated only on a confirmed new closed bar
+      if(!IsNewBar(sym, PERIOD_H1)) continue;
 
       // 5. Check persistent symbol cooldown FIRST
       if(IsSymbolInCooldown(sym, AutonomousCooldownMinutes)) continue;
@@ -6968,8 +7076,9 @@ void Autonomous_MultiSymbolScan()
       if(!CanOpenCurrencyExposure(sym, MaxExposurePerCurrency, MagicNumber)) continue;
 
       // 9. Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
-      StrategySignal sig = EvaluateSymbolOpportunity(sym, PERIOD_H1, AutonomousMinConfluenceScore, 1.5, 10.0, 150.0);
-      if(!sig.valid || sig.cmd < 0 || sig.score < AutonomousMinConfluenceScore) continue;
+      // Score < 6 (e.g. 5) is strictly prohibited from opening a trade
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, PERIOD_H1, effectiveMinScore, 1.5, 10.0, 150.0);
+      if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.score < 6) continue;
 
       double entryPrice = (sig.cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
       double orderLots = CalculateDynamicLotSize(entryPrice, sig.slPrice, sym);
@@ -6989,12 +7098,13 @@ void Autonomous_MultiSymbolScan()
    }
 
    // 10. Post-scan decision: If one or more qualified setups found, select and execute the best one!
-   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSymbol != "")
+   // Must strictly satisfy score >= 6 and score >= effectiveMinScore
+   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= 6 && bestSig.score >= effectiveMinScore && bestSymbol != "")
    {
       if(AutonomousTradeDirectly)
       {
          PrintFormat("[AUTONOMOUS MULTI-SYMBOL SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
-                     numSymbols, qualifiedCount, AutonomousMinConfluenceScore, bestSymbol,
+                     numSymbols, qualifiedCount, effectiveMinScore, bestSymbol,
                      (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSig.score, bestSig.analysisScore, bestLots, bestSig.rrRatio);
 
          int ticket = ExecuteSmartOrder(bestSig.cmd, bestLots, bestSig.entryPrice, bestSig.slPrice, bestSig.tpPrice, bestSymbol);
@@ -7015,7 +7125,7 @@ void Autonomous_MultiSymbolScan()
    {
       // No symbol reached confluence threshold >= 6; wait cleanly for next cycle
       PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). Capital safely preserved.",
-                  numSymbols, AutonomousMinConfluenceScore);
+                  numSymbols, effectiveMinScore);
    }
 }
 
@@ -7172,50 +7282,55 @@ void OnTick()
    EnforceTradeExpiration();
 
 
-   // 2. Bar close evaluation constraint (prevents repainting)
-   datetime currentBarTime = iTime(Symbol(), Period(), 0);
-   if(currentBarTime == g_LastBarProcessedTime)
+   // 2. Bar close evaluation constraint (prevents repainting and immediate entry on startup)
+   if(!IsNewBar(Symbol(), (ENUM_TIMEFRAMES)Period()))
    {
       return; // Inside current forming bar
    }
 
-
-   g_LastBarProcessedTime = currentBarTime;
-
+   g_LastBarProcessedTime = iTime(Symbol(), Period(), 0);
 
    // 3. Multi-Indicator Confluence Scoring
    int buyScore = 0;
    int sellScore = 0;
    ExecuteScoringPipeline(buyScore, sellScore);
 
-
    ENUM_SIGNAL_DECISION decision = SIGNAL_NEUTRAL;
    int finalWinningScore = 0;
+   int effectiveMinScore = MathMax(6, MinRequiredScore);
 
-
-   if(buyScore >= MinRequiredScore && buyScore > sellScore)
+   // Strict Directional Trend Confirmation: EMA 20 > EMA 50 > EMA 200 for BUY, or EMA 20 < EMA 50 < EMA 200 for SELL
+   // If score is < 6 (e.g. 5), opening a trade is STRICTLY PROHIBITED
+   if(buyScore >= effectiveMinScore && buyScore > sellScore)
    {
-      if(!RequireTrendDirectionMatch || g_ActiveTrendRegime == TREND_STRONG_BULLISH || g_ActiveTrendRegime == TREND_WEAK_BULLISH)
+      if(g_ActiveTrendRegime == TREND_STRONG_BULLISH)
       {
          decision = SIGNAL_LONG;
          finalWinningScore = buyScore;
          g_LastSignalVerdict = "BUY";
       }
+      else
+      {
+         g_LastSignalVerdict = "NONE";
+      }
    }
-   else if(sellScore >= MinRequiredScore && sellScore > buyScore)
+   else if(sellScore >= effectiveMinScore && sellScore > buyScore)
    {
-      if(!RequireTrendDirectionMatch || g_ActiveTrendRegime == TREND_STRONG_BEARISH || g_ActiveTrendRegime == TREND_WEAK_BEARISH)
+      if(g_ActiveTrendRegime == TREND_STRONG_BEARISH)
       {
          decision = SIGNAL_SHORT;
          finalWinningScore = sellScore;
          g_LastSignalVerdict = "SELL";
+      }
+      else
+      {
+         g_LastSignalVerdict = "NONE";
       }
    }
    else
    {
       g_LastSignalVerdict = "NONE";
    }
-
 
    g_LastSignalScore = finalWinningScore;
 

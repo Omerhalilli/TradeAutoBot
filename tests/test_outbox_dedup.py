@@ -140,6 +140,59 @@ class TestOutboxDeduplication(unittest.TestCase):
         self.assertEqual(mock_context.bot.send_message.call_count, 2)
         self.assertEqual(len(os.listdir(self.test_dir)), 0)
 
+    def test_outbox_photo_dispatched_and_cleaned_up(self):
+        """Outbox payload with a photo should dispatch via send_photo and clean up image file."""
+        photo_filename = "Entry_12345.png"
+        photo_path = os.path.join(self.test_dir, photo_filename)
+        with open(photo_path, "wb") as pf:
+            pf.write(b"PNG_FAKE_IMAGE_DATA_PADDING_BYTE_ARRAY" * 10)  # > 100 bytes
+
+        payload = {
+            "chat_id": "999888",
+            "photo": photo_filename,
+            "text": "<b>SELL EURUSD</b> opened",
+            "parse_mode": "HTML"
+        }
+        json_path = os.path.join(self.test_dir, "tg_out_photo.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+        mock_context = MagicMock()
+        mock_context.bot.send_photo = AsyncMock()
+        mock_context.bot.send_message = AsyncMock()
+
+        with patch("bot.MT4_FILES_DIR", self.test_dir):
+            asyncio.run(outbox_alert_job(mock_context))
+
+        self.assertEqual(mock_context.bot.send_photo.call_count, 1)
+        self.assertEqual(mock_context.bot.send_message.call_count, 0)
+        # Ensure image file and json file were both cleaned up
+        self.assertFalse(os.path.exists(photo_path))
+        self.assertFalse(os.path.exists(json_path))
+
+    def test_outbox_photo_missing_file_falls_back_to_send_message(self):
+        """If referenced photo file does not exist, outbox poller falls back to send_message cleanly."""
+        payload = {
+            "chat_id": "999888",
+            "photo": "non_existent.png",
+            "text": "<b>SELL EURUSD</b> opened",
+            "parse_mode": "HTML"
+        }
+        json_path = os.path.join(self.test_dir, "tg_out_missing_photo.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+
+        mock_context = MagicMock()
+        mock_context.bot.send_photo = AsyncMock()
+        mock_context.bot.send_message = AsyncMock()
+
+        with patch("bot.MT4_FILES_DIR", self.test_dir):
+            asyncio.run(outbox_alert_job(mock_context))
+
+        self.assertEqual(mock_context.bot.send_photo.call_count, 0)
+        self.assertEqual(mock_context.bot.send_message.call_count, 1)
+        self.assertFalse(os.path.exists(json_path))
+
 
 if __name__ == "__main__":
     unittest.main()

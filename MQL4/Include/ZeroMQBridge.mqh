@@ -2105,7 +2105,8 @@ string Zmq_HandleScanSymbols(const string reqJson)
       json += "\"macd\":" + DoubleToString(sig.macd, 6) + ",";
       json += "\"stoch_k\":" + DoubleToString(sig.stochK, 1) + ",";
       json += "\"adx\":" + DoubleToString(sig.adx, 1) + ",";
-      json += "\"atr\":" + DoubleToString(sig.atr, dig);
+      json += "\"atr\":" + DoubleToString(sig.atr, dig) + ",";
+      json += "\"bar_time\":" + IntegerToString((long)iTime(sym, tf, 0));
       json += "}";
       validCount++;
    }

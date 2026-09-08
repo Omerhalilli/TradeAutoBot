@@ -98,7 +98,7 @@ class AutonomousMultiSymbolTrader:
         if not self.symbols:
             self.symbols = list(DEFAULT_PORTFOLIO_SYMBOLS)
 
-        self.min_score: int = min_score
+        self.min_score: int = max(6, int(min_score))
         self.cooldown_sec: int = cooldown_sec
         self.max_spread: float = max_spread
         self.max_positions: int = max_positions
@@ -107,6 +107,7 @@ class AutonomousMultiSymbolTrader:
         self.total_trades_executed: int = 0
         self.last_trade_times: Dict[str, float] = {}
         self.last_failure_times: Dict[str, float] = {}
+        self.last_traded_bar_times: Dict[str, int] = {}
         self.last_scan_data: Dict[str, Any] = {}
         self.last_scan_timestamp: float = 0.0
         self._lock = asyncio.Lock()
@@ -286,7 +287,12 @@ class AutonomousMultiSymbolTrader:
             for item in results:
                 sig = str(item.get("signal", "HOLD")).strip().upper()
                 sc = int(item.get("score", 0))
-                if sig in ("BUY", "SELL") and sc >= self.min_score:
+                trend_str = str(item.get("trend", "")).strip().upper()
+                if sig == "BUY" and "BEAR" in trend_str:
+                    continue
+                if sig == "SELL" and "BULL" in trend_str:
+                    continue
+                if sig in ("BUY", "SELL") and sc >= self.min_score and sc >= 6:
                     candidates.append(item)
 
             def _safety_sort_key(it):
@@ -346,6 +352,22 @@ class AutonomousMultiSymbolTrader:
                 )
                 if now - last_time < self.cooldown_sec:
                     continue
+
+                # Closed Bar Confirmation: prevent duplicate executions on the same bar
+                bar_time = item.get("bar_time")
+                if bar_time is not None:
+                    try:
+                        bt_val = int(bar_time)
+                        if bt_val > 0:
+                            last_bt = max(
+                                self.last_traded_bar_times.get(raw_sym, 0),
+                                self.last_traded_bar_times.get(canon_sym, 0)
+                            )
+                            if last_bt == bt_val:
+                                logger.debug(f"AutonomousTrader: Skipping {raw_sym} - bar {bt_val} already traded.")
+                                continue
+                    except (ValueError, TypeError):
+                        pass
 
                 # Calculate protective SL & TP (mandatory stops with min 1.5:1 reward-to-risk)
                 sl_pips = float(item.get("sl_pips", 30.0))
@@ -428,6 +450,14 @@ class AutonomousMultiSymbolTrader:
                     self.total_trades_executed += 1
                     self.last_trade_times[raw_sym] = now
                     self.last_trade_times[canon_sym] = now
+                    if bar_time is not None:
+                        try:
+                            bt_val = int(bar_time)
+                            if bt_val > 0:
+                                self.last_traded_bar_times[raw_sym] = bt_val
+                                self.last_traded_bar_times[canon_sym] = bt_val
+                        except (ValueError, TypeError):
+                            pass
                     open_symbols.add(raw_sym)
                     canonical_open_symbols.add(canon_sym)
                     currency_exposure[cand_base] = currency_exposure.get(cand_base, 0) + 1
@@ -603,7 +633,7 @@ class AutonomousMultiSymbolTrader:
             )
 
             # Track top candidate for spotlight
-            if sig in ("BUY", "SELL") and score >= self.min_score:
+            if sig in ("BUY", "SELL") and score >= self.min_score and score >= 6:
                 rank = (analysis_score * 100.0) + (rr * 50.0) - (spread * 2.0)
                 if rank > best_rank:
                     best_rank = rank
@@ -720,7 +750,7 @@ class AutonomousMultiSymbolTrader:
             f"• <b>Evaluated Sell Confluence:</b> <code>{sell_score_100:.1f} / 100 pts</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
-        if score >= self.min_score and sig in ("BUY", "SELL"):
+        if score >= self.min_score and score >= 6 and sig in ("BUY", "SELL"):
             sl_pips = float(item.get("sl_pips", 30.0))
             tp_pips = float(item.get("tp_pips", 60.0))
             rr = float(item.get("rr_ratio", 2.0))

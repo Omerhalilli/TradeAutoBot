@@ -183,12 +183,13 @@ void ScanNextSymbolBatch(int batchSize = 0)
       }
 
       // Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
-      StrategySignal sig = EvaluateSymbolOpportunity(sym, ScanTimeframe, MinConfluenceScore, MinRewardToRisk, MinATRPips, MaxATRPips);
+      int effectiveMinScore = MathMax(6, MinConfluenceScore);
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, ScanTimeframe, effectiveMinScore, MinRewardToRisk, MinATRPips, MaxATRPips);
       g_LastScannedScore  = sig.score;
       g_LastScannedSignal = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
 
-      // Confluence threshold: must stand on 6 or past 6 (Score >= 6)
-      if(!sig.valid || sig.cmd < 0 || sig.score < MinConfluenceScore)
+      // Confluence threshold: must stand on 6 or past 6 (Score >= 6; score < 6 strictly prohibited)
+      if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.score < 6)
       {
          continue;
       }

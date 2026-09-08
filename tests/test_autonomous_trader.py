@@ -548,6 +548,109 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_score_5_and_below_strictly_ignored(self):
+        """Verifies score 5 (and below 6) is strictly ignored, resolving user bug."""
+        # Ensure min_score clamping
+        lenient_trader = AutonomousMultiSymbolTrader(symbols=["EURCAD"], min_score=4)
+        self.assertGreaterEqual(lenient_trader.min_score, 6)
+
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURCAD",
+                    "score": 5,  # Score 5 reported by user
+                    "signal": "SELL",
+                    "trend": "STRONG_BEARISH",
+                    "spread": 15.0
+                }
+            ]
+        }
+        mock_positions = {"status": "ok", "positions": []}
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
+    def test_directional_trend_mismatch_ignored(self):
+        """Verifies buy signals in bearish trends or sell signals in bullish trends are rejected."""
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD",
+                    "score": 8,
+                    "signal": "BUY",
+                    "trend": "STRONG_BEARISH",  # Mismatch!
+                    "spread": 10.0
+                },
+                {
+                    "symbol": "GBPUSD",
+                    "score": 8,
+                    "signal": "SELL",
+                    "trend": "STRONG_BULLISH",  # Mismatch!
+                    "spread": 10.0
+                }
+            ]
+        }
+        mock_positions = {"status": "ok", "positions": []}
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
+    def test_closed_bar_confirmation_dedup(self):
+        """Verifies closed bar timestamp confirmation prevents duplicate entries on the same bar."""
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD",
+                    "score": 8,
+                    "signal": "BUY",
+                    "trend": "STRONG_BULLISH",
+                    "spread": 10.0,
+                    "sl_pips": 30.0,
+                    "tp_pips": 60.0,
+                    "bar_time": 1788890000
+                }
+            ]
+        }
+        mock_positions = {"status": "ok", "positions": []}
+        mock_order_res = {"status": "ok", "ticket": 777001, "price": 1.0850}
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order", return_value=mock_order_res) as mock_open:
+                # First execution succeeds
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 1)
+                self.assertEqual(mock_open.call_count, 1)
+                self.assertEqual(self.trader.last_traded_bar_times.get("EURUSD"), 1788890000)
+
+                # Second cycle with same bar_time is skipped even if cooldown was cleared
+                self.trader.last_trade_times.clear()
+                mock_positions_empty = {"status": "ok", "positions": []}
+                with patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions_empty):
+                    trades2 = await self.trader.execute_autonomous_cycle()
+                    self.assertEqual(len(trades2), 0)
+                    self.assertEqual(mock_open.call_count, 1)  # Not called again!
+
+        asyncio.run(run_test())
+
 
 class TestTelegramAutonomousHandlers(unittest.TestCase):
     def setUp(self):
@@ -707,6 +810,8 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
 
         asyncio.run(run_test())
 
+
 if __name__ == "__main__":
     unittest.main()
+
 

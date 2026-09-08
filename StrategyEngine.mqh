@@ -254,28 +254,26 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       if(ema20 > ema50 && ema50 > ema200)
       {
-         buyPoints += 12.0;
+         buyPoints += 14.0;
          sig.trend = "STRONG BULLISH";
       }
       else if(ema20 > ema50)
       {
-         buyPoints += 8.0;
-         sig.trend = "BULLISH";
+         sig.trend = "COUNTER-TREND BULLISH";
       }
 
       if(ema20 < ema50 && ema50 < ema200)
       {
-         sellPoints += 12.0;
+         sellPoints += 14.0;
          sig.trend = "STRONG BEARISH";
       }
       else if(ema20 < ema50)
       {
-         sellPoints += 8.0;
-         sig.trend = "BEARISH";
+         sig.trend = "COUNTER-TREND BEARISH";
       }
 
-      if(close1 > ema200) buyPoints += 4.0;
-      if(close1 < ema200) sellPoints += 4.0;
+      if(close1 > ema200 && ema50 > ema200) buyPoints += 4.0;
+      if(close1 < ema200 && ema50 < ema200) sellPoints += 4.0;
    }
    else
    {
@@ -305,14 +303,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    // =================================================================
    // 2. MOMENTUM & OSCILLATORS (0 - 25 points)
    // =================================================================
-   // RSI Momentum (0 - 10 points)
-   if(rsi > 50.0 && rsi < 68.0) buyPoints += 10.0;
-   else if(rsi <= 32.0)         buyPoints += 8.0; // Oversold bounce setup
-   else if(rsi >= 45.0 && rsi <= 50.0) buyPoints += 4.0;
+   // RSI Momentum (0 - 10 points) - Valid healthy continuation corridors: BUY [45.0, 65.0], SELL [35.0, 55.0]
+   if(rsi >= 50.0 && rsi <= 65.0)      buyPoints += 10.0;
+   else if(rsi >= 45.0 && rsi < 50.0)  buyPoints += 5.0;
 
-   if(rsi < 50.0 && rsi > 32.0) sellPoints += 10.0;
-   else if(rsi >= 68.0)         sellPoints += 8.0; // Overbought exhaustion setup
-   else if(rsi >= 50.0 && rsi <= 55.0) sellPoints += 4.0;
+   if(rsi >= 35.0 && rsi <= 50.0)      sellPoints += 10.0;
+   else if(rsi > 50.0 && rsi <= 55.0)  sellPoints += 5.0;
 
    // MACD Crossover & Alignment (0 - 8 points)
    if(macd > macd_sig && macd > 0.0)
@@ -463,9 +459,9 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    sig.buyScore100  = NormalizeDouble(buyPoints, 1);
    sig.sellScore100 = NormalizeDouble(sellPoints, 1);
 
-   // Map 0-100 scale to 0-10 Confluence Score (60 points = score 6, 70 = 7, etc.)
-   int buyScore10  = (int)MathRound(buyPoints / 10.0);
-   int sellScore10 = (int)MathRound(sellPoints / 10.0);
+   // Map 0-100 scale to 0-10 Confluence Score (Floor strictly to prevent fractional rounding 5.x -> 6)
+   int buyScore10  = (int)MathFloor(buyPoints / 10.0);
+   int sellScore10 = (int)MathFloor(sellPoints / 10.0);
    if(buyScore10 > 10)  buyScore10 = 10;
    if(sellScore10 > 10) sellScore10 = 10;
 
@@ -503,26 +499,43 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
 
    sig.rrRatio = (sig.slPips > 0.0) ? NormalizeDouble(sig.tpPips / sig.slPips, 2) : 2.0;
 
-   // Directional assignment & prospective stops
+   // Enforce strict minimum score threshold: must be >= 6 (strictly prohibits trades on score < 6)
+   int effectiveMinScore = MathMax(6, minConfluenceScore);
+
+   // Directional assignment with strict Directional Trend Confirmation
    long symTradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
-   if(buyScore10 > sellScore10)
+   if(buyScore10 > sellScore10 && buyScore10 >= effectiveMinScore)
    {
       sig.entryPrice = ask;
       sig.slPrice = NormalizeDouble(ask - slDist, dig);
       sig.tpPrice = NormalizeDouble(ask + tpDist, dig);
-      if(buyScore10 >= minConfluenceScore && symTradeMode != SYMBOL_TRADE_MODE_SHORTONLY && symTradeMode != SYMBOL_TRADE_MODE_DISABLED && symTradeMode != SYMBOL_TRADE_MODE_CLOSEONLY)
+      
+      // Strict Directional Trend Confirmation: EMA 20 > EMA 50 > EMA 200 and Price > EMA 200
+      bool trendConfirmed = (ema200 > 0.0) ? (ema20 > ema50 && ema50 > ema200 && close1 > ema200) : (ema20 > ema50);
+      if(trendConfirmed && symTradeMode != SYMBOL_TRADE_MODE_SHORTONLY && symTradeMode != SYMBOL_TRADE_MODE_DISABLED && symTradeMode != SYMBOL_TRADE_MODE_CLOSEONLY)
       {
          sig.cmd = OP_BUY;
       }
+      else
+      {
+         sig.cmd = -1;
+      }
    }
-   else if(sellScore10 > buyScore10)
+   else if(sellScore10 > buyScore10 && sellScore10 >= effectiveMinScore)
    {
       sig.entryPrice = bid;
       sig.slPrice = NormalizeDouble(bid + slDist, dig);
       sig.tpPrice = NormalizeDouble(bid - tpDist, dig);
-      if(sellScore10 >= minConfluenceScore && symTradeMode != SYMBOL_TRADE_MODE_LONGONLY && symTradeMode != SYMBOL_TRADE_MODE_DISABLED && symTradeMode != SYMBOL_TRADE_MODE_CLOSEONLY)
+      
+      // Strict Directional Trend Confirmation: EMA 20 < EMA 50 < EMA 200 and Price < EMA 200
+      bool trendConfirmed = (ema200 > 0.0) ? (ema20 < ema50 && ema50 < ema200 && close1 < ema200) : (ema20 < ema50);
+      if(trendConfirmed && symTradeMode != SYMBOL_TRADE_MODE_LONGONLY && symTradeMode != SYMBOL_TRADE_MODE_DISABLED && symTradeMode != SYMBOL_TRADE_MODE_CLOSEONLY)
       {
          sig.cmd = OP_SELL;
+      }
+      else
+      {
+         sig.cmd = -1;
       }
    }
    else
@@ -530,10 +543,98 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       sig.entryPrice = (ask + bid) / 2.0;
       sig.slPrice = NormalizeDouble(sig.entryPrice - slDist, dig);
       sig.tpPrice = NormalizeDouble(sig.entryPrice + tpDist, dig);
-      sig.cmd = -1; // Tied direction
+      sig.cmd = -1; // Below threshold or tied direction
    }
 
-   // Volatility gate for actionable trade execution
+   // 1. Minimum Confluence Score Gate: strictly enforce score >= 6 (score 5 is strictly prohibited)
+   if(finalScore < effectiveMinScore || finalScore < 6 || sig.cmd < 0)
+   {
+      sig.valid = false;
+      return sig;
+   }
+
+   // 2. ADX Trend Strength Gate: reject flat choppy ranges (must be > 20.0 with directional dominance)
+   if(adx_main <= 20.0)
+   {
+      sig.cmd = -1;
+      sig.valid = false;
+      return sig;
+   }
+   if(sig.cmd == OP_BUY && adx_plus <= adx_minus)
+   {
+      sig.cmd = -1;
+      sig.valid = false;
+      return sig;
+   }
+   if(sig.cmd == OP_SELL && adx_minus <= adx_plus)
+   {
+      sig.cmd = -1;
+      sig.valid = false;
+      return sig;
+   }
+
+   // 3. RSI Momentum Gate: strictly within healthy continuation corridors (reject overbought/oversold exhaustion)
+   if(sig.cmd == OP_BUY && (rsi < 45.0 || rsi > 65.0))
+   {
+      sig.cmd = -1;
+      sig.valid = false;
+      return sig;
+   }
+   if(sig.cmd == OP_SELL && (rsi < 35.0 || rsi > 55.0))
+   {
+      sig.cmd = -1;
+      sig.valid = false;
+      return sig;
+   }
+
+   // 4. Higher Timeframe Confluence Gate (H4 and D1 must not contradict entry)
+   if(iBars(sym, PERIOD_H4) >= 50)
+   {
+      double h4_ema50  = iMA(sym, PERIOD_H4, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
+      double h4_ema200 = iMA(sym, PERIOD_H4, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
+      double h4_close  = iClose(sym, PERIOD_H4, 1);
+
+      if(h4_ema200 > 0.0)
+      {
+         if(sig.cmd == OP_BUY && ((h4_ema50 < h4_ema200 && h4_close < h4_ema50) || h4_close < h4_ema200))
+         {
+            sig.cmd = -1;
+            sig.valid = false;
+            return sig; // H4 bearish stack contradicts BUY
+         }
+         if(sig.cmd == OP_SELL && ((h4_ema50 > h4_ema200 && h4_close > h4_ema50) || h4_close > h4_ema200))
+         {
+            sig.cmd = -1;
+            sig.valid = false;
+            return sig; // H4 bullish stack contradicts SELL
+         }
+      }
+   }
+
+   if(iBars(sym, PERIOD_D1) >= 50)
+   {
+      double d1_ema50  = iMA(sym, PERIOD_D1, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
+      double d1_ema200 = iMA(sym, PERIOD_D1, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
+      double d1_close  = iClose(sym, PERIOD_D1, 1);
+
+      if(d1_ema200 > 0.0)
+      {
+         if(sig.cmd == OP_BUY && ((d1_ema50 < d1_ema200 && d1_close < d1_ema50) || d1_close < d1_ema200))
+         {
+            sig.cmd = -1;
+            sig.valid = false;
+            return sig; // D1 bearish trend contradicts BUY
+         }
+         if(sig.cmd == OP_SELL && ((d1_ema50 > d1_ema200 && d1_close > d1_ema50) || d1_close > d1_ema200))
+         {
+            sig.cmd = -1;
+            sig.valid = false;
+            return sig; // D1 bullish trend contradicts SELL
+         }
+      }
+   }
+
+   // 5. Volatility gate for actionable trade execution
    if(minATRPips > 0.0 && atrPips < minATRPips)
    {
       sig.valid = false;
@@ -545,14 +646,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       return sig; // Excessive volatility spike
    }
 
-   // Confluence Threshold: must stand on 6 or past 6 (>= minConfluenceScore)
-   if(finalScore < minConfluenceScore || sig.cmd < 0)
-   {
-      sig.valid = false;
-      return sig; // Insufficient confluence for trade execution
-   }
-
-   // Mandatory stops verification: never allow 0 SL or 0 TP
+   // 6. Mandatory stops verification: never allow 0 SL or 0 TP
    if(sig.slPrice <= 0.0 || sig.tpPrice <= 0.0)
    {
       sig.valid = false;
