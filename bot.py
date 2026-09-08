@@ -73,6 +73,7 @@ async def post_init(application) -> None:
             BotCommand("history", "📜 Closed Trades History & Net P/L"),
             BotCommand("screenshot", "📸 Interactive Chart Screenshot"),
             BotCommand("prop", "🛡️ Prop-Firm Risk Guardian Scorecard"),
+            BotCommand("goal", "🎯 Profit Goal & Milestone Tracker"),
             BotCommand("reset_risk", "🔄 Recalibrate Prop Anchors & DD"),
             BotCommand("report", "📈 Performance & P/L Summary"),
             BotCommand("close", "🏁 Close Positions by Symbol or Ticket (/close GBPUSD)"),
@@ -267,6 +268,7 @@ def create_application():
     app.add_handler(CommandHandler(["trailing", "trail"], handlers.cmd_trailing))
     app.add_handler(CommandHandler(["setrisk", "risk_set"], handlers.cmd_setrisk))
     app.add_handler(CommandHandler(["prop", "risk"], handlers.cmd_prop))
+    app.add_handler(CommandHandler(["goal", "target", "milestone"], handlers.cmd_goal))
     app.add_handler(CommandHandler(["reset_risk", "reset_prop", "reset_safeguards"], handlers.cmd_reset_safeguards))
     app.add_handler(CommandHandler("report", handlers.cmd_report))
     app.add_handler(CommandHandler(["screenshot", "screenphoto", "chart"], handlers.cmd_screenshot))

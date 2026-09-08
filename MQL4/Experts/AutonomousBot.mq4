@@ -117,7 +117,7 @@ void OnDeinit(const int reason)
 //| Staggered Round-Robin Scanner Batch                              |
 //| Enforces score >= 6 trade entry, mandatory SL/TP, and risk caps  |
 //+------------------------------------------------------------------+
-void ScanNextSymbolBatch(int batchSize = 3)
+void ScanNextSymbolBatch(int batchSize = 0)
 {
    if(g_TotalWatchlist <= 0)
    {
@@ -125,32 +125,43 @@ void ScanNextSymbolBatch(int batchSize = 3)
       if(g_TotalWatchlist <= 0) return;
    }
 
-   for(int i = 0; i < batchSize; i++)
+   // 1. Strict global position check: abort if maximum positions already open
+   if(GetGlobalActivePositions(MagicNumber) >= MaxOpenPositions)
    {
-      // 1. Atomic verification before evaluating symbol:
-      // If MaxOpenPositions limit reached, abort immediately across all remaining symbols
-      if(GetGlobalActivePositions(MagicNumber) >= MaxOpenPositions)
-      {
-         return;
-      }
+      return;
+   }
 
+   int scanCount = (batchSize > 0) ? MathMin(batchSize, g_TotalWatchlist) : g_TotalWatchlist;
+
+   StrategySignal bestSig;
+   bestSig.valid = false;
+   bestSig.cmd   = -1;
+   bestSig.score = 0;
+   double bestRankScore = -1.0;
+   string bestSymbol    = "";
+   double bestLots      = 0.0;
+   int qualifiedCount   = 0;
+
+   // 2. Scan every symbol one by one across the watchlist
+   for(int i = 0; i < scanCount; i++)
+   {
       string sym = g_Watchlist[g_CurrentScanIndex];
       g_CurrentScanIndex = (g_CurrentScanIndex + 1) % g_TotalWatchlist;
       g_LastScannedSymbol = sym;
 
-      // 2. Pre-filter dormant/disabled symbols before calculating expensive indicators
+      // Pre-filter dormant/disabled symbols before computing indicators
       if(!PreFilterSymbol(sym, MaxSpreadPoints, 50, ScanTimeframe, UseTimeFilter))
       {
          continue;
       }
 
-      // 3. Check persistent cooldown
+      // Check persistent per-symbol cooldown
       if(IsSymbolInCooldown(sym, CooldownMinutes))
       {
          continue;
       }
 
-      // 4. Exact canonical symbol matching: verify no existing position is open for this pair
+      // Exact canonical symbol matching: verify no existing open position on this pair
       bool hasPosition = false;
       for(int k = 0; k < OrdersTotal(); k++)
       {
@@ -164,53 +175,72 @@ void ScanNextSymbolBatch(int batchSize = 3)
       }
       if(hasPosition) continue;
 
-      // 5. Currency exposure / correlation clamping (limit exposure per currency)
+      // Currency exposure clamping (limit exposure per currency, e.g. USD)
       if(!CanOpenCurrencyExposure(sym, MaxExposurePerCurrency, MagicNumber))
       {
          continue;
       }
 
-      // 6. Quantitative Confluence Scoring (EMA, RSI, MACD, Stochastic, Price Action, ATR volatility)
+      // Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
       StrategySignal sig = EvaluateSymbolOpportunity(sym, ScanTimeframe, MinConfluenceScore, MinRewardToRisk, MinATRPips, MaxATRPips);
       g_LastScannedScore  = sig.score;
       g_LastScannedSignal = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
 
-      // Confluence threshold: must stand on 6 or past 6 (>= 6)
+      // Confluence threshold: must stand on 6 or past 6 (Score >= 6)
       if(!sig.valid || sig.cmd < 0 || sig.score < MinConfluenceScore)
       {
          continue;
       }
 
-      // 7. Volatility-Adjusted Risk Sizing (ATR-based strict dollar risk)
+      // Volatility-Adjusted Risk Sizing (0.5% risk limit)
       double lots = CalculateRiskLots(sym, MaxRiskPerTradePct, sig.slPips, MaxMarginUsagePct);
       if(lots <= 0.0) continue;
 
-      // 8. Pre-flight Margin Utilization Check (max 50% free margin)
+      // Margin utilization check (max 50% margin)
       if(!CheckMarginUsageAllowed(sym, lots, MaxMarginUsagePct))
       {
          continue;
       }
 
-      // 9. Global Portfolio Risk Budget Check (sum open risks <= MaxGlobalRiskPct)
+      // Global portfolio risk check
       if(!CheckGlobalPortfolioRisk(MaxRiskPerTradePct, MaxGlobalRiskPct, MagicNumber))
       {
          continue;
       }
 
-      PrintFormat("[AUTONOMOUS OPPORTUNITY DETECTED] %s | Signal: %s | Score: %d/10 | Lots: %.2f | SL: %f | TP: %f | RR: %.2f",
-                  sym, (sig.cmd == OP_BUY ? "BUY" : "SELL"), sig.score, lots, sig.slPrice, sig.tpPrice, (sig.tpPips / sig.slPips));
+      qualifiedCount++;
 
-      // 10. Safe Order Execution with ECN two-step, requote exponential backoff, and latency logging
-      int ticket = ExecuteOrderSafe(sym, sig.cmd, lots, sig.slPrice, sig.tpPrice, MagicNumber, TradeComment, SlippagePoints);
+      // Composite ranking: prioritize higher analysis score (0-100), superior RR, lower spread
+      double rankScore = (sig.analysisScore * 100.0) + (sig.rrRatio * 50.0) - (sig.spreadPoints * 2.0);
+      if(rankScore > bestRankScore)
+      {
+         bestRankScore = rankScore;
+         bestSig       = sig;
+         bestSymbol    = sym;
+         bestLots      = lots;
+      }
+   }
+
+   // 3. Post-scan decision: If one or more qualified opportunities found, execute the best one!
+   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSymbol != "")
+   {
+      PrintFormat("[AUTONOMOUS PORTFOLIO SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
+                  scanCount, qualifiedCount, MinConfluenceScore, bestSymbol,
+                  (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSig.score, bestSig.analysisScore, bestLots, bestSig.rrRatio);
+
+      int ticket = ExecuteOrderSafe(bestSymbol, bestSig.cmd, bestLots, bestSig.slPrice, bestSig.tpPrice, MagicNumber, TradeComment, SlippagePoints);
       if(ticket > 0)
       {
-         RecordSymbolCooldown(sym);
+         RecordSymbolCooldown(bestSymbol);
          PrintFormat("[AUTONOMOUS BOT] Successfully filled %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d)",
-                     (sig.cmd == OP_BUY ? "BUY" : "SELL"), sym, lots, sig.score, ticket);
-
-         // Strict position limit enforced: abort scan immediately across all other symbols
-         return;
+                     (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSymbol, bestLots, bestSig.score, ticket);
       }
+   }
+   else
+   {
+      // No symbol reached confluence score >= 6 or passed filters; wait cleanly for next cycle
+      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). Capital safely preserved.",
+                  scanCount, MinConfluenceScore);
    }
 }
 

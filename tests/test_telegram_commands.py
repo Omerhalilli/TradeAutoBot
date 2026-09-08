@@ -788,7 +788,8 @@ class TestTelegramCommands(unittest.TestCase):
                 handlers.cmd_modify_tp,
                 handlers.cmd_history,
                 handlers.cmd_colors,
-                handlers.cmd_news
+                handlers.cmd_news,
+                handlers.cmd_goal
             ]
             for cmd_fn in unauth_cmds:
                 update, context, message = self._make_message_update(self.unauth_id, text="/test")
@@ -799,7 +800,50 @@ class TestTelegramCommands(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_cmd_goal_and_single_symbol_scan(self):
+        """Verifies /goal and /scan with specific symbol argument render cleanly."""
+        async def run():
+            # 1. Test /goal
+            update, context, message = self._make_message_update(self.auth_id, text="/goal")
+            mock_prop = {"status": "ok", "equity": 100.0, "balance": 100.0, "target_profit_goal": 8.0, "day_profit": 1.5}
+            mock_rep = {"status": "ok", "profit": 1.5, "win_rate": 70.0, "trades_count": 10}
+            with patch("handlers.zmq_client.get_prop", return_value=mock_prop), \
+                 patch("handlers.zmq_client.get_report", return_value=mock_rep):
+                await handlers.cmd_goal(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("INSTITUTIONAL PROFIT GOAL TRACKER", reply)
+                self.assertIn("DAILY PROFIT GOAL", reply)
+                self.assertIn("GROWTH MILESTONE", reply)
+
+            # 2. Test /scan with symbol argument
+            message.reply_text.reset_mock()
+            update, context, message = self._make_message_update(self.auth_id, text="/scan EURUSD", args=["EURUSD"])
+            mock_scan = {
+                "status": "ok",
+                "results": [
+                    {
+                        "symbol": "EURUSD",
+                        "score": 8,
+                        "analysis_score": 82.5,
+                        "signal": "BUY",
+                        "trend": "STRONG BULLISH",
+                        "spread": 10.0,
+                        "sl_pips": 20.0,
+                        "tp_pips": 40.0
+                    }
+                ]
+            }
+            with patch("autotrade.core.autonomous_trader.zmq_client.scan_symbols", return_value=mock_scan):
+                await handlers.cmd_scan(update, context)
+                reply = self._get_reply_text(message.reply_text)
+                self.assertIn("INSTITUTIONAL TECHNICAL AUDIT", reply)
+                self.assertIn("EURUSD", reply)
+                self.assertIn("8/10", reply)
+
+        asyncio.run(run())
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

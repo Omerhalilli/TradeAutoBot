@@ -8,6 +8,7 @@
 #include <Zmq/Zmq.mqh>
 #include <SymbolManager.mqh>
 #include <RiskController.mqh>
+#include <StrategyEngine.mqh>
 
 //+------------------------------------------------------------------+
 //| INPUT / CONFIG                                                   |
@@ -2065,85 +2066,13 @@ string Zmq_HandleScanSymbols(const string reqJson)
       
       double spread = Zmq_GetSpreadPoints(sym);
       int dig = (int)MarketInfo(sym, MODE_DIGITS);
-      double pipPt = Zmq_GetPipPoint(sym);
-      double atr = iATR(sym, tf, 14, 1);
       
-      double ema20  = iMA(sym, tf, 20,  0, MODE_EMA, PRICE_CLOSE, 1);
-      double ema50  = iMA(sym, tf, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
-      double ema200 = iMA(sym, tf, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
-      
-      double rsi = iRSI(sym, tf, 14, PRICE_CLOSE, 1);
-      double macd = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 1);
-      double macd_sig = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 1);
-      double stoch_k = iStochastic(sym, tf, 5, 3, 3, MODE_SMA, 0, MODE_MAIN, 1);
-      double stoch_d = iStochastic(sym, tf, 5, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 1);
-      
-      int buyScore = 0;
-      int sellScore = 0;
-      
-      // 1. Trend (0 - 3)
-      if(ema200 > 0.0)
-      {
-         if(ema20 > ema50 && ema50 > ema200) buyScore += 3;
-         else if(ema20 > ema50) buyScore += 2;
-         
-         if(ema20 < ema50 && ema50 < ema200) sellScore += 3;
-         else if(ema20 < ema50) sellScore += 2;
-      }
-      else
-      {
-         if(ema20 > ema50) buyScore += 2;
-         if(ema20 < ema50) sellScore += 2;
-      }
-      
-      // 2. Momentum RSI (0 - 2)
-      if(rsi > 50.0 && rsi < 70.0) buyScore += 2;
-      else if(rsi <= 32.0) buyScore += 2;
-      
-      if(rsi < 50.0 && rsi > 30.0) sellScore += 2;
-      else if(rsi >= 68.0) sellScore += 2;
-      
-      // 3. MACD (0 - 2)
-      if(macd > macd_sig && macd > 0.0) buyScore += 2;
-      else if(macd > macd_sig) buyScore += 1;
-      
-      if(macd < macd_sig && macd < 0.0) sellScore += 2;
-      else if(macd < macd_sig) sellScore += 1;
-      
-      // 4. Stochastic (0 - 2)
-      if(stoch_k > stoch_d && stoch_k < 80.0) buyScore += 2;
-      if(stoch_k < stoch_d && stoch_k > 20.0) sellScore += 2;
-      
-      // 5. Price Action Candle (0 - 1)
-      if(iClose(sym, tf, 1) > iOpen(sym, tf, 1)) buyScore += 1;
-      if(iClose(sym, tf, 1) < iOpen(sym, tf, 1)) sellScore += 1;
-      
-      if(buyScore > 10) buyScore = 10;
-      if(sellScore > 10) sellScore = 10;
-      
-      string trend = "NEUTRAL";
-      if(ema200 > 0.0)
-      {
-         if(ema20 > ema50 && ema50 > ema200) trend = "STRONG BULLISH";
-         else if(ema20 > ema50) trend = "BULLISH";
-         else if(ema20 < ema50 && ema50 < ema200) trend = "STRONG BEARISH";
-         else if(ema20 < ema50) trend = "BEARISH";
-      }
-      else
-      {
-         if(ema20 > ema50) trend = "BULLISH";
-         else if(ema20 < ema50) trend = "BEARISH";
-      }
+      // Comprehensive 0-100 Multi-Indicator Analysis
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, tf, 6, 1.5, 5.0, 300.0);
       
       string signal = "HOLD";
-      int finalScore = MathMax(buyScore, sellScore);
-      if(buyScore >= 6 && buyScore > sellScore) signal = "BUY";
-      else if(sellScore >= 6 && sellScore > buyScore) signal = "SELL";
-      
-      double slPips = (atr > 0.0 && pipPt > 0.0) ? NormalizeDouble((atr * 1.5) / pipPt, 1) : 30.0;
-      double tpPips = (atr > 0.0 && pipPt > 0.0) ? NormalizeDouble((atr * 3.0) / pipPt, 1) : 60.0;
-      if(slPips < 10.0) slPips = 20.0;
-      if(tpPips < 15.0) tpPips = 40.0;
+      if(sig.cmd == OP_BUY) signal = "BUY";
+      else if(sig.cmd == OP_SELL) signal = "SELL";
       
       if(validCount > 0) json += ",";
       json += "{";
@@ -2153,15 +2082,24 @@ string Zmq_HandleScanSymbols(const string reqJson)
       json += "\"ask\":" + DoubleToString(ask, dig) + ",";
       json += "\"spread\":" + DoubleToString(spread, 1) + ",";
       json += "\"digits\":" + IntegerToString(dig) + ",";
-      json += "\"trend\":\"" + trend + "\",";
-      json += "\"buy_score\":" + IntegerToString(buyScore) + ",";
-      json += "\"sell_score\":" + IntegerToString(sellScore) + ",";
-      json += "\"score\":" + IntegerToString(finalScore) + ",";
+      json += "\"trend\":\"" + sig.trend + "\",";
+      json += "\"pattern\":\"" + sig.pattern + "\",";
+      json += "\"htf_trend\":\"" + sig.htfTrend + "\",";
+      json += "\"buy_score\":" + IntegerToString(sig.buyScore) + ",";
+      json += "\"sell_score\":" + IntegerToString(sig.sellScore) + ",";
+      json += "\"buy_score_100\":" + DoubleToString(sig.buyScore100, 1) + ",";
+      json += "\"sell_score_100\":" + DoubleToString(sig.sellScore100, 1) + ",";
+      json += "\"analysis_score\":" + DoubleToString(sig.analysisScore, 1) + ",";
+      json += "\"score\":" + IntegerToString(sig.score) + ",";
       json += "\"signal\":\"" + signal + "\",";
-      json += "\"sl_pips\":" + DoubleToString(slPips, 1) + ",";
-      json += "\"tp_pips\":" + DoubleToString(tpPips, 1) + ",";
-      json += "\"rsi\":" + DoubleToString(rsi, 1) + ",";
-      json += "\"atr\":" + DoubleToString(atr, dig);
+      json += "\"sl_pips\":" + DoubleToString(sig.slPips, 1) + ",";
+      json += "\"tp_pips\":" + DoubleToString(sig.tpPips, 1) + ",";
+      json += "\"rr_ratio\":" + DoubleToString(sig.rrRatio, 2) + ",";
+      json += "\"rsi\":" + DoubleToString(sig.rsi, 1) + ",";
+      json += "\"macd\":" + DoubleToString(sig.macd, 6) + ",";
+      json += "\"stoch_k\":" + DoubleToString(sig.stochK, 1) + ",";
+      json += "\"adx\":" + DoubleToString(sig.adx, 1) + ",";
+      json += "\"atr\":" + DoubleToString(sig.atr, dig);
       json += "}";
       validCount++;
    }

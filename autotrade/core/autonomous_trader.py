@@ -282,13 +282,21 @@ class AutonomousMultiSymbolTrader:
 
             def _safety_sort_key(it):
                 sc = int(it.get("score", 0))
+                analysis_sc = float(it.get("analysis_score", sc * 10.0))
                 sp = float(it.get("spread", 999.0))
                 sl_p = float(it.get("sl_pips", 30.0))
                 tp_p = float(it.get("tp_pips", 60.0))
-                rr = (tp_p / sl_p) if sl_p > 0 else 1.0
-                return (-sc, sp, -rr)
+                rr = float(it.get("rr_ratio", (tp_p / sl_p) if sl_p > 0 else 1.0))
+                return (-sc, -analysis_sc, sp, -rr)
 
             candidates.sort(key=_safety_sort_key)
+
+            if not candidates:
+                logger.debug(
+                    f"AutonomousTrader: Scanned {len(results)} symbols. "
+                    f"No actionable setup meeting confluence threshold (Score >= {self.min_score}/10). Capital safely preserved."
+                )
+                return []
 
             for item in candidates:
                 raw_sym = str(item.get("symbol", "")).strip().upper()
@@ -525,7 +533,7 @@ class AutonomousMultiSymbolTrader:
         return msg
 
     def format_scan_matrix(self, scan_res: Optional[Dict[str, Any]] = None) -> str:
-        """Formats clean tabular scorecard for /scan command."""
+        """Formats comprehensive institutional tabular scorecard for /scan command."""
         data = scan_res or self.last_scan_data
         if not data or "results" not in data:
             data = self.scan_portfolio()
@@ -537,6 +545,7 @@ class AutonomousMultiSymbolTrader:
             "⚡ <b>AUTONOMOUS MULTI-SYMBOL SCANNER</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕒 <b>Scan Time:</b> <code>{server_time}</code> | <b>TF:</b> <code>{self.timeframe}</code>\n"
+            f"🌐 <b>Portfolio:</b> <b>{len(results)} Assets</b> | <b>Threshold:</b> <b>Score ≥ {self.min_score}/10 (60%)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
         if data.get("bridge_unsupported"):
@@ -545,12 +554,19 @@ class AutonomousMultiSymbolTrader:
                 "Displaying portfolio watchlist.</i>\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
 
+        top_candidate = None
+        best_rank = -999.0
+
         for item in results:
             sym = item.get("symbol", "")
             trend = item.get("trend", "NEUTRAL")
-            score = item.get("score", 0)
+            score = int(item.get("score", 0))
             sig = item.get("signal", "HOLD")
-            spread = item.get("spread", 0.0)
+            spread = float(item.get("spread", 0.0))
+            analysis_score = float(item.get("analysis_score", score * 10.0))
+            sl_pips = float(item.get("sl_pips", 30.0))
+            tp_pips = float(item.get("tp_pips", 60.0))
+            rr = float(item.get("rr_ratio", (tp_pips / sl_pips) if sl_pips > 0 else 2.0))
 
             if sig == "BUY":
                 sig_badge = "🟢 BUY"
@@ -560,15 +576,158 @@ class AutonomousMultiSymbolTrader:
                 sig_badge = "⚪ HOLD"
 
             trend_badge = "⬆️" if "BULL" in trend else ("⬇️" if "BEAR" in trend else "↔️")
+
+            if score >= 9:
+                grade = "🌟 A+"
+            elif score >= 8:
+                grade = "🎯 A"
+            elif score >= 7:
+                grade = "💎 B+"
+            elif score >= 6:
+                grade = "⚡ B"
+            else:
+                grade = "⚪ C"
+
             msg += (
                 f"• <b>{sym:7s}</b> {sig_badge} (Score: <b>{score}/10</b>) "
-                f"| {trend_badge} {trend} | Spd: <code>{spread:.1f}</code>\n"
+                f"[{grade} • {analysis_score:.0f}%] | {trend_badge} {trend} | Spd: <code>{spread:.1f}</code>\n"
             )
 
-        msg += (
+            # Track top candidate for spotlight
+            if sig in ("BUY", "SELL") and score >= self.min_score:
+                rank = (analysis_score * 100.0) + (rr * 50.0) - (spread * 2.0)
+                if rank > best_rank:
+                    best_rank = rank
+                    top_candidate = item
+
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+        if top_candidate:
+            top_sym = top_candidate.get("symbol", "")
+            top_sig = top_candidate.get("signal", "BUY")
+            top_sc = int(top_candidate.get("score", 0))
+            top_as = float(top_candidate.get("analysis_score", top_sc * 10.0))
+            top_sl = float(top_candidate.get("sl_pips", 30.0))
+            top_tp = float(top_candidate.get("tp_pips", 60.0))
+            top_rr = float(top_candidate.get("rr_ratio", (top_tp / top_sl) if top_sl > 0 else 2.0))
+            top_entry = float(top_candidate.get("ask" if top_sig == "BUY" else "bid", 0.0))
+            top_pattern = top_candidate.get("pattern", "ALIGNED")
+            entry_fmt = f"{top_entry:.5f}" if top_entry > 0 else "Market Price"
+
+            badge = "🟢 BUY" if top_sig == "BUY" else "🔴 SELL"
+            msg += (
+                f"🎯 <b>TOP RANKED OPPORTUNITY:</b> <code>{top_sym}</code> {badge}\n"
+                f"• <b>Confluence Score:</b> <b>{top_sc}/10</b> (<b>{top_as:.1f}/100</b> Institutional Grade)\n"
+                f"• <b>Actionable Setup:</b> <code>{top_sig} @ {entry_fmt}</code>\n"
+                f"• <b>Protective Stops:</b> SL <code>-{top_sl:.1f} pips</code> | TP <code>+{top_tp:.1f} pips</code> (RR: <code>{top_rr:.2f}:1</code>)\n"
+                f"• <b>Pattern Alignment:</b> <code>{top_pattern}</code>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            )
+        else:
+            msg += (
+                "⚪ <b>Autonomous Status:</b> <code>PATIENTLY SCANNING & WAITING</code>\n"
+                f"<i>No instrument currently reaches the strict threshold (Score ≥ {self.min_score}/10 [60%]). Capital safely preserved.</i>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            )
+
+        msg += "<i>💡 Autonomous Multi-Symbol Execution: High-conviction setups (Score ≥ 6) are executed automatically.</i>"
+        return msg
+
+    def format_single_symbol_analysis(self, symbol: str, scan_res: Optional[Dict[str, Any]] = None) -> str:
+        """Formats deep institutional 0-100 technical breakdown for a specific symbol."""
+        data = scan_res or self.last_scan_data
+        if not data or "results" not in data:
+            data = self.scan_portfolio()
+
+        canon = canonical_symbol(symbol)
+        item = None
+        for r in data.get("results", []):
+            if canonical_symbol(r.get("symbol", "")) == canon:
+                item = r
+                break
+
+        if not item:
+            return (
+                f"⚠️ <b>SYMBOL NOT FOUND:</b> <code>{symbol}</code>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Instrument <code>{symbol}</code> is not in the active portfolio watchlist.\n"
+                f"Use <code>/symbols</code> to check active symbols or <code>/autotrade add {symbol}</code> to add it."
+            )
+
+        sym = item.get("symbol", symbol)
+        trend = item.get("trend", "NEUTRAL")
+        score = int(item.get("score", 0))
+        sig = item.get("signal", "HOLD")
+        spread = float(item.get("spread", 0.0))
+        analysis_score = float(item.get("analysis_score", score * 10.0))
+        buy_score_100 = float(item.get("buy_score_100", 0.0))
+        sell_score_100 = float(item.get("sell_score_100", 0.0))
+        rsi = float(item.get("rsi", 50.0))
+        macd = float(item.get("macd", 0.0))
+        stoch_k = float(item.get("stoch_k", 50.0))
+        adx = float(item.get("adx", 0.0))
+        atr_pips = float(item.get("sl_pips", 30.0)) / 1.5
+        pattern = item.get("pattern", "NONE")
+        htf_trend = item.get("htf_trend", "NEUTRAL")
+        bid = float(item.get("bid", 0.0))
+        ask = float(item.get("ask", 0.0))
+
+        if score >= 9:
+            grade = "🌟 Institutional Grade A+ (Elite Confluence)"
+        elif score >= 8:
+            grade = "🎯 Grade A (High Conviction)"
+        elif score >= 7:
+            grade = "💎 Grade B+ (Above Average Alignment)"
+        elif score >= 6:
+            grade = "⚡ Grade B (Tradeable Setup)"
+        else:
+            grade = "⚪ Grade C (Insufficient Confluence / Wait)"
+
+        sig_badge = "🟢 BUY (LONG)" if sig == "BUY" else ("🔴 SELL (SHORT)" if sig == "SELL" else "⚪ NEUTRAL (HOLD)")
+
+        msg = (
+            f"🔬 <b>INSTITUTIONAL TECHNICAL AUDIT: {sym}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "<i>💡 Autonomous Multi-Symbol Execution: High-conviction setups (Score ≥ 6) are executed automatically.</i>"
+            f"• <b>Signal Decision:</b> <b>{sig_badge}</b>\n"
+            f"• <b>Confluence Score:</b> <b>{score}/10</b> (<b>{analysis_score:.1f}/100</b> Points)\n"
+            f"• <b>Setup Rating:</b> <b>{grade}</b>\n"
+            f"• <b>Live Quotes:</b> Bid: <code>{bid:.5f}</code> | Ask: <code>{ask:.5f}</code> | Spd: <code>{spread:.1f} pts</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📊 <b>0 - 100 MULTI-FACTOR SCORING BREAKDOWN:</b>\n"
+            f"1. <b>Trend & Direction:</b> <code>{trend}</code>\n"
+            f"   • Primary H1 Trend: <code>{trend}</code> | ADX(14): <code>{adx:.1f}</code>\n"
+            f"2. <b>Momentum & Crossover:</b>\n"
+            f"   • RSI(14): <code>{rsi:.1f}</code> | MACD Main: <code>{macd:.6f}</code>\n"
+            f"3. <b>Oscillator Confirmation:</b>\n"
+            f"   • Stochastic %K: <code>{stoch_k:.1f}</code>\n"
+            f"4. <b>Volatility & ATR Bounds:</b>\n"
+            f"   • Baseline ATR: <code>~{atr_pips:.1f} pips</code> | Normal Liquidity ✅\n"
+            f"5. <b>Price Action & Patterns:</b>\n"
+            f"   • Candlestick: <code>{pattern}</code>\n"
+            f"6. <b>Multi-Timeframe (MTF):</b>\n"
+            f"   • Higher Timeframe (H4): <code>{htf_trend}</code>\n"
+            "──────────────────────────\n"
+            f"• <b>Evaluated Buy Confluence:</b> <code>{buy_score_100:.1f} / 100 pts</code>\n"
+            f"• <b>Evaluated Sell Confluence:</b> <code>{sell_score_100:.1f} / 100 pts</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
+        if score >= self.min_score and sig in ("BUY", "SELL"):
+            sl_pips = float(item.get("sl_pips", 30.0))
+            tp_pips = float(item.get("tp_pips", 60.0))
+            rr = float(item.get("rr_ratio", 2.0))
+            msg += (
+                "🎯 <b>EXECUTION RECOMMENDATION:</b>\n"
+                f"• Order: <b>{sig} {sym}</b>\n"
+                f"• Protective Stop Loss: <code>-{sl_pips:.1f} pips</code>\n"
+                f"• Target Take Profit: <code>+{tp_pips:.1f} pips</code> (Reward-to-Risk: <code>{rr:.2f}:1</code>)\n"
+                "<i>⚡ This setup satisfies autonomous trade entry criteria (Score ≥ 6).</i>\n"
+            )
+        else:
+            msg += (
+                "⏳ <b>EXECUTION RECOMMENDATION:</b>\n"
+                f"• <b>HOLD & WAIT:</b> Confluence score ({score}/10) is below the minimum execution threshold (Score ≥ 6).\n"
+                "<i>Capital safely protected until institutional alignment occurs.</i>\n"
+            )
         return msg
 
     def format_symbols_panel(self) -> str:

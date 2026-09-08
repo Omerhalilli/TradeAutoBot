@@ -15,6 +15,7 @@
 #include <AutoTradeFlagCheck.mqh>
 #include <SymbolManager.mqh>
 #include <RiskController.mqh>
+#include <StrategyEngine.mqh>
 #include <TradeExecutor.mqh>
 
 
@@ -6822,18 +6823,22 @@ void Autonomous_MultiSymbolScan()
    
    if(numSymbols <= 0) return;
 
-   // 4. Staggered round-robin time-sliced scanner
-   static int s_autonomousScanIndex = 0;
-   int batch = AutonomousScanBatchSize;
-   if(batch <= 0) batch = 3;
+   // 4. Scan all configured symbols one by one and rank best opportunity
+   StrategySignal bestSig;
+   bestSig.valid = false;
+   bestSig.cmd   = -1;
+   bestSig.score = 0;
+   double bestRankScore = -1.0;
+   string bestSymbol    = "";
+   double bestLots      = 0.0;
+   int qualifiedCount   = 0;
 
-   for(int b = 0; b < batch && b < numSymbols; b++)
+   for(int i = 0; i < numSymbols; i++)
    {
-      // Atomic verification before each symbol in batch
+      // Atomic verification before each symbol
       if(GetGlobalActivePositions(MagicNumber) >= MaxOpenPositions) return;
 
-      string sym = scanSymbols[s_autonomousScanIndex];
-      s_autonomousScanIndex = (s_autonomousScanIndex + 1) % numSymbols;
+      string sym = scanSymbols[i];
       SymbolSelect(sym, true);
 
       // 5. Pre-filter before expensive indicator calculations
@@ -6859,90 +6864,50 @@ void Autonomous_MultiSymbolScan()
       // 8. Currency exposure correlation clamping
       if(!CanOpenCurrencyExposure(sym, MaxExposurePerCurrency, MagicNumber)) continue;
 
-      // Multi-indicator confluence scoring on H1
-      ENUM_TIMEFRAMES tf = PERIOD_H1;
-      double ema20  = iMA(sym, tf, 20,  0, MODE_EMA, PRICE_CLOSE, 1);
-      double ema50  = iMA(sym, tf, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
-      double ema200 = iMA(sym, tf, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
-      double rsi = iRSI(sym, tf, 14, PRICE_CLOSE, 1);
-      double macd = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 1);
-      double macd_sig = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 1);
-      double stoch_k = iStochastic(sym, tf, 5, 3, 3, MODE_SMA, 0, MODE_MAIN, 1);
-      double stoch_d = iStochastic(sym, tf, 5, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 1);
-      double atr = iATR(sym, tf, 14, 1);
-      double pipPt = GetSymbolPipSize(sym);
-      
-      int buyScore = 0;
-      int sellScore = 0;
-      
-      if(ema200 > 0.0)
+      // 9. Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, PERIOD_H1, AutonomousMinConfluenceScore, 1.5, 10.0, 150.0);
+      if(!sig.valid || sig.cmd < 0 || sig.score < AutonomousMinConfluenceScore) continue;
+
+      double entryPrice = (sig.cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
+      double orderLots = CalculateDynamicLotSize(entryPrice, sig.slPrice, sym);
+      if(orderLots <= 0.0) continue;
+
+      qualifiedCount++;
+
+      // Composite ranking: prioritize higher analysis score (0-100), superior RR, lower spread
+      double rankScore = (sig.analysisScore * 100.0) + (sig.rrRatio * 50.0) - (sig.spreadPoints * 2.0);
+      if(rankScore > bestRankScore)
       {
-         if(ema20 > ema50 && ema50 > ema200) buyScore += 3;
-         else if(ema20 > ema50) buyScore += 2;
-         
-         if(ema20 < ema50 && ema50 < ema200) sellScore += 3;
-         else if(ema20 < ema50) sellScore += 2;
+         bestRankScore = rankScore;
+         bestSig       = sig;
+         bestSymbol    = sym;
+         bestLots      = orderLots;
       }
-      else
-      {
-         if(ema20 > ema50) buyScore += 2;
-         if(ema20 < ema50) sellScore += 2;
-      }
-      
-      if(rsi > 50.0 && rsi < 70.0) buyScore += 2;
-      else if(rsi <= 32.0) buyScore += 2;
-      
-      if(rsi < 50.0 && rsi > 30.0) sellScore += 2;
-      else if(rsi >= 68.0) sellScore += 2;
-      
-      if(macd > macd_sig && macd > 0.0) buyScore += 2;
-      else if(macd > macd_sig) buyScore += 1;
-      
-      if(macd < macd_sig && macd < 0.0) sellScore += 2;
-      else if(macd < macd_sig) sellScore += 1;
-      
-      if(stoch_k > stoch_d && stoch_k < 80.0) buyScore += 2;
-      if(stoch_k < stoch_d && stoch_k > 20.0) sellScore += 2;
-      
-      if(iClose(sym, tf, 1) > iOpen(sym, tf, 1)) buyScore += 1;
-      if(iClose(sym, tf, 1) < iOpen(sym, tf, 1)) sellScore += 1;
-      
-      if(buyScore > 10) buyScore = 10;
-      if(sellScore > 10) sellScore = 10;
-      
-      int finalScore = MathMax(buyScore, sellScore);
-      if(finalScore < AutonomousMinConfluenceScore) continue;
-      
-      int cmd = -1;
-      if(buyScore >= AutonomousMinConfluenceScore && buyScore > sellScore) cmd = OP_BUY;
-      else if(sellScore >= AutonomousMinConfluenceScore && sellScore > buyScore) cmd = OP_SELL;
-      if(cmd < 0) continue;
-      
+   }
+
+   // 10. Post-scan decision: If one or more qualified setups found, select and execute the best one!
+   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSymbol != "")
+   {
       if(AutonomousTradeDirectly)
       {
-         double entryPrice = (cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
-         double slDistance = (atr > 0.0) ? (atr * 1.5) : (pipPt * 30.0);
-         double tpDistance = (atr > 0.0) ? (atr * 3.0) : (pipPt * 60.0);
-         
-         double slPrice = (cmd == OP_BUY) ? (entryPrice - slDistance) : (entryPrice + slDistance);
-         double tpPrice = (cmd == OP_BUY) ? (entryPrice + tpDistance) : (entryPrice - tpDistance);
-         
-         int dig = (int)MarketInfo(sym, MODE_DIGITS);
-         if(dig <= 0) dig = Digits;
-         ValidateStopLevels(cmd, entryPrice, slPrice, tpPrice, sym);
-         slPrice = NormalizeDouble(slPrice, dig);
-         tpPrice = NormalizeDouble(tpPrice, dig);
-         
-         double orderLots = CalculateDynamicLotSize(entryPrice, slPrice, sym);
-         int ticket = ExecuteSmartOrder(cmd, orderLots, entryPrice, slPrice, tpPrice, sym);
+         PrintFormat("[AUTONOMOUS MULTI-SYMBOL SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
+                     numSymbols, qualifiedCount, AutonomousMinConfluenceScore, bestSymbol,
+                     (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSig.score, bestSig.analysisScore, bestLots, bestSig.rrRatio);
+
+         int ticket = ExecuteSmartOrder(bestSig.cmd, bestLots, bestSig.entryPrice, bestSig.slPrice, bestSig.tpPrice, bestSymbol);
          if(ticket > 0)
          {
-            PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Successfully placed %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d)",
-                        (cmd == OP_BUY ? "BUY" : "SELL"), sym, orderLots, finalScore, ticket);
-            RecordSymbolCooldown(sym);
-            return; // Abort scan immediately across all other symbols!
+            PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Successfully filled %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d)",
+                        (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSymbol, bestLots, bestSig.score, ticket);
+            RecordSymbolCooldown(bestSymbol);
          }
       }
+   }
+   else
+   {
+      // No symbol reached confluence threshold >= 6; wait cleanly for next cycle
+      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). Capital safely preserved.",
+                  numSymbols, AutonomousMinConfluenceScore);
    }
 }
 
