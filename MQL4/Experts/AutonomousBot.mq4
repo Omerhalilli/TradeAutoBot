@@ -143,12 +143,10 @@ int OnInit()
    g_LastAutonomousBotTick = GetTickCount(); // Enforce startup stabilization delay
 
    ENUM_TIMEFRAMES activeTF = (ScanTimeframe == PERIOD_CURRENT || ScanTimeframe == 0) ? (ENUM_TIMEFRAMES)Period() : ScanTimeframe;
+   int tfSec = activeTF * 60;
    datetime currentChartBar = iTime(Symbol(), activeTF, 0);
-   if(currentChartBar <= 0)
-   {
-      int tfSec = activeTF * 60;
-      if(tfSec > 0) currentChartBar = (datetime)((long)TimeCurrent() / tfSec * tfSec);
-   }
+   datetime currentBrokerBar = (tfSec > 0) ? (datetime)((long)TimeCurrent() / tfSec * tfSec) : 0;
+   if(currentBrokerBar > currentChartBar) currentChartBar = currentBrokerBar;
    g_LastChartScanBarTime = currentChartBar; // Seed startup bar: guarantees zero trade execution on initial half-bar
 
    // 1. Audit open orders and attach mandatory stops to any unprotected positions
@@ -412,7 +410,11 @@ void UpdateChartHUD()
    datetime curBoundary = (tfSec > 0) ? (datetime)((long)curTime / tfSec * tfSec) : 0;
    int secToNext = (tfSec > 0 && curBoundary > 0) ? (int)((curBoundary + tfSec) - curTime) : 0;
    if(secToNext < 0) secToNext = 0;
-   string nextScanStr = StringFormat("%dm %02ds", secToNext / 60, secToNext % 60);
+   string nextScanStr;
+   if(secToNext >= 3600)
+      nextScanStr = StringFormat("%dh %02dm %02ds", secToNext / 3600, (secToNext % 3600) / 60, secToNext % 60);
+   else
+      nextScanStr = StringFormat("%dm %02ds", secToNext / 60, secToNext % 60);
    string scanModeStr = ScanOnBarCloseOnly ? StringFormat("Bar-Close (%s)", EnumToString(activeTF)) : "Continuous Interval";
 
    string hud = StringFormat(
@@ -533,12 +535,10 @@ void OnTimer()
    ENUM_TIMEFRAMES activeTF = (ScanTimeframe == PERIOD_CURRENT || ScanTimeframe == 0) ? (ENUM_TIMEFRAMES)Period() : ScanTimeframe;
    if(ScanOnBarCloseOnly)
    {
+      int tfSec = activeTF * 60;
       datetime currentBarTime = iTime(Symbol(), activeTF, 0);
-      if(currentBarTime <= 0)
-      {
-         int tfSec = activeTF * 60;
-         if(tfSec > 0) currentBarTime = (datetime)((long)TimeCurrent() / tfSec * tfSec);
-      }
+      datetime currentBrokerBar = (tfSec > 0) ? (datetime)((long)TimeCurrent() / tfSec * tfSec) : 0;
+      if(currentBrokerBar > currentBarTime) currentBarTime = currentBrokerBar;
       if(currentBarTime <= 0) return;
 
       if(g_LastChartScanBarTime == 0)

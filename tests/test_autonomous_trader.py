@@ -1291,6 +1291,102 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_format_countdown_string(self):
+        """Verifies countdown string formats correctly for minutes and hours."""
+        trader = AutonomousMultiSymbolTrader()
+        self.assertEqual(trader.format_countdown_string(45.0), "0m 45s")
+        self.assertEqual(trader.format_countdown_string(125.0), "2m 05s")
+        self.assertEqual(trader.format_countdown_string(3600.0), "1h 00m 00s")
+        self.assertEqual(trader.format_countdown_string(7345.0), "2h 02m 25s")
+
+    def test_scan_portfolio_custom_symbols_and_timeframe(self):
+        """Verifies scan_portfolio accepts custom symbols list and custom timeframe."""
+        trader = AutonomousMultiSymbolTrader()
+        with patch("autotrade.core.autonomous_trader.zmq_client.scan_symbols") as mock_scan:
+            mock_scan.return_value = {
+                "status": "ok",
+                "server_time": "2026.09.08 14:15:30",
+                "results": [{"symbol": "GBPJPY", "score": 7}]
+            }
+            res = trader.scan_portfolio(timeframe="M15", symbols=["GBPJPY", "EURJPY"])
+            mock_scan.assert_called_once_with(symbols="GBPJPY,EURJPY", timeframe="M15", timeout_ms=6000)
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(res["results"][0]["symbol"], "GBPJPY")
+
+    def test_multi_timeframe_def_bar_time_derivation(self):
+        """Verifies def_bar_time accurately snaps to candle boundary for any timeframe (e.g. M5, M30, H4)."""
+        trader = AutonomousMultiSymbolTrader()
+        with patch("autotrade.core.autonomous_trader.zmq_client.scan_symbols") as mock_scan:
+            # Server time is 14:27:15; return fresh dict on each call to avoid in-place mutation
+            mock_scan.side_effect = lambda **kwargs: {
+                "status": "ok",
+                "server_time": "2026.09.08 14:27:15",
+                "results": [{"symbol": "EURUSD", "score": 6}]
+            }
+            # For M5: should snap to 14:25:00
+            res_m5 = trader.scan_portfolio(timeframe="M5", symbols=["EURUSD"])
+            bt_m5 = res_m5["results"][0]["bar_time"]
+            self.assertEqual(bt_m5 % 300, 0)
+
+            # For M30: should snap to 14:00:00
+            res_m30 = trader.scan_portfolio(timeframe="M30", symbols=["EURUSD"])
+            bt_m30 = res_m30["results"][0]["bar_time"]
+            self.assertEqual(bt_m30 % 1800, 0)
+
+            # For H4: should snap to 12:00:00
+            res_h4 = trader.scan_portfolio(timeframe="H4", symbols=["EURUSD"])
+            bt_h4 = res_h4["results"][0]["bar_time"]
+            self.assertEqual(bt_h4 % 14400, 0)
+
+    def test_cmd_scan_with_custom_symbol_and_timeframe(self):
+        """Verifies /scan <SYM> [TF] scans custom symbol with custom timeframe."""
+        async def run_test():
+            mock_scan = {
+                "status": "ok",
+                "server_time": "2026.09.08 14:23:45",
+                "results": [
+                    {
+                        "symbol": "GBPJPY", "score": 8, "signal": "BUY", "trend": "STRONG_BULLISH",
+                        "spread": 14.0, "sl_pips": 25.0, "tp_pips": 50.0, "adx": 26.0, "rsi": 55.0
+                    }
+                ]
+            }
+            update, context = self._make_mock_update(args=["GBPJPY", "M30"])
+            with patch.object(autonomous_trader, "scan_portfolio_async", return_value=mock_scan) as mock_async:
+                await handlers.cmd_scan(update, context)
+                mock_async.assert_called_once()
+                call_kw = mock_async.call_args[1]
+                self.assertEqual(call_kw.get("timeframe"), "M30")
+                self.assertIn("GBPJPY", call_kw.get("symbols", []))
+                update.message.reply_text.assert_called_once()
+                scan_text = update.message.reply_text.call_args[0][0]
+                self.assertIn("GBPJPY", scan_text)
+
+        asyncio.run(run_test())
+
+    def test_cmd_scan_with_only_timeframe(self):
+        """Verifies /scan M30 triggers full portfolio scan with M30 timeframe."""
+        async def run_test():
+            mock_scan = {
+                "status": "ok",
+                "server_time": "2026.09.08 14:23:45",
+                "results": [
+                    {
+                        "symbol": "EURUSD", "score": 6, "signal": "HOLD", "trend": "NEUTRAL",
+                        "spread": 12.0, "sl_pips": 25.0, "tp_pips": 50.0
+                    }
+                ]
+            }
+            update, context = self._make_mock_update(args=["M30"])
+            with patch.object(autonomous_trader, "scan_portfolio_async", return_value=mock_scan) as mock_async:
+                await handlers.cmd_scan(update, context)
+                mock_async.assert_called_once_with(timeframe="M30")
+                update.message.reply_text.assert_called_once()
+                scan_text = update.message.reply_text.call_args[0][0]
+                self.assertIn("AUTONOMOUS MULTI-SYMBOL SCANNER", scan_text)
+
+        asyncio.run(run_test())
+
 
 if __name__ == "__main__":
     unittest.main()

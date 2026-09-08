@@ -1564,13 +1564,14 @@ async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if args:
         new_tf = args[0].strip().upper()
         if autonomous_trader.set_timeframe(new_tf):
+            countdown_str = autonomous_trader.format_countdown_string(autonomous_trader.get_seconds_until_next_bar())
             text = (
                 f"⏱️ <b>AUTONOMOUS TIMEFRAME UPDATED</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"• <b>Active Timeframe:</b> <code>{new_tf}</code>\n"
                 f"• <b>Candle Duration:</b> <code>{autonomous_trader.get_timeframe_seconds()} seconds</code>\n"
                 f"• <b>Bar-Close Synchronized:</b> <code>{'YES (Strict Candle Close Only)' if autonomous_trader.scan_on_bar_close_only else 'NO'}</code>\n"
-                f"• <b>Next Scheduled Scan:</b> <code>in {int(autonomous_trader.get_seconds_until_next_bar() // 60)}m {int(autonomous_trader.get_seconds_until_next_bar() % 60):02d}s</code>\n"
+                f"• <b>Next Scheduled Scan:</b> <code>in {countdown_str}</code>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"<i>Surveillance scans will now execute strictly at {new_tf} bar boundaries.</i>"
             )
@@ -1579,12 +1580,13 @@ async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         tf_sec = autonomous_trader.get_timeframe_seconds()
         secs_left = autonomous_trader.get_seconds_until_next_bar()
+        countdown_str = autonomous_trader.format_countdown_string(secs_left)
         text = (
             f"⏱️ <b>AUTONOMOUS TIMEFRAME STATUS</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Active Timeframe:</b> <code>{autonomous_trader.timeframe}</code> ({tf_sec // 60} minutes)\n"
             f"• <b>Synchronization:</b> <code>{'Strict Bar Close Only' if autonomous_trader.scan_on_bar_close_only else 'Continuous Interval'}</code>\n"
-            f"• <b>Next Scheduled Scan:</b> <code>in {int(secs_left // 60)}m {int(secs_left % 60):02d}s</code>\n"
+            f"• <b>Next Scheduled Scan:</b> <code>in {countdown_str}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<i>Use <code>/timeframe &lt;M15|M30|H1|H4|D1&gt;</code> or <code>/autotrade tf &lt;TF&gt;</code> to change.</i>"
         )
@@ -1593,18 +1595,33 @@ async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 @restricted
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Scans all monitored instruments for confluence scores & signals across indicators."""
-    args = context.args or []
-    if args:
-        target = clean_symbol(args[0])
-        scan_res = await autonomous_trader.scan_portfolio_async()
-        text = autonomous_trader.format_single_symbol_analysis(target, scan_res)
+    raw_args = [a.strip() for a in (context.args or []) if a.strip()]
+    target_sym = None
+    target_tf = None
+
+    from autotrade.core.autonomous_trader import TIMEFRAME_SECONDS
+
+    for arg in raw_args:
+        u_arg = arg.upper()
+        if u_arg in TIMEFRAME_SECONDS and not target_tf:
+            target_tf = u_arg
+        elif not target_sym:
+            target_sym = clean_symbol(arg)
+
+    if target_sym:
+        # Guarantee target symbol is included in the scan query even if not in default watchlist
+        query_syms = list(autonomous_trader.symbols)
+        if target_sym not in query_syms:
+            query_syms.insert(0, target_sym)
+        scan_res = await autonomous_trader.scan_portfolio_async(timeframe=target_tf, symbols=query_syms)
+        text = autonomous_trader.format_single_symbol_analysis(target_sym, scan_res)
         kb = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton(f"⚡ Buy {target}", callback_data=f"trade:buy:{target}:0.01"),
-                InlineKeyboardButton(f"⚡ Sell {target}", callback_data=f"trade:sell:{target}:0.01"),
+                InlineKeyboardButton(f"⚡ Buy {target_sym}", callback_data=f"trade:buy:{target_sym}:0.01"),
+                InlineKeyboardButton(f"⚡ Sell {target_sym}", callback_data=f"trade:sell:{target_sym}:0.01"),
             ],
             [
-                InlineKeyboardButton("🔄 Re-Scan", callback_data=f"scan_sym:{target}"),
+                InlineKeyboardButton("🔄 Re-Scan", callback_data=f"scan_sym:{target_sym}"),
                 InlineKeyboardButton("📊 Full Portfolio", callback_data="nav_scan"),
             ],
             [
@@ -1615,7 +1632,8 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await send_or_edit(update, context, text, reply_markup=kb)
         return
 
-    scan_res = await autonomous_trader.scan_portfolio_async()
+    # Full portfolio scan (with optional target_tf if specified)
+    scan_res = await autonomous_trader.scan_portfolio_async(timeframe=target_tf)
     text = autonomous_trader.format_scan_matrix(scan_res)
     kb = InlineKeyboardMarkup([
         [

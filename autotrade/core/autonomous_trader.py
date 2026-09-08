@@ -181,20 +181,34 @@ class AutonomousMultiSymbolTrader:
 
         return False
 
+    def format_countdown_string(self, secs_left: float) -> str:
+        """Formats countdown in readable Xh Ym Zs or Ym Zs format."""
+        total_sec = max(0, int(secs_left))
+        hrs = total_sec // 3600
+        mins = (total_sec % 3600) // 60
+        secs = total_sec % 60
+        if hrs > 0:
+            return f"{hrs}h {mins:02d}m {secs:02d}s"
+        return f"{mins}m {secs:02d}s"
+
     def set_timeframe(self, tf: str) -> bool:
         """Updates active timeframe for scanning and resets boundary anchor."""
         clean_tf = str(tf).strip().upper()
         if clean_tf not in TIMEFRAME_SECONDS:
             return False
-        self.timeframe = clean_tf
-        # Reset boundary anchor so next scan synchronizes to new timeframe candle
-        self.last_scanned_bar_boundary = 0
-        logger.info(f"AutonomousTrader: Timeframe set to {self.timeframe} ({self.get_timeframe_seconds()}s).")
+        if clean_tf != self.timeframe:
+            self.timeframe = clean_tf
+            # Reset boundary anchor so next scan synchronizes to new timeframe candle
+            self.last_scanned_bar_boundary = 0
+            logger.info(f"AutonomousTrader: Timeframe set to {self.timeframe} ({self.get_timeframe_seconds()}s).")
         return True
 
     def set_scan_on_bar_close_only(self, enabled: bool) -> None:
         """Toggles strict candle-boundary scan synchronization."""
         self.scan_on_bar_close_only = bool(enabled)
+        if self.scan_on_bar_close_only and self.last_scanned_bar_boundary == 0:
+            tf_sec = self.get_timeframe_seconds()
+            self.last_scanned_bar_boundary = int(time.time() // tf_sec) * tf_sec
         logger.info(f"AutonomousTrader: Scan on bar close only set to {self.scan_on_bar_close_only}.")
 
     @property
@@ -250,12 +264,16 @@ class AutonomousMultiSymbolTrader:
             return True
         return False
 
-    def scan_portfolio(self, timeframe: Optional[str] = None) -> Dict[str, Any]:
+    def scan_portfolio(
+        self, timeframe: Optional[str] = None, symbols: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
         """
         Synchronously queries MetaTrader 4 ZeroMQ Bridge for multi-symbol market data & scores.
         """
         tf = timeframe or self.timeframe
-        sym_str = ",".join(self.symbols)
+        tf_sec = self.get_timeframe_seconds(tf)
+        sym_list = symbols or self.symbols
+        sym_str = ",".join(sym_list)
         res = zmq_client.scan_symbols(symbols=sym_str, timeframe=tf, timeout_ms=6000)
 
         if res.get("status") == "ok" and "results" in res:
@@ -266,21 +284,12 @@ class AutonomousMultiSymbolTrader:
                 try:
                     from datetime import datetime, timezone
                     dt = datetime.strptime(str(server_time_str).strip(), "%Y.%m.%d %H:%M:%S")
-                    if tf == "M15":
-                        dt = dt.replace(minute=(dt.minute // 15) * 15, second=0, microsecond=0)
-                    elif tf == "M30":
-                        dt = dt.replace(minute=(dt.minute // 30) * 30, second=0, microsecond=0)
-                    elif tf == "H4":
-                        dt = dt.replace(hour=(dt.hour // 4) * 4, minute=0, second=0, microsecond=0)
-                    elif tf == "D1":
-                        dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-                    else:  # Default H1
-                        dt = dt.replace(minute=0, second=0, microsecond=0)
-                    def_bar_time = int(dt.replace(tzinfo=timezone.utc).timestamp())
+                    dt_ts = int(dt.replace(tzinfo=timezone.utc).timestamp())
+                    def_bar_time = int(dt_ts // tf_sec) * tf_sec
                 except Exception:
-                    def_bar_time = int(time.time() // 3600) * 3600
+                    def_bar_time = int(time.time() // tf_sec) * tf_sec
             else:
-                def_bar_time = int(time.time() // 3600) * 3600
+                def_bar_time = int(time.time() // tf_sec) * tf_sec
 
             for it in res.get("results", []):
                 if not it.get("bar_time"):
@@ -293,7 +302,7 @@ class AutonomousMultiSymbolTrader:
         # If bridge does not support scan_symbols or returns error, check fallback
         is_unsupported = ("Unknown action" in str(res.get("message", "")))
         fallback_results: List[Dict[str, Any]] = []
-        for s in self.symbols:
+        for s in sym_list:
             fallback_results.append({
                 "symbol": s,
                 "bid": 0.0,
@@ -332,9 +341,11 @@ class AutonomousMultiSymbolTrader:
         self.last_scan_timestamp = time.time()
         return fallback
 
-    async def scan_portfolio_async(self, timeframe: Optional[str] = None) -> Dict[str, Any]:
+    async def scan_portfolio_async(
+        self, timeframe: Optional[str] = None, symbols: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
         """Asynchronously triggers portfolio scan in a separate worker thread."""
-        return await asyncio.to_thread(self.scan_portfolio, timeframe)
+        return await asyncio.to_thread(self.scan_portfolio, timeframe, symbols)
 
     def is_qualified_candidate(self, item: Dict[str, Any]) -> bool:
         """
@@ -758,9 +769,7 @@ class AutonomousMultiSymbolTrader:
         sym_list = ", ".join(self.symbols)
         tf_sec = self.get_timeframe_seconds()
         secs_left = self.get_seconds_until_next_bar()
-        mins_left = int(secs_left // 60)
-        rem_secs = int(secs_left % 60)
-        countdown_str = f"{mins_left}m {rem_secs:02d}s"
+        countdown_str = self.format_countdown_string(secs_left)
         sync_mode = "🕯️ <b>Strict Bar-Close Only</b>" if self.scan_on_bar_close_only else "⚡ <b>Continuous Interval</b>"
 
         msg = (
@@ -793,9 +802,7 @@ class AutonomousMultiSymbolTrader:
         results = data.get("results", [])
         server_time = data.get("server_time", time.strftime("%Y.%m.%d %H:%M:%S"))
         secs_left = self.get_seconds_until_next_bar()
-        mins_left = int(secs_left // 60)
-        rem_secs = int(secs_left % 60)
-        countdown_str = f"{mins_left}m {rem_secs:02d}s"
+        countdown_str = self.format_countdown_string(secs_left)
         sync_desc = f"Bar-Close Synchronized ({self.timeframe})" if self.scan_on_bar_close_only else "Interval"
 
         msg = (

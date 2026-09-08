@@ -481,6 +481,7 @@ bool     g_AutoTradingRuntimeActive = true;
 datetime g_LastBarProcessedTime = 0;
 datetime g_LastOrderExecutionTime = 0;
 uint     g_LastAutonomousScanTick = 0;
+datetime g_LastAutonomousBarTime  = 0;
 
 // Multi-Symbol New Bar Tracker (guarantees trade execution only on closed confirmed bars)
 struct SymbolBarTracker {
@@ -6857,6 +6858,13 @@ int OnInit()
       IsNewBar(seedSyms[sIdx], (ENUM_TIMEFRAMES)Period());
    }
 
+   ENUM_TIMEFRAMES activeChartTF = (ENUM_TIMEFRAMES)Period();
+   int chartTfSec = activeChartTF * 60;
+   datetime currentChartBar = iTime(Symbol(), activeChartTF, 0);
+   datetime currentBrokerBar = (chartTfSec > 0) ? (datetime)((long)TimeCurrent() / chartTfSec * chartTfSec) : 0;
+   if(currentBrokerBar > currentChartBar) currentChartBar = currentBrokerBar;
+   g_LastAutonomousBarTime = currentChartBar; // Seed startup bar: guarantees zero multi-symbol entries on initial half-bar
+
    g_LastAutonomousScanTick = GetTickCount(); // Enforce full startup stabilization delay for background multi-symbol scanner
 
    // === STEP 3: INPUT PARAMETER VALIDATION ===
@@ -7019,30 +7027,27 @@ void Autonomous_MultiSymbolScan()
    // Automatically detect active chart timeframe
    ENUM_TIMEFRAMES activeTF = (ENUM_TIMEFRAMES)Period();
 
-   static datetime s_lastMultiSymbolBarTime = 0;
    if(ScanOnBarCloseOnly)
    {
+      int tfSec = activeTF * 60;
       datetime currentBarTime = iTime(Symbol(), activeTF, 0);
-      if(currentBarTime <= 0)
-      {
-         int tfSec = activeTF * 60;
-         if(tfSec > 0) currentBarTime = (datetime)((long)TimeCurrent() / tfSec * tfSec);
-      }
+      datetime currentBrokerBar = (tfSec > 0) ? (datetime)((long)TimeCurrent() / tfSec * tfSec) : 0;
+      if(currentBrokerBar > currentBarTime) currentBarTime = currentBrokerBar;
       if(currentBarTime <= 0) return;
 
-      if(s_lastMultiSymbolBarTime == 0)
+      if(g_LastAutonomousBarTime == 0)
       {
          // Initial startup: lock to current forming bar so no trade occurs on startup
-         s_lastMultiSymbolBarTime = currentBarTime;
+         g_LastAutonomousBarTime = currentBarTime;
          return;
       }
 
-      if(currentBarTime <= s_lastMultiSymbolBarTime)
+      if(currentBarTime <= g_LastAutonomousBarTime)
       {
          return; // Inside current forming bar: between bar closes, no new entry scans take place!
       }
 
-      s_lastMultiSymbolBarTime = currentBarTime;
+      g_LastAutonomousBarTime = currentBarTime;
       PrintFormat("[AUTONOMOUS MULTI-SYMBOL] 🕯️ New candle boundary confirmed on %s (%s). Executing portfolio surveillance scan...",
                   Symbol(), EnumToString(activeTF));
    }
