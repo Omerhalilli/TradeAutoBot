@@ -791,6 +791,94 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_counter_trend_strictly_prohibited(self):
+        """Verifies that COUNTER-TREND setups are strictly rejected even with high score and valid oscillators."""
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "COUNTER-TREND BULLISH",
+                    "adx": 28.0, "rsi": 52.0, "htf_trend": "BULLISH", "spread": 10.0,
+                    "sl_pips": 30.0, "tp_pips": 60.0
+                },
+                {
+                    "symbol": "GBPUSD", "score": 8, "signal": "SELL", "trend": "COUNTER-TREND BEARISH",
+                    "adx": 28.0, "rsi": 48.0, "htf_trend": "BEARISH", "spread": 10.0,
+                    "sl_pips": 30.0, "tp_pips": 60.0
+                }
+            ]
+        }
+        mock_positions = {"status": "ok", "positions": []}
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
+    def test_mid_bar_signal_rejected_after_untraded_bars(self):
+        """Verifies that if a new bar had no trades at bar open, mid-bar ticks later in that bar are rejected."""
+        trader = AutonomousMultiSymbolTrader(
+            symbols=["EURUSD"],
+            min_score=6,
+            require_bar_transition=True
+        )
+
+        # Bar 1 on startup (10:00)
+        mock_bar1 = {
+            "status": "ok",
+            "results": [{"symbol": "EURUSD", "score": 4, "signal": "HOLD", "bar_time": 1788890000}]
+        }
+        # Bar 2 open (11:00) - No signal (score 4)
+        mock_bar2_open = {
+            "status": "ok",
+            "results": [{"symbol": "EURUSD", "score": 4, "signal": "HOLD", "bar_time": 1788893600}]
+        }
+        # Bar 2 mid-bar (11:35) - Sudden indicator repaint to score 8
+        mock_bar2_midbar = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "STRONG_BULLISH",
+                    "adx": 28.0, "rsi": 52.0, "htf_trend": "BULLISH", "spread": 10.0,
+                    "sl_pips": 30.0, "tp_pips": 60.0, "bar_time": 1788893600
+                }
+            ]
+        }
+        mock_positions = {"status": "ok", "positions": []}
+
+        async def run_test():
+            # Cycle 1: Startup seeds bar 1 (10:00)
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_bar1), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades1 = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades1), 0)
+                mock_open.assert_not_called()
+
+            # Cycle 2: Bar 2 open (11:00) - score 4, no trade, but bar transition registered
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_bar2_open), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades2 = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades2), 0)
+                mock_open.assert_not_called()
+                self.assertEqual(trader.seen_bar_times.get("EURUSD"), 1788893600)
+
+            # Cycle 3: Mid-bar 11:35 - score 8, but MUST BE REJECTED because bar transition already occurred
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_bar2_midbar), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades3 = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades3), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
 
 class TestTelegramAutonomousHandlers(unittest.TestCase):
     def setUp(self):

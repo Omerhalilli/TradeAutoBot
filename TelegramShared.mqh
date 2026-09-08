@@ -269,11 +269,26 @@ bool Telegram_WriteOutboxPhotoPayload(const string photoFilename, const string c
 // WebRequest permission tracking cache to eliminate redundant stalls and log spam when disabled in MT4 options
 static bool g_tgWebRequestDisabled = false;
 
+// Check if direct WebRequest is disabled either in-memory or via terminal global variable
+bool Telegram_IsWebRequestDisabled()
+{
+   if(g_tgWebRequestDisabled) return true;
+   if(GlobalVariableCheck("TG_WebRequest_Disabled"))
+   {
+      if(GlobalVariableGet("TG_WebRequest_Disabled") == 1.0)
+      {
+         g_tgWebRequestDisabled = true;
+         return true;
+      }
+   }
+   return false;
+}
+
 // Low-latency direct HTTP WebRequest post to Telegram API (minimal 1000ms timeout, 0 sleep)
 bool Telegram_DirectPost(const string botToken, const string chatId, const string textHtml, const string replyMarkupJson = "", const int timeoutMs = 1000)
 {
    if(IsStopped()) return false;
-   if(g_tgWebRequestDisabled) return false;
+   if(Telegram_IsWebRequestDisabled()) return false;
    string cleanToken = Telegram_CleanBotToken(botToken);
    if(!Telegram_IsValidBotToken(cleanToken) || StringLen(chatId) == 0) return false;
    
@@ -312,9 +327,10 @@ bool Telegram_DirectPost(const string botToken, const string chatId, const strin
    }
    
    int err = GetLastError();
-   if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060 || res == 401 || res == 404)
+   if(err == ERR_FUNCTION_NOT_ALLOWED || err == 4060 || err == 4000 || res == 401 || res == 404 || res == 400)
    {
       g_tgWebRequestDisabled = true;
+      GlobalVariableSet("TG_WebRequest_Disabled", 1.0);
       PrintFormat("[Telegram] WebRequest not permitted or token invalid (HTTP %d, Error %d). Switched permanently to ultra-low latency outbox dispatcher.", res, err);
    }
    else
@@ -415,7 +431,7 @@ bool Telegram_SendMessage(const string botToken,
    string cleanActiveToken = Telegram_CleanBotToken(activeToken);
       
    // If direct WebRequest parameters are missing, invalid, or WebRequest is disabled in MT4 options, write instantly to outbox (<0.1ms)
-   if(g_tgWebRequestDisabled || !Telegram_IsValidBotToken(cleanActiveToken) || StringLen(activeChat) == 0)
+   if(Telegram_IsWebRequestDisabled() || !Telegram_IsValidBotToken(cleanActiveToken) || StringLen(activeChat) == 0)
    {
       return Telegram_WriteOutboxPayload(messageTextHtml, activeChat, replyMarkupJson);
    }
@@ -669,7 +685,7 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
 
    // Validate token format: if token is empty, placeholder, or invalid, do NOT make failing WebRequest calls that pollute logs.
    // Route photo requests cleanly to the file-based outbox buffer so the Python bot daemon (which has the valid token from .env) handles delivery asynchronously.
-   if(!Telegram_IsValidBotToken(cleanToken) || g_tgWebRequestDisabled)
+   if(!Telegram_IsValidBotToken(cleanToken) || StringLen(chatId) == 0 || Telegram_IsWebRequestDisabled())
    {
       PrintFormat("[Telegram] TelegramBotToken is empty/invalid or WebRequest disabled. Routing photo %s cleanly to outbox for Python dispatcher.", filename);
       return Telegram_WriteOutboxPhotoPayload(filename, captionHtml, chatId, replyMarkupJson);
@@ -741,9 +757,10 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
    
    string responseBody = CharArrayToString(resultData, 0, WHOLE_ARRAY, CP_UTF8);
    int termErr = GetLastError();
-   if(res == 401 || res == 404 || termErr == ERR_FUNCTION_NOT_ALLOWED || termErr == 4060)
+   if(res == 401 || res == 404 || res == 400 || termErr == ERR_FUNCTION_NOT_ALLOWED || termErr == 4060 || termErr == 4000)
    {
       g_tgWebRequestDisabled = true;
+      GlobalVariableSet("TG_WebRequest_Disabled", 1.0);
       PrintFormat("[Telegram] Direct sendPhoto disabled (HTTP %d, Terminal Error %d). Routing photo %s cleanly to outbox for Python dispatcher.",
                   res, termErr, filename);
    }

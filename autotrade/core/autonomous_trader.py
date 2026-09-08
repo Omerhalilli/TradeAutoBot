@@ -271,7 +271,8 @@ class AutonomousMultiSymbolTrader:
             if not results:
                 return []
 
-            # Startup bar baseline tracking: seed seen_bar_times for ALL symbols in portfolio
+            # Closed bar detection & transition tracking across all symbols in portfolio
+            new_bar_symbols = set()
             if self.require_bar_transition:
                 for item in results:
                     sym_name = str(item.get("symbol", "")).strip().upper()
@@ -283,10 +284,22 @@ class AutonomousMultiSymbolTrader:
                     except (ValueError, TypeError):
                         bt_val = 0
                     if bt_val > 0:
-                        if raw_name not in self.seen_bar_times and canon_name not in self.seen_bar_times:
+                        last_seen = max(
+                            self.seen_bar_times.get(raw_name, 0),
+                            self.seen_bar_times.get(canon_name, 0)
+                        )
+                        if last_seen == 0:
+                            # Initial startup baseline registration: lock forming bar so we never trade on startup
                             self.seen_bar_times[raw_name] = bt_val
                             self.seen_bar_times[canon_name] = bt_val
-                            logger.debug(f"AutonomousTrader: Seeded initial startup bar {bt_val} for {raw_name}.")
+                            logger.debug(f"AutonomousTrader: Registered baseline bar {bt_val} on startup for {raw_name}.")
+                        elif bt_val > last_seen:
+                            # A new closed bar has formed and transitioned!
+                            self.seen_bar_times[raw_name] = bt_val
+                            self.seen_bar_times[canon_name] = bt_val
+                            new_bar_symbols.add(raw_name)
+                            new_bar_symbols.add(canon_name)
+                            logger.debug(f"AutonomousTrader: New bar transition detected for {raw_name} ({last_seen} -> {bt_val}).")
 
             # 2. Check open positions & account safety
             pos_data = await asyncio.to_thread(zmq_client.get_positions)
@@ -342,10 +355,10 @@ class AutonomousMultiSymbolTrader:
                 if sig not in ("BUY", "SELL") or sc < self.min_score or sc < 6:
                     continue
 
-                # Rule 2: Directional Trend Confirmation (reject opposite or flat trends)
-                if sig == "BUY" and ("BEAR" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
+                # Rule 2: Directional Trend Confirmation (reject opposite, counter-trend, or flat trends)
+                if sig == "BUY" and ("BEAR" in trend_str or "COUNTER" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
                     continue
-                if sig == "SELL" and ("BULL" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
+                if sig == "SELL" and ("BULL" in trend_str or "COUNTER" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
                     continue
 
                 # Rule 3: Higher Timeframe Confluence (H4 / D1 must not contradict entry)
@@ -445,17 +458,8 @@ class AutonomousMultiSymbolTrader:
                         logger.debug(f"AutonomousTrader: Skipping {raw_sym} - bar time unavailable and bar transition required.")
                         continue
 
-                    last_seen = max(
-                        self.seen_bar_times.get(raw_sym, 0),
-                        self.seen_bar_times.get(canon_sym, 0)
-                    )
-                    if last_seen == 0:
-                        self.seen_bar_times[raw_sym] = bt_val
-                        self.seen_bar_times[canon_sym] = bt_val
-                        logger.debug(f"AutonomousTrader: Seeded initial bar {bt_val} for {raw_sym}. Awaiting new bar close.")
-                        continue
-                    if bt_val <= last_seen:
-                        logger.debug(f"AutonomousTrader: Skipping {raw_sym} - bar {bt_val} <= last seen {last_seen}. Awaiting bar transition.")
+                    if raw_sym not in new_bar_symbols and canon_sym not in new_bar_symbols:
+                        logger.debug(f"AutonomousTrader: Skipping {raw_sym} - bar {bt_val} already evaluated or mid-bar. Awaiting new bar close.")
                         continue
 
                 if bt_val > 0:

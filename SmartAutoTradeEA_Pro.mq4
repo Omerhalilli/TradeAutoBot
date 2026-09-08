@@ -2495,6 +2495,26 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
    string orderComment = TradeCommentPrefix + "_" + IntegerToString(MagicNumber);
    int slippage = GetScaledSlippage();
 
+   // Enforce global active positions limit across portfolio (MaxOpenPositions)
+   if(GetGlobalActivePositions(MagicNumber) >= MaxOpenPositions)
+   {
+      PrintFormat("[ORDER REJECTED] Global open positions limit reached (%d >= %d). Dispatch aborted for %s.",
+                  GetGlobalActivePositions(MagicNumber), MaxOpenPositions, sym);
+      return -1;
+   }
+
+   // Strict symbol protection: verify no active order already exists for this pair
+   for(int opIdx = 0; opIdx < OrdersTotal(); opIdx++)
+   {
+      if(!OrderSelect(opIdx, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+      if(AreSymbolsMatching(OrderSymbol(), sym))
+      {
+         PrintFormat("[ORDER REJECTED] Active position already exists for %s (Ticket #%d). Dispatch aborted.", sym, OrderTicket());
+         return -1;
+      }
+   }
+
    // Pre-execution free margin validation
    ResetLastError();
    double freeMarginCheck = AccountFreeMarginCheck(sym, command, volume);
