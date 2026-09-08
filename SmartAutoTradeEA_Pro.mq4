@@ -761,7 +761,7 @@ void InitializeSymbolMetrics()
    if(g_MaxLot <= 0.0)    g_MaxLot    = 100.0;
 
 
-   PrintFormat("[INIT] Symbol: %s | Digits: %d | PipPoint: %f | TickSize: %f | TickValue: %f | LotStep: %f",
+   PrintFormat("[INIT] Symbol: %s | Price Decimals (Digits): %d decimal places | PipPoint: %f | TickSize: %f | TickValue: %f | LotStep: %f",
                Symbol(), Digits, g_PipPoint, g_TickSize, g_TickValue, g_LotStep);
 }
 
@@ -3338,7 +3338,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    {
       string biasStr = (liveSellScore > liveBuyScore) ? StringFormat("SELL %d/10", liveSellScore) :
                        ((liveBuyScore > liveSellScore) ? StringFormat("BUY %d/10", liveBuyScore) : "FLAT 0/10");
-      signalSummary = StringFormat("Evaluating: %s (Need: %d)", biasStr, MinRequiredScore);
+      signalSummary = StringFormat("Evaluating: %s (Min Confluence: %d/10)", biasStr, MinRequiredScore);
       sigColor = (liveSellScore > liveBuyScore) ? clrLightSalmon : ((liveBuyScore > liveSellScore) ? clrPaleGreen : clrSilver);
    }
    RenderHUDLabel("02_Signal", signalSummary, textX, y, sigColor, fontNormal, true);
@@ -6735,7 +6735,7 @@ void LogBrokerDiagnosticReport()
                sym, TimeToStr(TimeCurrent(), TIME_DATE | TIME_SECONDS), AccountNumber());
    PrintFormat("Broker Company: %s | Server: %s | Leverage: 1:%d | Currency: %s",
                AccountCompany(), AccountServer(), AccountLeverage(), AccountCurrency());
-   PrintFormat("Market Digits: %d | Point: %f | TickSize: %f | TickValue: %f",
+   PrintFormat("Price Decimals (Digits): %d decimal places | Point: %f | TickSize: %f | TickValue: %f",
                Digits, Point, MarketInfo(sym, MODE_TICKSIZE), MarketInfo(sym, MODE_TICKVALUE));
    PrintFormat("Spread: %d pts | StopLevel: %d pts | FreezeLevel: %d pts",
                (int)MarketInfo(sym, MODE_SPREAD), (int)MarketInfo(sym, MODE_STOPLEVEL), (int)MarketInfo(sym, MODE_FREEZELEVEL));
