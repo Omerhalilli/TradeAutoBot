@@ -405,6 +405,27 @@ int ExecuteOrderSafe(const string sym,
       return -1;
    }
 
+   // 5. Symbol trade permission and direction validation
+   if(!IsSymbolTradeAllowed(sym))
+   {
+      PrintFormat("[ORDER REJECTED] Trading is prohibited on %s (MODE_TRADEALLOWED <= 0). Cooldown activated.", sym);
+      RecordSymbolCooldown(sym);
+      return -1;
+   }
+   long symTradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+   if(cmd == OP_BUY && symTradeMode == SYMBOL_TRADE_MODE_SHORTONLY)
+   {
+      PrintFormat("[ORDER REJECTED] Long trading prohibited on %s (SHORTONLY). Cooldown activated.", sym);
+      RecordSymbolCooldown(sym);
+      return -1;
+   }
+   if(cmd == OP_SELL && symTradeMode == SYMBOL_TRADE_MODE_LONGONLY)
+   {
+      PrintFormat("[ORDER REJECTED] Short trading prohibited on %s (LONGONLY). Cooldown activated.", sym);
+      RecordSymbolCooldown(sym);
+      return -1;
+   }
+
    int dig = (int)MarketInfo(sym, MODE_DIGITS);
    if(dig <= 0) dig = Digits;
 
@@ -499,6 +520,14 @@ int ExecuteOrderSafe(const string sym,
          continue;
       }
 
+      // Immediate cooldown and abort on trade permission / restriction errors
+      if(err == 4110 || err == 4111 || err == 4109 || err == 133 || err == 140 || err == 132 || err == 64)
+      {
+         PrintFormat("[SAFETY COOLDOWN] Trade disabled or direction restricted on %s (Error %d). Cooldown activated. Retries aborted.", sym, err);
+         RecordSymbolCooldown(sym);
+         break;
+      }
+
       // Requote, Price changed, Off quotes, Context busy -> exponential backoff sleep
       if(err == 4 || err == 135 || err == 136 || err == 137 || err == 138 || err == 146)
       {
@@ -506,6 +535,7 @@ int ExecuteOrderSafe(const string sym,
       }
       else
       {
+         RecordSymbolCooldown(sym);
          break; // Non-retryable error (e.g. Market closed, Trade disabled)
       }
    }

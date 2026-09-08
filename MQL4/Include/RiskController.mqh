@@ -99,6 +99,8 @@ bool CanOpenCurrencyExposure(string sym, int maxExposurePerCurrency = 1, int mag
 //+------------------------------------------------------------------+
 double NormalizeSymbolLots(string sym, double rawLots)
 {
+   if(rawLots <= 0.0) return 0.0;
+
    double minLot  = MarketInfo(sym, MODE_MINLOT);
    double maxLot  = MarketInfo(sym, MODE_MAXLOT);
    double lotStep = MarketInfo(sym, MODE_LOTSTEP);
@@ -136,18 +138,29 @@ double CalculateRiskLots(string sym, double riskPercent, double slPips, double m
    if(pipVal <= 0.0) pipVal = 10.0;
 
    double lossPerLot = slPips * pipVal;
-   if(lossPerLot <= 0.0) return NormalizeSymbolLots(sym, 0.01);
+   if(lossPerLot <= 0.0) return 0.0;
 
    double rawLots = riskAmount / lossPerLot;
 
    // Margin capacity verification (buffer based on maxMarginUsagePct, default 50% free margin)
-   double marginReq = MarketInfo(sym, MODE_MARGINREQUIRED);
-   if(marginReq > 0.0)
+   double minLot = MarketInfo(sym, MODE_MINLOT);
+   if(minLot <= 0.0) minLot = 0.01;
+
+   double marginReq = GetSymbolMinLotMargin(sym);
+   double freeMargin = AccountFreeMargin();
+   double balance = AccountBalance();
+   double maxAffordableMargin = freeMargin * (maxMarginUsagePct / 100.0);
+
+   if(marginReq > maxAffordableMargin || marginReq > balance)
    {
-      double maxAffordableLots = (AccountFreeMargin() * (maxMarginUsagePct / 100.0)) / marginReq;
-      double minLot = MarketInfo(sym, MODE_MINLOT);
-      if(minLot <= 0.0) minLot = 0.01;
-      
+      PrintFormat("[RISK SIZING] Insufficient margin on %s: Min lot margin $%.2f > Max affordable $%.2f", sym, marginReq, maxAffordableMargin);
+      return 0.0;
+   }
+
+   double marginPerLot = (minLot > 0.0) ? (marginReq / minLot) : MarketInfo(sym, MODE_MARGINREQUIRED);
+   if(marginPerLot > 0.0)
+   {
+      double maxAffordableLots = maxAffordableMargin / marginPerLot;
       if(maxAffordableLots < minLot)
       {
          PrintFormat("[RISK SIZING] Insufficient margin on %s: Max affordable %.4f < Min lot %.2f", sym, maxAffordableLots, minLot);

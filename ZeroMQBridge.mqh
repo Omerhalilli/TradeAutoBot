@@ -768,6 +768,11 @@ string Zmq_HandleOpenOrder(const string reqJson)
    
    // Ensure symbol is active in Market Watch
    SymbolSelect(sym, true);
+
+   if(!IsSymbolTradeAllowed(sym))
+   {
+      return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":4109,\"message\":\"Trading is prohibited on " + Zmq_JsonEscape(sym) + " (Trade disabled or direction restricted)\"}";
+   }
    
    string cmdStr = Zmq_ExtractJsonString(reqJson, "cmd");
    StringToUpper(cmdStr);
@@ -2056,7 +2061,8 @@ string Zmq_HandleScanSymbols(const string reqJson)
       double pt = MarketInfo(sym, MODE_POINT);
       if(pt <= 0.0) continue;
       
-      if(MarketInfo(sym, MODE_TRADEALLOWED) <= 0.0) continue;
+      if(!IsSymbolTradeAllowed(sym)) continue;
+      if(!IsSymbolTradeableForBalance(sym, 50.0)) continue;
       if(!IsQuoteFresh(sym, 5)) continue;
       
       double bid = MarketInfo(sym, MODE_BID);

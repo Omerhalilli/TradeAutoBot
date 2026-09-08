@@ -151,7 +151,7 @@ void ScanNextSymbolBatch(int batchSize = 0)
       g_LastScannedSymbol = sym;
 
       // Pre-filter dormant/disabled symbols before computing indicators
-      if(!PreFilterSymbol(sym, MaxSpreadPoints, 50, ScanTimeframe, UseTimeFilter))
+      if(!PreFilterSymbol(sym, MaxSpreadPoints, 50, ScanTimeframe, UseTimeFilter, MaxMarginUsagePct))
       {
          continue;
       }
@@ -235,6 +235,11 @@ void ScanNextSymbolBatch(int batchSize = 0)
          RecordSymbolCooldown(bestSymbol);
          PrintFormat("[AUTONOMOUS BOT] Successfully filled %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d)",
                      (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSymbol, bestLots, bestSig.score, ticket);
+      }
+      else
+      {
+         PrintFormat("[AUTONOMOUS BOT] Order execution failed on %s. Cooldown activated.", bestSymbol);
+         RecordSymbolCooldown(bestSymbol);
       }
    }
    else

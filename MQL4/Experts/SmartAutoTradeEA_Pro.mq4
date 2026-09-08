@@ -257,6 +257,7 @@ input int                PartialCloseTriggerPips       = 25;                // P
 input double             MaxDailyDrawdownPercent       = 2.0;               // Daily Equity Drawdown Circuit Breaker (%)
 input double             MaxDailyProfitPercent         = 10.0;              // Daily Profit Target Circuit Breaker (%)
 input bool               EnforceAccountProtection      = true;              // Activate Daily Drawdown/Profit Guards
+input double             MaxMarginUsagePct             = 50.0;              // Maximum Margin Utilization Allowed (%)
 
 
 //--- [06. ADVANCED SL/TP CALCULATION METHODS & HYBRID SCORING]
@@ -445,7 +446,7 @@ input string             Sec_AutonomousMultiSymbol     = "=== [15] AUTONOMOUS MU
 input bool               EnableAutonomousMultiSymbol   = true;              // Autonomous Multi-Symbol Engine (True = Monitor Portfolio)
 input int                MaxOpenPositions              = 1;                 // Strict Global Open Positions Limit across ALL symbols
 input int                MaxExposurePerCurrency        = 1;                 // Maximum Open Positions per Currency (e.g. USD)
-input string             AutonomousWatchlist           = "EURUSD,GBPUSD,USDJPY,USDCHF,USDCAD,AUDUSD,NZDUSD,XAUUSD"; // Monitored Portfolio Symbols
+input string             AutonomousWatchlist           = "MARKET_WATCH";    // Monitored Portfolio Symbols ("MARKET_WATCH" or "ALL" for all account symbols, or comma list)
 input string             AutonomousExcludeSymbols      = "*RUB*,*TRY*,*ZAR*"; // Blacklist Wildcard Symbols (Exotics/High-Swap)
 input bool               AutonomousTradeDirectly       = true;              // 100% Autonomous Execution (Direct Trade, Zero Advisory Prompting)
 input int                AutonomousScanBatchSize       = 3;                 // Round-Robin Time-Sliced Batch Size (3-5)
@@ -653,6 +654,33 @@ string MqlErrorToString(const int errorCode)
       case 4064: return "ERR_TOO_MANY_OPEN_FILES: Open file handle ceiling reached";
       case 4065: return "ERR_CANNOT_READ_FILE: Cannot read from file";
       case 4066: return "ERR_CANNOT_WRITE_FILE: Cannot write to file";
+      case 4067: return "ERR_TRADE_ERROR: Error occurred during trade operation";
+      case 4099: return "ERR_END_OF_FILE: End of file reached";
+      case 4100: return "ERR_SOME_FILE_ERROR: File operation error";
+      case 4101: return "ERR_WRONG_FILE_NAME: Invalid file name";
+      case 4102: return "ERR_TOO_MANY_OPENED_FILES: Too many open files";
+      case 4103: return "ERR_CANNOT_OPEN_FILE: Cannot open file";
+      case 4104: return "ERR_INCOMPATIBLE_FILE: Incompatible file access";
+      case 4105: return "ERR_NO_ORDER_SELECTED: No order selected";
+      case 4106: return "ERR_UNKNOWN_SYMBOL: Unknown symbol";
+      case 4107: return "ERR_INVALID_PRICE_PARAM: Invalid price quotation parameter";
+      case 4108: return "ERR_INVALID_TICKET: Invalid ticket number";
+      case 4109: return "ERR_TRADE_NOT_ALLOWED: Trade is not allowed for this symbol/account";
+      case 4110: return "ERR_LONGS_NOT_ALLOWED: Long trading is not allowed on this symbol / account / settings";
+      case 4111: return "ERR_SHORTS_NOT_ALLOWED: Short trading is not allowed on this symbol / account / settings";
+      case 4200: return "ERR_OBJECT_ALREADY_EXISTS: Object already exists";
+      case 4201: return "ERR_UNKNOWN_OBJECT_PROPERTY: Unknown object property";
+      case 4202: return "ERR_OBJECT_DOES_NOT_EXIST: Object does not exist";
+      case 4203: return "ERR_UNKNOWN_OBJECT_TYPE: Unknown object type";
+      case 4204: return "ERR_NO_OBJECT_NAME: No object name";
+      case 4205: return "ERR_OBJECT_COORDINATES_ERROR: Object coordinates error";
+      case 4206: return "ERR_NO_SPECIFIED_SUBWINDOW: No specified subwindow";
+      case 4207: return "ERR_SOME_OBJECT_ERROR: Object operation error";
+      case 4210: return "ERR_CHART_PROP_INVALID: Invalid chart property";
+      case 4211: return "ERR_CHART_NOT_FOUND: Chart not found";
+      case 4212: return "ERR_CHARTWINDOW_NOT_FOUND: Chart window not found";
+      case 4213: return "ERR_CHARTINDICATOR_NOT_FOUND: Chart indicator not found";
+      case 4220: return "ERR_SYMBOL_SELECT: Symbol selection error";
       default:   return "UNKNOWN_ERROR_CODE: " + IntegerToString(errorCode);
    }
 }
@@ -2184,19 +2212,46 @@ double CalculateDynamicLotSize(const double entryPrice, const double slPrice, st
    if(slDistancePips <= 0.0) slDistancePips = 30.0;
 
    double lossPerLot = slDistancePips * pipValue;
-   if(lossPerLot <= 0.0) return MarketInfo(sym, MODE_MINLOT);
+   if(lossPerLot <= 0.0) return 0.0;
 
    double computedLot = riskAmount / lossPerLot;
 
-   // Margin Requirement Verification
-   double marginRequiredPerLot = MarketInfo(sym, MODE_MARGINREQUIRED);
-   if(marginRequiredPerLot > 0.0)
+   // Margin Requirement & Affordability Verification
+   double minLot = MarketInfo(sym, MODE_MINLOT);
+   if(minLot <= 0.0) minLot = (g_MinLot > 0.0) ? g_MinLot : 0.01;
+
+   double marginReq = GetSymbolMinLotMargin(sym);
+   double freeMargin = AccountFreeMargin();
+   double maxMarginPct = (MaxMarginUsagePct > 0.0) ? MaxMarginUsagePct : 50.0;
+   double maxAffordableMargin = freeMargin * (maxMarginPct / 100.0);
+
+   if(marginReq > maxAffordableMargin || marginReq > balance)
    {
-      double maxAffordableLots = (AccountFreeMargin() * 0.85) / marginRequiredPerLot;
+      PrintFormat("[RISK MANAGER] Symbol %s cannot be traded: Min lot margin $%.2f > Max affordable $%.2f (%.1f%% of FreeMargin $%.2f, Balance $%.2f)",
+                  sym, marginReq, maxAffordableMargin, maxMarginPct, freeMargin, balance);
+      return 0.0;
+   }
+
+   double marginPerLot = (minLot > 0.0) ? (marginReq / minLot) : MarketInfo(sym, MODE_MARGINREQUIRED);
+   if(marginPerLot > 0.0)
+   {
+      double maxAffordableLots = maxAffordableMargin / marginPerLot;
       if(computedLot > maxAffordableLots)
       {
          computedLot = maxAffordableLots;
-         PrintFormat("[RISK MANAGER] Lot size capped by free margin constraint: %.2f Lots", computedLot);
+         PrintFormat("[RISK MANAGER] Lot size capped by free margin constraint (%.1f%% of $%.2f): %.2f Lots",
+                     maxMarginPct, freeMargin, computedLot);
+      }
+      if(computedLot < minLot)
+      {
+         if(maxAffordableLots >= minLot)
+         {
+            computedLot = minLot;
+         }
+         else
+         {
+            return 0.0;
+         }
       }
    }
 
@@ -2221,6 +2276,8 @@ double CalculateOptimalLotSize(const double stopLossDistancePoints)
 
 double NormalizeLotStep(double rawLots, string targetSymbol = "")
 {
+   if(rawLots <= 0.0) return 0.0;
+
    string sym = (targetSymbol == "" || targetSymbol == "CURRENT") ? Symbol() : targetSymbol;
    double minLot  = MarketInfo(sym, MODE_MINLOT);
    double maxLot  = MarketInfo(sym, MODE_MAXLOT);
@@ -2376,6 +2433,27 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
       return -1;
    }
 
+   // Trade permissions and direction check
+   if(!IsSymbolTradeAllowed(sym))
+   {
+      PrintFormat("[ORDER REJECTED] Trading is prohibited by broker on %s (MODE_TRADEALLOWED <= 0). Cooldown activated.", sym);
+      RecordSymbolCooldown(sym);
+      return -1;
+   }
+   long symTradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+   if(command == OP_BUY && symTradeMode == SYMBOL_TRADE_MODE_SHORTONLY)
+   {
+      PrintFormat("[ORDER REJECTED] Long trading prohibited on %s (SYMBOL_TRADE_MODE_SHORTONLY). Cooldown activated.", sym);
+      RecordSymbolCooldown(sym);
+      return -1;
+   }
+   if(command == OP_SELL && symTradeMode == SYMBOL_TRADE_MODE_LONGONLY)
+   {
+      PrintFormat("[ORDER REJECTED] Short trading prohibited on %s (SYMBOL_TRADE_MODE_LONGONLY). Cooldown activated.", sym);
+      RecordSymbolCooldown(sym);
+      return -1;
+   }
+
    uint tStart = GetTickCount();
 
    while(attempts < OrderRetryAttempts && ticket < 0)
@@ -2464,6 +2542,15 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
             }
          }
 
+         // Immediate cooldown and abort on trade permission / restriction errors
+         if(err == 4110 || err == 4111 || err == 4109 || err == 133 || err == 140 || err == 132 || err == 64)
+         {
+            PrintFormat("[SAFETY COOLDOWN] Trade disabled / direction restricted on %s (Error %d: %s). Cooldown activated. Retries aborted.",
+                        sym, err, MqlErrorToString(err));
+            RecordSymbolCooldown(sym);
+            break;
+         }
+
          // Sleep with exponential backoff on server requote or context busy (200ms, 400ms, 800ms...)
          if(err == 4 || err == 135 || err == 136 || err == 137 || err == 138 || err == 146)
          {
@@ -2471,7 +2558,8 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
          }
          else
          {
-            // Fatal parameter errors require aborting retries
+            // Fatal parameter errors require aborting retries and cooling down symbol
+            RecordSymbolCooldown(sym);
             break;
          }
       }
@@ -6793,9 +6881,9 @@ void Autonomous_MultiSymbolScan()
    StringTrimRight(trimmedWatchlist);
    StringToUpper(trimmedWatchlist);
    
-   if(trimmedWatchlist == "" || trimmedWatchlist == "MARKET_WATCH" || trimmedWatchlist == "ALL" || trimmedWatchlist == "PROFILE")
+   if(trimmedWatchlist == "" || trimmedWatchlist == "MARKET_WATCH" || trimmedWatchlist == "ALL" || trimmedWatchlist == "PROFILE" || trimmedWatchlist == "AUTO")
    {
-      numSymbols = DiscoverMarketWatchSymbols(scanSymbols, "", AutonomousExcludeSymbols);
+      numSymbols = DiscoverMarketWatchSymbols(scanSymbols, "", AutonomousExcludeSymbols, MaxMarginUsagePct);
    }
    else
    {
@@ -6815,6 +6903,9 @@ void Autonomous_MultiSymbolScan()
          string resolved = ResolveBrokerSymbol(symToken);
          if(resolved == "") resolved = symToken;
          
+         if(!IsSymbolTradeAllowed(resolved)) continue;
+         if(!IsSymbolTradeableForBalance(resolved, MaxMarginUsagePct)) continue;
+
          ArrayResize(scanSymbols, numSymbols + 1);
          scanSymbols[numSymbols] = resolved;
          numSymbols++;
@@ -6841,8 +6932,8 @@ void Autonomous_MultiSymbolScan()
       string sym = scanSymbols[i];
       SymbolSelect(sym, true);
 
-      // 5. Pre-filter before expensive indicator calculations
-      if(!PreFilterSymbol(sym, (double)MaxSpreadPoints, 50, PERIOD_H1)) continue;
+      // 5. Pre-filter before expensive indicator calculations (liquidity, trade permission, margin affordability)
+      if(!PreFilterSymbol(sym, (double)MaxSpreadPoints, 50, PERIOD_H1, true, MaxMarginUsagePct)) continue;
 
       // 6. Check persistent symbol cooldown
       if(IsSymbolInCooldown(sym, AutonomousCooldownMinutes)) continue;
@@ -6899,6 +6990,11 @@ void Autonomous_MultiSymbolScan()
          {
             PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Successfully filled %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d)",
                         (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSymbol, bestLots, bestSig.score, ticket);
+            RecordSymbolCooldown(bestSymbol);
+         }
+         else
+         {
+            PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Order execution failed for %s. Enforcing cooldown to break retry loop.", bestSymbol);
             RecordSymbolCooldown(bestSymbol);
          }
       }

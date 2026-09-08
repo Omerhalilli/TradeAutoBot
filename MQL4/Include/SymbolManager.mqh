@@ -71,7 +71,62 @@ bool AreSymbolsMatching(string sym1, string sym2)
 }
 
 //+------------------------------------------------------------------+
+//| Verify broker allows active trading on the symbol                |
+//+------------------------------------------------------------------+
+bool IsSymbolTradeAllowed(string sym)
+{
+   if(sym == "") return false;
+   if(MarketInfo(sym, MODE_TRADEALLOWED) <= 0.0) return false;
+   
+   double bid = MarketInfo(sym, MODE_BID);
+   double ask = MarketInfo(sym, MODE_ASK);
+   if(bid <= 0.0 && ask <= 0.0) return false;
+   
+   long tradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+   if(tradeMode == SYMBOL_TRADE_MODE_DISABLED || tradeMode == SYMBOL_TRADE_MODE_CLOSEONLY)
+   {
+      return false;
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Extract broker prefix and suffix from current chart symbol       |
+//+------------------------------------------------------------------+
+string GetChartBrokerSuffix()
+{
+   string chartSym = Symbol();
+   string canon = CleanSymbolBase(chartSym);
+   if(canon == "") return "";
+   int pos = StringFind(chartSym, canon);
+   if(pos >= 0)
+   {
+      int suffixStart = pos + StringLen(canon);
+      if(suffixStart < StringLen(chartSym))
+      {
+         return StringSubstr(chartSym, suffixStart);
+      }
+   }
+   return "";
+}
+
+string GetChartBrokerPrefix()
+{
+   string chartSym = Symbol();
+   string canon = CleanSymbolBase(chartSym);
+   if(canon == "") return "";
+   int pos = StringFind(chartSym, canon);
+   if(pos > 0)
+   {
+      return StringSubstr(chartSym, 0, pos);
+   }
+   return "";
+}
+
+//+------------------------------------------------------------------+
 //| Resolve broker-specific symbol from standard or generic name     |
+//| Prioritizes trade-allowed symbols across Market Watch and Catalog|
 //+------------------------------------------------------------------+
 string ResolveBrokerSymbol(string standardName)
 {
@@ -82,31 +137,73 @@ string ResolveBrokerSymbol(string standardName)
    
    if(base == "CURRENT" || base == "") return Symbol();
    
-   // 1. Direct match
-   if(MarketInfo(base, MODE_BID) > 0.0 || MarketInfo(base, MODE_POINT) > 0.0) return base;
-   
    string canonTarget = CleanSymbolBase(base);
    
-   // 2. Scan Market Watch (SymbolsTotal(true))
+   // 1. Try using the current chart symbol's broker prefix/suffix
+   string chartSuffix = GetChartBrokerSuffix();
+   string chartPrefix = GetChartBrokerPrefix();
+   string chartCand = chartPrefix + canonTarget + chartSuffix;
+   if(IsSymbolTradeAllowed(chartCand))
+   {
+      SymbolSelect(chartCand, true);
+      return chartCand;
+   }
+   
+   // 2. Scan Market Watch (SymbolsTotal(true)) for trade-allowed canonical match
    int totalMW = SymbolsTotal(true);
    for(int i = 0; i < totalMW; i++)
    {
       string s = SymbolName(i, true);
-      if(CleanSymbolBase(s) == canonTarget) return s;
+      if(CleanSymbolBase(s) == canonTarget && IsSymbolTradeAllowed(s))
+      {
+         return s;
+      }
    }
    
-   // 3. Scan full broker catalog (SymbolsTotal(false))
+   // 3. Direct match if trade is allowed
+   if(IsSymbolTradeAllowed(base))
+   {
+      SymbolSelect(base, true);
+      return base;
+   }
+   
+   // 4. Try known broker suffix variants
+   string commonSuffixes[9] = {"_min", ".pro", ".ecn", "m", "_m", ".r", ".a", "micro", ".raw"};
+   for(int k = 0; k < 9; k++)
+   {
+      string cand = canonTarget + commonSuffixes[k];
+      if(MarketInfo(cand, MODE_BID) > 0.0 || MarketInfo(cand, MODE_POINT) > 0.0)
+      {
+         SymbolSelect(cand, true);
+         if(IsSymbolTradeAllowed(cand)) return cand;
+      }
+   }
+   
+   // 5. Scan full broker catalog (SymbolsTotal(false)) for trade-allowed match
    int totalAll = SymbolsTotal(false);
    for(int j = 0; j < totalAll; j++)
    {
       string sAll = SymbolName(j, false);
-      if(CleanSymbolBase(sAll) == canonTarget)
+      if(CleanSymbolBase(sAll) == canonTarget && IsSymbolTradeAllowed(sAll))
       {
          SymbolSelect(sAll, true);
          return sAll;
       }
    }
    
+   // 6. Secondary fallback: check Market Watch for candidate with quotes
+   for(int m = 0; m < totalMW; m++)
+   {
+      string sMW = SymbolName(m, true);
+      if(CleanSymbolBase(sMW) == canonTarget && (MarketInfo(sMW, MODE_BID) > 0.0 || MarketInfo(sMW, MODE_POINT) > 0.0))
+      {
+         return sMW;
+      }
+   }
+
+   // 7. Final fallback: direct base if quotes exist, else standardName
+   if(MarketInfo(base, MODE_BID) > 0.0 || MarketInfo(base, MODE_POINT) > 0.0) return base;
+
    return standardName;
 }
 
@@ -229,9 +326,95 @@ bool IsSymbolAllowed(string sym, string includeSymbols = "", string excludeSymbo
 }
 
 //+------------------------------------------------------------------+
-//| Discover active symbols from Market Watch dynamically            |
+//| Calculate required margin for minimum lot on a symbol            |
 //+------------------------------------------------------------------+
-int DiscoverMarketWatchSymbols(string &outSymbols[], string includeSymbols = "", string excludeSymbols = "")
+double GetSymbolMinLotMargin(string sym)
+{
+   double minLot = MarketInfo(sym, MODE_MINLOT);
+   if(minLot <= 0.0) minLot = 0.01;
+   
+   double marginPerLot = MarketInfo(sym, MODE_MARGINREQUIRED);
+   double marginReq = 0.0;
+   
+   if(marginPerLot > 0.0)
+   {
+      marginReq = marginPerLot * minLot;
+   }
+   else
+   {
+      // Fallback 1: AccountFreeMarginCheck
+      ResetLastError();
+      double freeMarginBefore = AccountFreeMargin();
+      if(freeMarginBefore > 0.0)
+      {
+         double check = AccountFreeMarginCheck(sym, OP_BUY, minLot);
+         if(GetLastError() == 0 && check > 0.0 && check < freeMarginBefore)
+         {
+            marginReq = freeMarginBefore - check;
+         }
+      }
+      
+      // Fallback 2: Contract size / Leverage / Ask price
+      if(marginReq <= 0.0)
+      {
+         double contractSize = MarketInfo(sym, MODE_LOTSIZE);
+         if(contractSize <= 0.0) contractSize = 100000.0;
+         double leverage = (double)AccountLeverage();
+         if(leverage <= 0.0) leverage = 100.0;
+         double price = MarketInfo(sym, MODE_ASK);
+         if(price <= 0.0) price = MarketInfo(sym, MODE_BID);
+         if(price > 0.0)
+         {
+            marginReq = ((price * contractSize) / leverage) * minLot;
+         }
+      }
+   }
+   return marginReq;
+}
+
+//+------------------------------------------------------------------+
+//| Check if symbol is tradeable and affordable for account balance  |
+//+------------------------------------------------------------------+
+bool IsSymbolTradeableForBalance(string sym, double maxMarginUsagePct = 50.0)
+{
+   // 1. Basic broker trade permission
+   if(!IsSymbolTradeAllowed(sym)) return false;
+   
+   // 2. Account balance and free margin sanity
+   double freeMargin = AccountFreeMargin();
+   double balance    = AccountBalance();
+   if(freeMargin <= 0.0 || balance <= 0.0) return false;
+   
+   double minLot = MarketInfo(sym, MODE_MINLOT);
+   if(minLot <= 0.0) minLot = 0.01;
+   
+   // 3. Margin affordability check:
+   // marginReq = MarketInfo(sym, MODE_MARGINREQUIRED) * MarketInfo(sym, MODE_MINLOT);
+   double marginReq = GetSymbolMinLotMargin(sym);
+   double maxAffordableMargin = freeMargin * (maxMarginUsagePct / 100.0);
+   
+   // If marginReq > AccountFreeMargin() * (MaxMarginUsagePct / 100.0) or marginReq > AccountBalance(), cannot trade
+   if(marginReq > maxAffordableMargin || marginReq > balance)
+   {
+      return false;
+   }
+   
+   // 4. Validate AccountFreeMarginCheck directly if available
+   ResetLastError();
+   double testCheck = AccountFreeMarginCheck(sym, OP_BUY, minLot);
+   if(GetLastError() == 134 || (testCheck <= 0.0 && freeMargin > 0.0))
+   {
+      return false;
+   }
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Discover active symbols from Market Watch dynamically            |
+//| Filters by whitelist, blacklist, tradeability, and margin buffer |
+//+------------------------------------------------------------------+
+int DiscoverMarketWatchSymbols(string &outSymbols[], string includeSymbols = "", string excludeSymbols = "", double maxMarginUsagePct = 50.0)
 {
    int totalMW = SymbolsTotal(true);
    ArrayResize(outSymbols, 0);
@@ -243,6 +426,8 @@ int DiscoverMarketWatchSymbols(string &outSymbols[], string includeSymbols = "",
       if(sym == "") continue;
       
       if(!IsSymbolAllowed(sym, includeSymbols, excludeSymbols)) continue;
+      if(!IsSymbolTradeAllowed(sym)) continue;
+      if(!IsSymbolTradeableForBalance(sym, maxMarginUsagePct)) continue;
       
       ArrayResize(outSymbols, count + 1);
       outSymbols[count] = sym;
@@ -324,30 +509,33 @@ bool IsSessionActiveForSymbol(string sym)
 //+------------------------------------------------------------------+
 //| Pre-filter symbol before expensive indicator calculations        |
 //+------------------------------------------------------------------+
-bool PreFilterSymbol(string sym, double maxSpreadPoints = 40.0, int minBars = 50, ENUM_TIMEFRAMES tf = PERIOD_H1, bool checkSession = true)
+bool PreFilterSymbol(string sym, double maxSpreadPoints = 40.0, int minBars = 50, ENUM_TIMEFRAMES tf = PERIOD_H1, bool checkSession = true, double maxMarginUsagePct = 50.0)
 {
    // 1. Session & liquidity filter (protect against dead liquidity hours)
    if(checkSession && !IsSessionActiveForSymbol(sym)) return false;
 
-   // 2. Broker allows trading
-   if(MarketInfo(sym, MODE_TRADEALLOWED) <= 0.0) return false;
+   // 2. Broker allows trading and direction check
+   if(!IsSymbolTradeAllowed(sym)) return false;
+
+   // 3. Margin affordability for account balance
+   if(!IsSymbolTradeableForBalance(sym, maxMarginUsagePct)) return false;
    
-   // 3. Quote freshness check (skip dormant / desynchronized feeds)
+   // 4. Quote freshness check (skip dormant / desynchronized feeds)
    if(!IsQuoteFresh(sym, 5)) return false;
    
-   // 4. Valid price quotes
+   // 5. Valid price quotes
    double bid = MarketInfo(sym, MODE_BID);
    double ask = MarketInfo(sym, MODE_ASK);
    if(bid <= 0.0 || ask <= 0.0 || ask < bid) return false;
    
-   // 5. Spread check
+   // 6. Spread check
    double pt = MarketInfo(sym, MODE_POINT);
    if(pt <= 0.0) return false;
    double spread = MarketInfo(sym, MODE_SPREAD);
    if(spread <= 0.0) spread = (ask - bid) / pt;
    if(maxSpreadPoints > 0.0 && spread > maxSpreadPoints) return false;
    
-   // 6. History depth and volume check
+   // 7. History depth and volume check
    if(iBars(sym, tf) < minBars) return false;
    if(iVolume(sym, tf, 0) == 0 && (sym != Symbol() || Volume[0] == 0))
    {

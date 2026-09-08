@@ -504,19 +504,26 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    sig.rrRatio = (sig.slPips > 0.0) ? NormalizeDouble(sig.tpPips / sig.slPips, 2) : 2.0;
 
    // Directional assignment & prospective stops
+   long symTradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
    if(buyScore10 > sellScore10)
    {
       sig.entryPrice = ask;
       sig.slPrice = NormalizeDouble(ask - slDist, dig);
       sig.tpPrice = NormalizeDouble(ask + tpDist, dig);
-      if(buyScore10 >= minConfluenceScore) sig.cmd = OP_BUY;
+      if(buyScore10 >= minConfluenceScore && symTradeMode != SYMBOL_TRADE_MODE_SHORTONLY && symTradeMode != SYMBOL_TRADE_MODE_DISABLED && symTradeMode != SYMBOL_TRADE_MODE_CLOSEONLY)
+      {
+         sig.cmd = OP_BUY;
+      }
    }
    else if(sellScore10 > buyScore10)
    {
       sig.entryPrice = bid;
       sig.slPrice = NormalizeDouble(bid + slDist, dig);
       sig.tpPrice = NormalizeDouble(bid - tpDist, dig);
-      if(sellScore10 >= minConfluenceScore) sig.cmd = OP_SELL;
+      if(sellScore10 >= minConfluenceScore && symTradeMode != SYMBOL_TRADE_MODE_LONGONLY && symTradeMode != SYMBOL_TRADE_MODE_DISABLED && symTradeMode != SYMBOL_TRADE_MODE_CLOSEONLY)
+      {
+         sig.cmd = OP_SELL;
+      }
    }
    else
    {

@@ -232,6 +232,57 @@ class TestRiskAndOrders(unittest.TestCase):
         self.assertFalse(res_halt.passed)
         self.assertTrue(self.risk._is_daily_halted)
 
+    def test_low_balance_margin_capacity_and_position_sizing(self):
+        # Test low balance account safeguards ($90.49 balance & free margin)
+        low_balance_account = {
+            "balance": 90.49,
+            "equity": 90.49,
+            "margin_free": 90.49
+        }
+
+        # 1. Verify that an oversized lot (5.02 lots) is strictly rejected by risk limits
+        res_oversized = self.risk.evaluate_order_risk(
+            symbol="USDCHF",
+            cmd="BUY",
+            lots=5.02,
+            price=0.8850,
+            sl=0.8820,
+            tp=0.8910,
+            account_info=low_balance_account,
+            open_positions=[]
+        )
+        self.assertFalse(res_oversized.passed)
+        self.assertIn("exceeds maximum per-trade limit", res_oversized.reason)
+
+        # 2. Verify that order is rejected when margin requirement exceeds allowable free margin buffer
+        constrained_margin_account = {
+            "balance": 10000.0,
+            "equity": 10000.0,
+            "margin_free": 10.0  # Only $10 free margin available
+        }
+        res_margin_breach = self.risk.evaluate_order_risk(
+            symbol="EURUSD",
+            cmd="BUY",
+            lots=0.05,  # Requires ~$50 margin at 1:100 leverage
+            price=1.0850,
+            sl=1.0835,  # 15 pips -> $7.50 risk (0.075% of $10,000 equity, within 0.5% limit)
+            tp=1.0880,
+            account_info=constrained_margin_account,
+            open_positions=[]
+        )
+        self.assertFalse(res_margin_breach.passed)
+        self.assertIn("margin requirement exceeds allowable free margin buffer", res_margin_breach.reason)
+
+        # 3. Verify that PositionSizer calculates an affordable 0.01 lot for low balance account ($90.49)
+        lots_calculated = self.sizer.calculate_lot_size(
+            symbol="USDCHF",
+            method=SizingMethod.PERCENTAGE_RISK,
+            balance=90.49,
+            entry_price=0.8850,
+            stop_loss=0.8820
+        )
+        self.assertEqual(lots_calculated, 0.01)
+
 
 if __name__ == "__main__":
     unittest.main()
