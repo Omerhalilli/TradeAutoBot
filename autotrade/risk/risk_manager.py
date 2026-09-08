@@ -194,7 +194,8 @@ class RiskManager:
 
     def _split_currency_pair(self, symbol: str) -> Tuple[str, str]:
         """Deconstructs instrument symbol into base and quote currency components."""
-        clean = symbol.upper().replace(".PRO", "").replace(".RAW", "").replace("+", "").replace("M", "")
+        from autotrade.core.autonomous_trader import canonical_symbol
+        clean = canonical_symbol(symbol)
         if len(clean) >= 6:
             return clean[:3], clean[3:6]
         return clean, "USD"

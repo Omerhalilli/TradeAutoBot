@@ -37,13 +37,28 @@ DEFAULT_PORTFOLIO_SYMBOLS = [
 def canonical_symbol(sym: str) -> str:
     """Normalizes symbol string by removing whitespace, broker prefixes/suffixes, and delimiters."""
     s = str(sym).strip().upper()
+    if s == "GOLD":
+        return "XAUUSD"
+    if s == "SILVER":
+        return "XAGUSD"
+    if s in ("OIL", "CRUDE", "WTI"):
+        return "USOIL"
+    if s == "BRENT":
+        return "UKOIL"
+    if s in ("BITCOIN", "CRYPTO"):
+        return "BTCUSD"
+
+    std_pairs = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD", "XAUUSD", "EURJPY", "GBPJPY"]
+    for pair in std_pairs:
+        if pair in s:
+            return pair
+
     for delimiter in ["/", "\\", ".", "-", "_", "#", "+"]:
         s = s.replace(delimiter, "")
     for suffix in ["MIN", "PRO", "RAW", "ECN", "MICRO", "STP", "I", "M"]:
         if s.endswith(suffix) and len(s) > len(suffix) + 3:
             s = s[:-len(suffix)]
             break
-    std_pairs = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD", "XAUUSD", "EURJPY", "GBPJPY"]
     if len(s) == 7 and s[0] in ("M", "R") and s[1:] in std_pairs:
         s = s[1:]
     return s

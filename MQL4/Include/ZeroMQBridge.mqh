@@ -6,6 +6,7 @@
 #property strict
 
 #include <Zmq/Zmq.mqh>
+#include <SymbolManager.mqh>
 
 //+------------------------------------------------------------------+
 //| INPUT / CONFIG                                                   |
@@ -361,102 +362,12 @@ bool Zmq_SymbolsMatch(string orderSym, string targetSym)
 }
 
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
 //| Multi-Broker Instrument Resolver & Market Watch Sync             |
 //+------------------------------------------------------------------+
 string Zmq_ResolveSymbol(string genericName)
 {
-   string base = genericName;
-   StringTrimLeft(base);
-   StringTrimRight(base);
-   StringToUpper(base);
-   
-   if(base == "CURRENT" || base == "") return Symbol();
-   
-   // 0. Direct match if broker supports exact name as-is (e.g. EURUSD.pro, GOLD#)
-   if(MarketInfo(base, MODE_POINT) > 0.0) return base;
-   if(SymbolInfoInteger(base, SYMBOL_SELECT) == 1) return base;
-   
-   if(base == "GOLD") base = "XAUUSD";
-   else if(base == "SILVER") base = "XAGUSD";
-   else if(base == "OIL" || base == "CRUDE" || base == "WTI") base = "USOIL";
-   else if(base == "BRENT") base = "UKOIL";
-   else if(base == "BITCOIN" || base == "CRYPTO") base = "BTCUSD";
-   
-   // 1. Direct match if broker supports alias name
-   if(MarketInfo(base, MODE_POINT) > 0.0) return base;
-   
-   // Remove slashes/backslashes/spaces
-   string cleanBase = base;
-   StringReplace(cleanBase, "/", "");
-   StringReplace(cleanBase, "\\", "");
-   StringReplace(cleanBase, " ", "");
-   if(MarketInfo(cleanBase, MODE_POINT) > 0.0) return cleanBase;
-   
-   // 2. Check if active chart matches base
-   string chartSym = Symbol();
-   string upperChart = chartSym;
-   StringToUpper(upperChart);
-   if(StringFind(upperChart, cleanBase) >= 0) return chartSym;
-   
-   // 3. Check active market orders
-   for(int k = 0; k < OrdersTotal(); k++)
-   {
-      if(OrderSelect(k, SELECT_BY_POS, MODE_TRADES))
-      {
-         string oSym = OrderSymbol();
-         string upperOSym = oSym;
-         StringToUpper(upperOSym);
-         if(StringFind(upperOSym, cleanBase) >= 0) return oSym;
-      }
-   }
-   
-   // 4. Derive broker prefix/suffix from chart Symbol() (e.g. "_min", ".raw", ".pro", "m")
-   string standards[4];
-   standards[0] = "GBPUSD";
-   standards[1] = "EURUSD";
-   standards[2] = "USDJPY";
-   standards[3] = "XAUUSD";
-   
-   for(int s = 0; s < 4; s++)
-   {
-      int pos = StringFind(upperChart, standards[s]);
-      if(pos >= 0)
-      {
-         string prefix = StringSubstr(chartSym, 0, pos);
-         string suffix = StringSubstr(chartSym, pos + StringLen(standards[s]));
-         string candidate = prefix + cleanBase + suffix;
-         if(MarketInfo(candidate, MODE_POINT) > 0.0) return candidate;
-         SymbolSelect(candidate, true);
-         if(MarketInfo(candidate, MODE_POINT) > 0.0) return candidate;
-         break;
-      }
-   }
-   
-   // 5. Search Market Watch symbols
-   int total = SymbolsTotal(true);
-   for(int i = 0; i < total; i++)
-   {
-      string ms = SymbolName(i, true);
-      string upperMS = ms;
-      StringToUpper(upperMS);
-      if(StringFind(upperMS, cleanBase) >= 0) return ms;
-   }
-   
-   // 6. Search full broker symbol catalog and add to Market Watch
-   total = SymbolsTotal(false);
-   for(int j = 0; j < total; j++)
-   {
-      string sAll = SymbolName(j, false);
-      string upperSAll = sAll;
-      StringToUpper(upperSAll);
-      if(StringFind(upperSAll, cleanBase) >= 0)
-      {
-         SymbolSelect(sAll, true);
-         return sAll;
-      }
-   }
-   
-   return cleanBase;
+   return ResolveBrokerSymbol(genericName);
 }
 
 double Zmq_GetSpreadPoints(string sym)
@@ -886,6 +797,12 @@ string Zmq_HandleOpenOrder(const string reqJson)
    double lots = Zmq_ExtractJsonNumber(reqJson, "lots", 0.01);
    if(lots <= 0.0) lots = 0.01;
    
+   // Stale quote validation (reject feeds dormant > 5 seconds)
+   if(!IsQuoteFresh(sym, 5))
+   {
+      return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":138,\"message\":\"Stale price quotes on " + Zmq_JsonEscape(sym) + " (> 5s old). Order dispatch rejected.\"}";
+   }
+
    // Normalize lot size to broker specifications
    double minLot  = MarketInfo(sym, MODE_MINLOT);
    double maxLot  = MarketInfo(sym, MODE_MAXLOT);
@@ -894,8 +811,9 @@ string Zmq_HandleOpenOrder(const string reqJson)
    if(maxLot <= 0.0) maxLot = 100.0;
    if(lotStep <= 0.0) lotStep = 0.01;
    
-   lots = MathMax(minLot, MathMin(maxLot, lots));
-   lots = MathFloor((lots / lotStep) + 0.000001) * lotStep;
+   lots = MathFloor((lots / lotStep) + 0.0000001) * lotStep;
+   if(lots < minLot) lots = minLot;
+   if(lots > maxLot) lots = maxLot;
    int lotDecimals = Zmq_GetLotDecimals(lotStep);
    lots = NormalizeDouble(lots, lotDecimals);
    
@@ -1032,10 +950,12 @@ string Zmq_HandleOpenOrder(const string reqJson)
          lastErr = GetLastError();
       }
       
-      // Temporary retryable conditions
+      // Temporary retryable conditions (Requote, Price changed, Off quotes, Context busy)
       if(lastErr == 4 || lastErr == 135 || lastErr == 136 || lastErr == 137 || lastErr == 138 || lastErr == 146)
       {
-         RefreshRates();
+         Sleep(200 * (1 << (attempts - 1)));
+         if(sym == Symbol()) RefreshRates();
+         reqPrice = 0.0; // Re-fetch current market quote
       }
       else
       {
@@ -2150,6 +2070,9 @@ string Zmq_HandleScanSymbols(const string reqJson)
       
       double pt = MarketInfo(sym, MODE_POINT);
       if(pt <= 0.0) continue;
+      
+      if(MarketInfo(sym, MODE_TRADEALLOWED) <= 0.0) continue;
+      if(!IsQuoteFresh(sym, 5)) continue;
       
       double bid = MarketInfo(sym, MODE_BID);
       double ask = MarketInfo(sym, MODE_ASK);

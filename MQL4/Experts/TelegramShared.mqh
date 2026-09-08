@@ -7,6 +7,9 @@
 #property link      "https://t.me"
 #property strict
 
+#ifndef __TELEGRAM_SHARED_MQH__
+#define __TELEGRAM_SHARED_MQH__
+
 // Error code constants across MQL4 and MQL5
 #ifndef ERR_FUNCTION_NOT_ALLOWED
 #define ERR_FUNCTION_NOT_ALLOWED 4060
@@ -670,3 +673,5 @@ bool Telegram_SendPhoto(const string botToken, const string chatId, const string
 {
    return Telegram_SendPhoto(botToken, chatId, filename, captionHtml, "");
 }
+
+#endif // __TELEGRAM_SHARED_MQH__

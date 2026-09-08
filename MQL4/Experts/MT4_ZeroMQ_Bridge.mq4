@@ -9,6 +9,7 @@
 #property strict
 
 #include <Zmq/Zmq.mqh>
+#include <SymbolManager.mqh>
 
 //+------------------------------------------------------------------+
 //| INPUT PARAMETERS                                                 |
@@ -508,47 +509,7 @@ ENUM_TIMEFRAMES Bridge_StringToTimeframe(string tfStr)
 
 string Bridge_ResolveSymbol(string sym)
 {
-   string s = sym;
-   StringTrimLeft(s);
-   StringTrimRight(s);
-   StringToUpper(s);
-   if(s == "" || s == "CURRENT") return Symbol();
-   if(s == "GOLD") s = "XAUUSD";
-   if(s == "SILVER") s = "XAGUSD";
-   if(s == "OIL" || s == "CRUDE") s = "USOIL";
-   if(s == "BRENT") s = "UKOIL";
-   if(s == "BITCOIN" || s == "CRYPTO") s = "BTCUSD";
-   
-   if(MarketInfo(s, MODE_POINT) > 0.0) return s;
-   
-   string chartSym = Symbol();
-   string upperChart = chartSym;
-   StringToUpper(upperChart);
-   if(StringFind(upperChart, s) >= 0) return chartSym;
-   
-   int total = SymbolsTotal(true);
-   for(int i = 0; i < total; i++)
-   {
-      string ms = SymbolName(i, true);
-      string upperMS = ms;
-      StringToUpper(upperMS);
-      if(StringFind(upperMS, s) >= 0) return ms;
-   }
-   
-   total = SymbolsTotal(false);
-   for(int j = 0; j < total; j++)
-   {
-      string asAll = SymbolName(j, false);
-      string upperAll = asAll;
-      StringToUpper(upperAll);
-      if(StringFind(upperAll, s) >= 0)
-      {
-         SymbolSelect(asAll, true);
-         return asAll;
-      }
-   }
-   
-   return s;
+   return ResolveBrokerSymbol(sym);
 }
 
 void ScaleHudObjectsOnChart(long chartId, double factor)
@@ -1063,6 +1024,9 @@ string HandleScanSymbols(const string reqJson)
       
       double pt = MarketInfo(sym, MODE_POINT);
       if(pt <= 0.0) continue;
+      
+      if(MarketInfo(sym, MODE_TRADEALLOWED) <= 0.0) continue;
+      if(!IsQuoteFresh(sym, 5)) continue;
       
       double bid = MarketInfo(sym, MODE_BID);
       double ask = MarketInfo(sym, MODE_ASK);
