@@ -970,6 +970,34 @@ string Zmq_HandleOpenOrder(const string reqJson)
             finalTP = (cmd == OP_BUY) ? (price + (finalTP * pipPoint)) : (price - (finalTP * pipPoint));
          }
       }
+      // Broker Stop & Freeze Level Validation
+      double stopLevelPoints   = MarketInfo(sym, MODE_STOPLEVEL);
+      double freezeLevelPoints = MarketInfo(sym, MODE_FREEZELEVEL);
+      double minDistance       = (MathMax(stopLevelPoints, freezeLevelPoints) + 3.0) * point;
+
+      if(cmd == OP_BUY)
+      {
+         if(finalSL > 0.0 && (bid - finalSL) < minDistance)
+         {
+            finalSL = NormalizeDouble(bid - minDistance, digits);
+         }
+         if(finalTP > 0.0 && (finalTP - bid) < minDistance)
+         {
+            finalTP = NormalizeDouble(bid + minDistance, digits);
+         }
+      }
+      else if(cmd == OP_SELL)
+      {
+         if(finalSL > 0.0 && (finalSL - ask) < minDistance)
+         {
+            finalSL = NormalizeDouble(ask + minDistance, digits);
+         }
+         if(finalTP > 0.0 && (ask - finalTP) < minDistance)
+         {
+            finalTP = NormalizeDouble(ask - minDistance, digits);
+         }
+      }
+
       if(finalSL > 0.0) finalSL = NormalizeDouble(finalSL, digits);
       if(finalTP > 0.0) finalTP = NormalizeDouble(finalTP, digits);
       
@@ -2102,6 +2130,9 @@ string Zmq_HandleScanSymbols(const string reqJson)
       
       double bid = MarketInfo(sym, MODE_BID);
       double ask = MarketInfo(sym, MODE_ASK);
+      if(bid <= 0.0 || ask <= 0.0) continue;
+      if(iBars(sym, tf) < 50) continue;
+      
       double spread = Zmq_GetSpreadPoints(sym);
       int dig = (int)MarketInfo(sym, MODE_DIGITS);
       double pipPt = Zmq_GetPipPoint(sym);
@@ -2171,6 +2202,7 @@ string Zmq_HandleScanSymbols(const string reqJson)
       if(validCount > 0) json += ",";
       json += "{";
       json += "\"symbol\":\"" + Zmq_JsonEscape(sym) + "\",";
+      json += "\"raw_symbol\":\"" + Zmq_JsonEscape(rawSym) + "\",";
       json += "\"bid\":" + DoubleToString(bid, dig) + ",";
       json += "\"ask\":" + DoubleToString(ask, dig) + ",";
       json += "\"spread\":" + DoubleToString(spread, 1) + ",";

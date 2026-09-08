@@ -30,3 +30,13 @@ user_timezone = UTC
 
 # MetaTrader 4 Broker GMT Offset in hours (typically 2 in winter, 3 in summer)
 broker_gmt_offset = 2
+
+[AUTOTRADE]
+# Maximum autonomous concurrent open positions (default: 3)
+max_open_positions = 3
+
+# Per-symbol cooldown guard in minutes after trade (default: 60)
+cooldown_minutes = 60
+
+# Minimum confluence score (0-10) to execute autonomous trade
+min_score = 6

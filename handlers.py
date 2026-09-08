@@ -320,6 +320,11 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /report — Institutional 24-hour daily performance summary & win rate\n"
         "• /pause — Pause automated EA order entry immediately\n"
         "• /resume — Resume automated EA order entry scanning\n\n"
+        "🤖 <b>AUTONOMOUS MULTI-SYMBOL TRADING</b>\n"
+        "• /autotrade — Autonomous multi-symbol trading status, toggle & portfolio control\n"
+        "  └ <code>/autotrade on</code> | <code>/autotrade off</code> | <code>/autotrade add [SYM]</code> | <code>/autotrade remove [SYM]</code>\n"
+        "• /scan — Live multi-indicator technical confluence scanner matrix (Score 0-10)\n"
+        "• /symbols — Portfolio watchlist surveillance management\n\n"
         "📸 <b>CHARTS & MARKET INTELLIGENCE</b>\n"
         "• /screenshot — Interactive 2-step chart snapshot wizard\n"
         "• /colors — Apply institutional GBPUSD black & candlestick scheme\n"
@@ -388,6 +393,9 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "👉 <i>Fix: Press F7 on chart ➜ 'Common' tab ➜ Check 'Allow live trading'.</i>\n"
         )
 
+    is_auto = autonomous_trader.is_autotrade_active()
+    auto_badge = "🟢 ACTIVE (Scanning Portfolio)" if is_auto else "⏸️ PAUSED"
+
     msg = (
         "╔══════════════════════════════════╗\n"
         "   🏛️ <b>METATRADER 4 INSTITUTIONAL TERMINAL</b>\n"
@@ -404,6 +412,7 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         f"🆓 <b>Free Margin:</b>  <code>${free_m:,.2f}</code>\n"
         f"📈 <b>Margin Level:</b> <code>{m_level_str}</code> ({margin_health})\n"
         f"⚙️ <b>Leverage:</b>     <code>1:{leverage}</code>\n"
+        f"🤖 <b>Autonomous Bot:</b> {auto_badge}\n"
         f"🕒 <b>Server Time:</b>  <code>{server_time}</code>"
         f"{lock_warning}"
     )
@@ -1421,6 +1430,8 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             autonomous_trader.set_enabled(False)
             write_autotrade_flag("PAUSED")
             await zmq_async(zmq_client.pause_bot)
+        elif sub in ["status", "info", "state", "check"]:
+            pass  # Explicit status query, renders format_status_panel below
         elif sub == "add" and len(args) > 1:
             sym = clean_symbol(args[1])
             autonomous_trader.add_symbol(sym)

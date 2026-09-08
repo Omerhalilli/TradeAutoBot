@@ -12,6 +12,7 @@ if not os.environ.get("TELEGRAM_BOT_TOKEN"):
 if not os.environ.get("ALLOWED_CHAT_IDS"):
     os.environ["ALLOWED_CHAT_IDS"] = "123456789"
 
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -677,6 +678,55 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
             print("  [PASS] Outbox deduplication and atomic processing verified (identical alerts suppressed).")
         finally:
             shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_26_autonomous_trader_integration(self):
+        """Verifies autonomous multi-symbol trader status, scanner, and execution pipeline."""
+        from autotrade.core.autonomous_trader import autonomous_trader, canonical_symbol
+        
+        # Test canonical symbol helper
+        self.assertEqual(canonical_symbol("EURUSD_min"), "EURUSD")
+        self.assertEqual(canonical_symbol("GBPUSD.pro"), "GBPUSD")
+        
+        # Test status and scanner formatters
+        status_text = autonomous_trader.format_status_panel()
+        self.assertIn("AUTONOMOUS MULTI-SYMBOL TRADING ENGINE", status_text)
+        self.assertIn("Confluence Threshold", status_text)
+
+        scan_text = autonomous_trader.format_scan_matrix()
+        self.assertIn("AUTONOMOUS MULTI-SYMBOL SCANNER", scan_text)
+
+        symbols_text = autonomous_trader.format_symbols_panel()
+        self.assertIn("AUTONOMOUS PORTFOLIO WATCHLIST", symbols_text)
+        
+        # Verify mocked autonomous cycle
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD",
+                    "score": 8,
+                    "signal": "BUY",
+                    "trend": "STRONG_BULLISH",
+                    "spread": 10.0,
+                    "sl_pips": 25.0,
+                    "tp_pips": 50.0
+                }
+            ]
+        }
+        mock_pos = {"status": "ok", "positions": []}
+        mock_order = {"status": "ok", "ticket": 999123, "price": 1.08500}
+        
+        async def run_cycle():
+            with patch.object(autonomous_trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_pos), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order", return_value=mock_order):
+                trades = await autonomous_trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 1)
+                self.assertEqual(trades[0]["symbol"], "EURUSD")
+                self.assertEqual(trades[0]["ticket"], 999123)
+
+        asyncio.run(run_cycle())
+        print("  [PASS] Autonomous Multi-Symbol Trading engine and surveillance verified.")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

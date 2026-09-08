@@ -16,6 +16,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from config import (
     ALLOWED_CHAT_IDS,
     AUTOTRADE_FLAG_FILE,
+    AUTOTRADE_MAX_OPEN_POSITIONS,
+    AUTOTRADE_COOLDOWN_MINUTES,
+    AUTOTRADE_MIN_SCORE,
     MAX_OPEN_POSITIONS,
     MAX_LOTS_PER_SYMBOL,
     TRADING_SYMBOLS,
@@ -31,6 +34,18 @@ DEFAULT_PORTFOLIO_SYMBOLS = [
 ]
 
 
+def canonical_symbol(sym: str) -> str:
+    """Normalizes symbol string by removing whitespace, broker prefixes/suffixes, and delimiters."""
+    s = str(sym).strip().upper()
+    for delimiter in ["/", "\\", ".", "-", "_", "#"]:
+        s = s.replace(delimiter, "")
+    for suffix in ["MIN", "PRO", "RAW", "ECN", "MICRO", "STP", "I", "M"]:
+        if s.endswith(suffix) and len(s) > len(suffix) + 3:
+            s = s[:-len(suffix)]
+            break
+    return s
+
+
 class AutonomousMultiSymbolTrader:
     """
     Master Autonomous Multi-Symbol Trader.
@@ -41,9 +56,10 @@ class AutonomousMultiSymbolTrader:
     def __init__(
         self,
         symbols: Optional[List[str]] = None,
-        min_score: int = 6,
-        cooldown_sec: int = 300,
-        max_spread: float = 50.0
+        min_score: int = AUTOTRADE_MIN_SCORE,
+        cooldown_sec: int = AUTOTRADE_COOLDOWN_MINUTES * 60,
+        max_spread: float = 50.0,
+        max_positions: int = AUTOTRADE_MAX_OPEN_POSITIONS
     ):
         self.symbols: List[str] = symbols or list(TRADING_SYMBOLS) or list(DEFAULT_PORTFOLIO_SYMBOLS)
         # Clean symbol strings
@@ -54,6 +70,7 @@ class AutonomousMultiSymbolTrader:
         self.min_score: int = min_score
         self.cooldown_sec: int = cooldown_sec
         self.max_spread: float = max_spread
+        self.max_positions: int = max_positions
         self.is_enabled: bool = True
         self.timeframe: str = "H1"
         self.total_trades_executed: int = 0
@@ -110,6 +127,7 @@ class AutonomousMultiSymbolTrader:
             return res
 
         # If bridge does not support scan_symbols or returns error, check fallback
+        is_unsupported = ("Unknown action" in str(res.get("message", "")))
         fallback_results: List[Dict[str, Any]] = []
         for s in self.symbols:
             fallback_results.append({
@@ -134,7 +152,8 @@ class AutonomousMultiSymbolTrader:
             "server_time": time.strftime("%Y.%m.%d %H:%M:%S"),
             "results": fallback_results,
             "count": len(fallback_results),
-            "fallback": True
+            "fallback": True,
+            "bridge_unsupported": is_unsupported
         }
         self.last_scan_data = fallback
         self.last_scan_timestamp = time.time()
@@ -164,24 +183,28 @@ class AutonomousMultiSymbolTrader:
             open_positions = pos_data.get("positions", []) if pos_data.get("status") == "ok" else []
             total_open = len(open_positions)
 
-            if total_open >= MAX_OPEN_POSITIONS:
-                logger.debug(f"AutonomousTrader: Max open portfolio positions reached ({total_open}/{MAX_OPEN_POSITIONS})")
+            effective_max = min(self.max_positions, MAX_OPEN_POSITIONS)
+            if total_open >= effective_max:
+                logger.debug(f"AutonomousTrader: Max open portfolio positions reached ({total_open}/{effective_max})")
                 return []
 
-            # Extract symbols currently holding open positions
+            # Extract symbols currently holding open positions (raw and canonical normalized)
             open_symbols = set()
+            canonical_open_symbols = set()
             for p in open_positions:
-                sym = p.get("symbol", "").upper()
+                sym = str(p.get("symbol", "")).strip().upper()
                 if sym:
                     open_symbols.add(sym)
+                    canonical_open_symbols.add(canonical_symbol(sym))
 
             executed_trades: List[Dict[str, Any]] = []
             now = time.time()
 
             for item in results:
-                raw_sym = item.get("symbol", "").upper()
+                raw_sym = str(item.get("symbol", "")).strip().upper()
+                canon_sym = canonical_symbol(raw_sym)
                 score = int(item.get("score", 0))
-                signal = str(item.get("signal", "HOLD")).upper()
+                signal = str(item.get("signal", "HOLD")).strip().upper()
                 spread = float(item.get("spread", 0.0))
 
                 # Filtering checks
@@ -189,14 +212,17 @@ class AutonomousMultiSymbolTrader:
                     continue
                 if score < self.min_score:
                     continue
-                if raw_sym in open_symbols:
+                if raw_sym in open_symbols or canon_sym in canonical_open_symbols:
                     continue  # Already in an active trade on this symbol
                 if spread > self.max_spread and spread > 0.0:
                     logger.debug(f"AutonomousTrader: Skipping {raw_sym} due to wide spread ({spread} pts > {self.max_spread})")
                     continue
 
                 # Cooldown check
-                last_time = self.last_trade_times.get(raw_sym, 0.0)
+                last_time = max(
+                    self.last_trade_times.get(raw_sym, 0.0),
+                    self.last_trade_times.get(canon_sym, 0.0)
+                )
                 if now - last_time < self.cooldown_sec:
                     continue
 
@@ -234,7 +260,9 @@ class AutonomousMultiSymbolTrader:
                     exec_price = order_res.get("price", 0.0)
                     self.total_trades_executed += 1
                     self.last_trade_times[raw_sym] = now
+                    self.last_trade_times[canon_sym] = now
                     open_symbols.add(raw_sym)
+                    canonical_open_symbols.add(canon_sym)
 
                     trade_record = {
                         "symbol": raw_sym,
@@ -263,12 +291,14 @@ class AutonomousMultiSymbolTrader:
             return executed_trades
 
     async def _dispatch_execution_alert(self, bot, trade: Dict[str, Any]) -> None:
-        """Sends clean institutional execution alert to all authorized chats."""
+        """Sends clean institutional execution alert to all authorized chats with interactive buttons."""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         sym = trade["symbol"]
         cmd = trade["cmd"]
         arrow = "🟢 BUY ⬆️" if cmd == "BUY" else "🔴 SELL ⬇️"
         price_fmt = f"{trade['price']:.5f}" if trade['price'] > 0 else "Market"
-        ticket_fmt = f"#{trade['ticket']}" if trade['ticket'] else "Filled"
+        ticket = trade.get("ticket", 0)
+        ticket_fmt = f"#{ticket}" if ticket else "Filled"
 
         msg = (
             "🤖 <b>[AUTONOMOUS MULTI-SYMBOL TRADE EXECUTED]</b>\n"
@@ -283,11 +313,25 @@ class AutonomousMultiSymbolTrader:
             "<i>⚡ 100% Autonomous Execution: Order placed directly via MT4 ZeroMQ Bridge.</i>"
         )
 
+        kb = None
+        if ticket:
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(f"Close #{ticket}", callback_data=f"/close_{ticket}"),
+                    InlineKeyboardButton("Close 50%", callback_data=f"/half_{ticket}")
+                ],
+                [
+                    InlineKeyboardButton("💼 Active Positions", callback_data="nav_pos"),
+                    InlineKeyboardButton("📡 Scanner", callback_data="nav_scan")
+                ]
+            ])
+
         for chat_id in ALLOWED_CHAT_IDS:
             try:
                 await bot.send_message(
                     chat_id=chat_id,
                     text=msg,
+                    reply_markup=kb,
                     parse_mode="HTML"
                 )
             except Exception as ex:
@@ -314,6 +358,7 @@ class AutonomousMultiSymbolTrader:
             f"• <b>Confluence Threshold:</b> <b>Score ≥ {self.min_score}/10</b>\n"
             f"• <b>Execution Mode:</b> <b>Autonomous Direct Execution</b>\n"
             f"• <b>Max Spread Filter:</b> <code>{self.max_spread:.0f} points</code>\n"
+            f"• <b>Max Concurrent Positions:</b> <code>{self.max_positions}</code>\n"
             f"• <b>Cooldown Per Symbol:</b> <code>{self.cooldown_sec // 60} minutes</code>\n"
             f"• <b>Autonomous Trades Executed:</b> <b>{self.total_trades_executed}</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -339,6 +384,11 @@ class AutonomousMultiSymbolTrader:
             f"🕒 <b>Scan Time:</b> <code>{server_time}</code> | <b>TF:</b> <code>{self.timeframe}</code>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
+        if data.get("bridge_unsupported"):
+            msg += (
+                "⚠️ <i>Note: MT4 ZeroMQ bridge requires updated EA reload to stream live scores. "
+                "Displaying portfolio watchlist.</i>\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            )
 
         for item in results:
             sym = item.get("symbol", "")

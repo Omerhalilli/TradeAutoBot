@@ -34,6 +34,11 @@
     "default_sizing_method": "volatility_atr",
     "default_fixed_lot": 0.05
   },
+  "autotrade": {
+    "max_open_positions": 3,
+    "cooldown_minutes": 60,
+    "min_score": 6
+  },
   "system": {
     "log_level": "INFO"
   }

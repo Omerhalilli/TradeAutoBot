@@ -8,6 +8,7 @@ All live market executions are fully mocked to safeguard user account capital.
 import asyncio
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -284,6 +285,166 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         self.assertIn("AUTONOMOUS PORTFOLIO WATCHLIST", symbols_html)
         self.assertIn("EURUSD", symbols_html)
 
+    def test_canonical_symbol_normalization(self):
+        """Verifies canonical_symbol correctly normalizes symbols with various broker suffixes."""
+        from autotrade.core.autonomous_trader import canonical_symbol
+        self.assertEqual(canonical_symbol("EURUSD"), "EURUSD")
+        self.assertEqual(canonical_symbol("EURUSD_min"), "EURUSD")
+        self.assertEqual(canonical_symbol("EURUSD.pro"), "EURUSD")
+        self.assertEqual(canonical_symbol("GBPUSD_min"), "GBPUSD")
+        self.assertEqual(canonical_symbol("XAUUSD_min"), "XAUUSD")
+        self.assertEqual(canonical_symbol("USDJPY.raw"), "USDJPY")
+        self.assertEqual(canonical_symbol("EUR/USD"), "EURUSD")
+        self.assertEqual(canonical_symbol("USDCADm"), "USDCAD")
+        self.assertEqual(canonical_symbol("BTCUSD"), "BTCUSD")
+
+    def test_execute_autonomous_cycle_symbol_already_open_with_broker_suffix(self):
+        """
+        Verifies that an open position with a broker suffix (e.g. EURUSD_min)
+        correctly prevents duplicate autonomous execution for EURUSD.
+        """
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD",
+                    "score": 9,
+                    "signal": "BUY",
+                    "trend": "STRONG_BULLISH",
+                    "spread": 10.0
+                }
+            ]
+        }
+        # Broker position has suffix EURUSD_min
+        mock_positions = {
+            "status": "ok",
+            "positions": [{"ticket": 77701, "symbol": "EURUSD_min", "type": "BUY"}]
+        }
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
+    def test_execute_autonomous_cycle_reverse_suffix_already_open(self):
+        """
+        Verifies that when a generic symbol EURUSD is open, an incoming scan
+        with broker suffix EURUSD.pro is recognized as open and ignored.
+        """
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {
+                    "symbol": "EURUSD.pro",
+                    "score": 9,
+                    "signal": "BUY",
+                    "trend": "STRONG_BULLISH",
+                    "spread": 10.0
+                }
+            ]
+        }
+        mock_positions = {
+            "status": "ok",
+            "positions": [{"ticket": 77702, "symbol": "EURUSD", "type": "BUY"}]
+        }
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_positions), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
+    def test_interactive_buttons_in_execution_alert(self):
+        """Verifies that _dispatch_execution_alert attaches interactive buttons with ticket actions."""
+        mock_bot = AsyncMock()
+        trade_record = {
+            "symbol": "GBPUSD",
+            "cmd": "BUY",
+            "ticket": 888123,
+            "price": 1.27500,
+            "lots": 0.02,
+            "score": 8,
+            "sl_pips": 25.0,
+            "tp_pips": 50.0,
+            "trend": "BULLISH_BREAKOUT",
+            "timestamp": 1788800000.0
+        }
+
+        async def run_test():
+            await self.trader._dispatch_execution_alert(mock_bot, trade_record)
+            mock_bot.send_message.assert_called_once()
+            call_kwargs = mock_bot.send_message.call_args[1]
+            self.assertIn("reply_markup", call_kwargs)
+            kb = call_kwargs["reply_markup"]
+            self.assertIsNotNone(kb)
+            # Find callback data in keyboard buttons
+            callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+            self.assertIn("/close_888123", callbacks)
+            self.assertIn("/half_888123", callbacks)
+            self.assertIn("nav_pos", callbacks)
+
+        asyncio.run(run_test())
+
+    def test_max_concurrent_positions_guard_respects_limit(self):
+        """Verifies execute_autonomous_cycle blocks new trades when max_positions is reached."""
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {"symbol": "EURUSD", "score": 9, "signal": "BUY", "spread": 10.0}
+            ]
+        }
+        mock_pos = {
+            "status": "ok",
+            "positions": [
+                {"ticket": 101, "symbol": "GBPUSD", "type": "BUY"},
+                {"ticket": 102, "symbol": "USDJPY", "type": "BUY"},
+                {"ticket": 103, "symbol": "AUDUSD", "type": "BUY"}
+            ]
+        }
+        self.trader.max_positions = 3
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_pos), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
+    def test_per_symbol_cooldown_guard_skips_recent_traded_symbol(self):
+        """Verifies execute_autonomous_cycle enforces cooldown on recently traded symbols."""
+        mock_scan = {
+            "status": "ok",
+            "results": [
+                {"symbol": "GBPUSD", "score": 9, "signal": "BUY", "spread": 10.0}
+            ]
+        }
+        mock_pos = {"status": "ok", "positions": []}
+        self.trader.cooldown_sec = 3600
+        # Register a recent trade 5 minutes ago
+        self.trader.last_trade_times["GBPUSD"] = time.time() - 300
+
+        async def run_test():
+            with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_pos), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await self.trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
 
 class TestTelegramAutonomousHandlers(unittest.TestCase):
     def setUp(self):
@@ -383,5 +544,58 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
         asyncio.run(run_test())
 
 
+    def test_cmd_autotrade_status(self):
+        """Verifies /autotrade status displays status panel without changing active state."""
+        async def run_test():
+            update, context = self._make_mock_update(args=["status"])
+            autonomous_trader.set_enabled(True)
+            await handlers.cmd_autotrade(update, context)
+            self.assertTrue(autonomous_trader.is_enabled)
+            update.message.reply_text.assert_called_once()
+            sent_msg = update.message.reply_text.call_args[0][0]
+            self.assertIn("AUTONOMOUS MULTI-SYMBOL TRADING ENGINE", sent_msg)
+            self.assertIn("ACTIVE & SCANNING", sent_msg)
+
+        asyncio.run(run_test())
+
+    def test_cmd_status_reflects_autonomous_state(self):
+        """Verifies /status (cmd_account) dynamically reflects autonomous trading mode."""
+        async def run_test():
+            mock_acc = {
+                "status": "ok",
+                "account_number": 213173,
+                "balance": 90.49,
+                "equity": 90.49,
+                "margin": 0.0,
+                "free_margin": 90.49,
+                "margin_level": 0.0,
+                "floating_pl": 0.0,
+                "currency": "USD",
+                "trade_mode": "REAL",
+                "leverage": 100
+            }
+            # Active state
+            autonomous_trader.set_enabled(True)
+            update_active, context_active = self._make_mock_update()
+            with patch("handlers.zmq_async", return_value=mock_acc):
+                await handlers.cmd_account(update_active, context_active)
+                update_active.message.reply_text.assert_called_once()
+                sent_active = update_active.message.reply_text.call_args[0][0]
+                self.assertIn("Autonomous Bot:", sent_active)
+                self.assertIn("ACTIVE", sent_active)
+
+            # Paused state
+            autonomous_trader.set_enabled(False)
+            update_paused, context_paused = self._make_mock_update()
+            with patch("handlers.zmq_async", return_value=mock_acc):
+                await handlers.cmd_account(update_paused, context_paused)
+                update_paused.message.reply_text.assert_called_once()
+                sent_paused = update_paused.message.reply_text.call_args[0][0]
+                self.assertIn("Autonomous Bot:", sent_paused)
+                self.assertIn("PAUSED", sent_paused)
+
+        asyncio.run(run_test())
+
 if __name__ == "__main__":
     unittest.main()
+

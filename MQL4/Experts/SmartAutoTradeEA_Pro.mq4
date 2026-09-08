@@ -442,6 +442,8 @@ input string             AutonomousWatchlist           = "EURUSD,GBPUSD,USDJPY,U
 input bool               AutonomousTradeDirectly       = true;              // 100% Autonomous Execution (Direct Trade, Zero Advisory Prompting)
 input int                AutonomousScanIntervalSec     = 20;                // Background Multi-Symbol Scan Interval (Seconds)
 input int                AutonomousMinConfluenceScore  = 6;                 // Minimum Score to Execute Autonomous Trade (0-10)
+input int                AutonomousCooldownMinutes     = 60;                // Per-Symbol Cooldown Guard (Minutes After Trade)
+input int                AutonomousMaxConcurrentTrades = 3;                 // Maximum Autonomous Concurrent Open Positions (3-5)
 
 
 
@@ -2362,11 +2364,27 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
    {
       attempts++;
       ResetLastError();
-      RefreshRates();
+      if(sym == Symbol()) RefreshRates();
 
-      double currentExecPrice = (entryPrice > 0.0) ? entryPrice : ((command == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID));
-      double sendSL = (isECN || UseStealthStops) ? 0.0 : stopLoss;
-      double sendTP = (isECN || UseStealthStops) ? 0.0 : takeProfit;
+      int dig = (int)MarketInfo(sym, MODE_DIGITS);
+      if(dig <= 0) dig = Digits;
+
+      double currentExecPrice = (attempts == 1 && entryPrice > 0.0 && sym == Symbol()) ? entryPrice : ((command == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID));
+      currentExecPrice = NormalizeDouble(currentExecPrice, dig);
+
+      double sendSL = stopLoss;
+      double sendTP = takeProfit;
+      if(sendSL > 0.0 || sendTP > 0.0)
+      {
+         ValidateStopLevels(command, currentExecPrice, sendSL, sendTP, sym);
+         if(sendSL > 0.0) sendSL = NormalizeDouble(sendSL, dig);
+         if(sendTP > 0.0) sendTP = NormalizeDouble(sendTP, dig);
+      }
+      if(isECN || UseStealthStops)
+      {
+         sendSL = 0.0;
+         sendTP = 0.0;
+      }
 
       ticket = OrderSend(sym, command, volume, currentExecPrice, slippage, sendSL, sendTP, orderComment, MagicNumber, 0, arrowColor);
 
@@ -2402,8 +2420,9 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
          // If Instant Execution broker failed with Error 130 (Invalid Stops), attempt ECN two-step approach
          if(err == 130 && !isECN && !UseStealthStops && (stopLoss > 0.0 || takeProfit > 0.0))
          {
-            RefreshRates();
-            currentExecPrice = (entryPrice > 0.0) ? entryPrice : ((command == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID));
+            if(sym == Symbol()) RefreshRates();
+            currentExecPrice = (command == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
+            currentExecPrice = NormalizeDouble(currentExecPrice, dig);
             ticket = OrderSend(sym, command, volume, currentExecPrice, slippage, 0, 0, orderComment, MagicNumber, 0, arrowColor);
             if(ticket > 0)
             {
@@ -2437,41 +2456,47 @@ int ExecuteSmartOrder(const int command, const double volume, const double entry
 //+------------------------------------------------------------------+
 //| BROKER STOP & FREEZE LEVEL VALIDATION                            |
 //+------------------------------------------------------------------+
-bool ValidateStopLevels(const int cmd, const double openPrice, double &sl, double &tp)
+bool ValidateStopLevels(const int cmd, const double openPrice, double &sl, double &tp, string targetSymbol = "")
 {
-   double stopLevelPoints   = MarketInfo(Symbol(), MODE_STOPLEVEL);
-   double freezeLevelPoints = MarketInfo(Symbol(), MODE_FREEZELEVEL);
-   double minDistance       = (MathMax(stopLevelPoints, freezeLevelPoints) + 3.0) * Point;
+   string sym = (targetSymbol == "" || targetSymbol == "CURRENT") ? Symbol() : targetSymbol;
+   double pt = MarketInfo(sym, MODE_POINT);
+   if(pt <= 0.0) pt = Point;
+   int dig = (int)MarketInfo(sym, MODE_DIGITS);
+   if(dig <= 0) dig = Digits;
 
+   double stopLevelPoints   = MarketInfo(sym, MODE_STOPLEVEL);
+   double freezeLevelPoints = MarketInfo(sym, MODE_FREEZELEVEL);
+   double minDistance       = (MathMax(stopLevelPoints, freezeLevelPoints) + 3.0) * pt;
 
-   RefreshRates();
+   if(sym == Symbol())
+      RefreshRates();
 
+   double currentBid = (sym == Symbol()) ? Bid : MarketInfo(sym, MODE_BID);
+   double currentAsk = (sym == Symbol()) ? Ask : MarketInfo(sym, MODE_ASK);
+   if(currentBid <= 0.0 || currentAsk <= 0.0) return false;
 
    if(cmd == OP_BUY)
    {
-      double currentBid = Bid;
       if(sl > 0.0 && (currentBid - sl) < minDistance)
       {
-         sl = NormalizeDouble(currentBid - minDistance, Digits);
+         sl = NormalizeDouble(currentBid - minDistance, dig);
       }
       if(tp > 0.0 && (tp - currentBid) < minDistance)
       {
-         tp = NormalizeDouble(currentBid + minDistance, Digits);
+         tp = NormalizeDouble(currentBid + minDistance, dig);
       }
    }
    else if(cmd == OP_SELL)
    {
-      double currentAsk = Ask;
       if(sl > 0.0 && (sl - currentAsk) < minDistance)
       {
-         sl = NormalizeDouble(currentAsk + minDistance, Digits);
+         sl = NormalizeDouble(currentAsk + minDistance, dig);
       }
       if(tp > 0.0 && (currentAsk - tp) < minDistance)
       {
-         tp = NormalizeDouble(currentAsk - minDistance, Digits);
+         tp = NormalizeDouble(currentAsk - minDistance, dig);
       }
    }
-
 
    return true;
 }
@@ -2500,15 +2525,18 @@ bool SafeOrderClose(const int ticket, const double volume, const int slippage, c
    bool closed = false;
 
 
+   string sym = OrderSymbol();
+   int dig = (int)MarketInfo(sym, MODE_DIGITS);
+   if(dig <= 0) dig = Digits;
+
    while(attempts < OrderRetryAttempts && !closed)
    {
       attempts++;
       ResetLastError();
-      RefreshRates();
+      if(sym == Symbol()) RefreshRates();
 
-
-      double closePrice = (cmd == OP_BUY) ? Bid : Ask;
-      closePrice = NormalizeDouble(closePrice, Digits);
+      double closePrice = (cmd == OP_BUY) ? ((sym == Symbol()) ? Bid : MarketInfo(sym, MODE_BID)) : ((sym == Symbol()) ? Ask : MarketInfo(sym, MODE_ASK));
+      closePrice = NormalizeDouble(closePrice, dig);
       closed = OrderClose(ticket, volume, closePrice, slippage, arrowColor);
 
 
@@ -2554,10 +2582,16 @@ bool SafeOrderModify(const int ticket, const double price, double sl, double tp,
 
 
    int cmd = OrderType();
+   string sym = OrderSymbol();
+   int dig = (int)MarketInfo(sym, MODE_DIGITS);
+   if(dig <= 0) dig = Digits;
+   double pt = MarketInfo(sym, MODE_POINT);
+   if(pt <= 0.0) pt = Point;
+
    double modifyPrice = (cmd <= OP_SELL) ? OrderOpenPrice() : price;
-   ValidateStopLevels(cmd, modifyPrice, sl, tp);
-   if(sl > 0.0) sl = NormalizeDouble(sl, Digits);
-   if(tp > 0.0) tp = NormalizeDouble(tp, Digits);
+   ValidateStopLevels(cmd, modifyPrice, sl, tp, sym);
+   if(sl > 0.0) sl = NormalizeDouble(sl, dig);
+   if(tp > 0.0) tp = NormalizeDouble(tp, dig);
 
    // If using stealth stops, update in-memory levels and skip broker modify if stops are hidden
    if(UseStealthStops)
@@ -2573,7 +2607,7 @@ bool SafeOrderModify(const int ticket, const double price, double sl, double tp,
    // If modification values are identical to current, skip to avoid ERR_NO_RESULT (Error 1)
    double curSL = OrderStopLoss();
    double curTP = OrderTakeProfit();
-   if(MathAbs(curSL - sl) < Point * 0.5 && MathAbs(curTP - tp) < Point * 0.5)
+   if(MathAbs(curSL - sl) < pt * 0.5 && MathAbs(curTP - tp) < pt * 0.5)
    {
       return true;
    }
@@ -2644,93 +2678,99 @@ void ManageActiveTradeLifecycle()
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderSymbol() != Symbol() || OrderMagicNumber() != MagicNumber) continue;
+      if(OrderMagicNumber() != MagicNumber) continue;
 
-
-      int ticket     = OrderTicket();
-      int type       = OrderType();
+      int ticket       = OrderTicket();
+      int type         = OrderType();
+      string sym       = OrderSymbol();
       double openPrice = OrderOpenPrice();
       double currentSL = OrderStopLoss();
       double currentTP = OrderTakeProfit();
-      double lots    = OrderLots();
+      double lots      = OrderLots();
 
+      if(sym == Symbol()) RefreshRates();
+      double curBid = (sym == Symbol()) ? Bid : MarketInfo(sym, MODE_BID);
+      double curAsk = (sym == Symbol()) ? Ask : MarketInfo(sym, MODE_ASK);
+      if(curBid <= 0.0 || curAsk <= 0.0) continue;
 
-      RefreshRates();
-
+      int dig = (int)MarketInfo(sym, MODE_DIGITS);
+      if(dig <= 0) dig = Digits;
+      double pt = MarketInfo(sym, MODE_POINT);
+      if(pt <= 0.0) pt = Point;
+      double symPipPt = (dig == 3 || dig == 5) ? (pt * 10.0) : pt;
+      if(symPipPt <= 0.0) symPipPt = pt;
 
       // Long / Buy Position Management
       if(type == OP_BUY)
       {
-         double profitPips = (Bid - openPrice) / pipPt;
-
+         double profitPips = (curBid - openPrice) / symPipPt;
 
          // 1. Automated Break-Even Logic
          if(UseBreakEven && profitPips >= scaledBE_Pips)
          {
-            double beLevel = NormalizeDouble(openPrice + (BreakEvenLockPips * pipPt), Digits);
+            double beLevel = NormalizeDouble(openPrice + (BreakEvenLockPips * symPipPt), dig);
             if(currentSL < openPrice || currentSL == 0.0)
             {
                if(SafeOrderModify(ticket, openPrice, beLevel, currentTP, 0, clrAqua))
                {
-                  Telegram_NotifyBreakEven(ticket, openPrice, beLevel, BreakEvenLockPips);
+                  Telegram_NotifyBreakEven(ticket, openPrice, beLevel, BreakEvenLockPips, sym);
                }
             }
          }
-
 
          // 2. Partial Profit Taking
          if(UsePartialProfitTaking && profitPips >= PartialCloseTriggerPips && !IsTicketPartiallyClosed(ticket))
          {
-            if(lots > g_MinLot && lots > MarketInfo(Symbol(), MODE_MINLOT))
+            double symMinLot = MarketInfo(sym, MODE_MINLOT);
+            if(symMinLot <= 0.0) symMinLot = 0.01;
+            if(lots > symMinLot)
             {
-               double closeVolume = NormalizeLotStep(lots * PartialCloseRatio);
-               if(closeVolume >= g_MinLot && (lots - closeVolume) >= g_MinLot)
+               double closeVolume = NormalizeLotStep(lots * PartialCloseRatio, sym);
+               if(closeVolume >= symMinLot && (lots - closeVolume) >= symMinLot)
                {
                   if(SafeOrderClose(ticket, closeVolume, GetScaledSlippage(), clrDarkGoldenrod))
                   {
                      RegisterTicketPartialClose(ticket);
-                     PrintFormat("[PARTIAL CLOSE] Ticket #%d closed %.2f lots at %f", ticket, closeVolume, Bid);
+                     PrintFormat("[PARTIAL CLOSE] Ticket #%d (%s) closed %.2f lots at %f", ticket, sym, closeVolume, curBid);
                   }
                }
             }
          }
-
 
          // 3. Multi-Mode Trailing Stop Engine
          if(TrailingStopType != TRAILING_NONE && profitPips >= scaledTrailStart)
          {
             double desiredSL = 0.0;
 
-
             if(TrailingStopType == TRAILING_FIXED_PIPS)
             {
-               desiredSL = NormalizeDouble(Bid - (scaledTrailStep * pipPt), Digits);
+               desiredSL = NormalizeDouble(curBid - (scaledTrailStep * symPipPt), dig);
             }
             else if(TrailingStopType == TRAILING_ATR_DYNAMIC)
             {
-               double atr = iATR(Symbol(), Period(), ATRPeriod, 1);
-               desiredSL = NormalizeDouble(Bid - (atr * TrailingATRMultiplier), Digits);
+               double atr = iATR(sym, Period(), ATRPeriod, 1);
+               if(atr <= 0.0) atr = iATR(sym, PERIOD_H1, ATRPeriod, 1);
+               desiredSL = NormalizeDouble(curBid - (atr * TrailingATRMultiplier), dig);
             }
             else if(TrailingStopType == TRAILING_CHANDELIER)
             {
-               desiredSL = CalculateChandelierLongStop(ChandelierCandleLookback, TrailingATRMultiplier);
+               desiredSL = (sym == Symbol()) ? CalculateChandelierLongStop(ChandelierCandleLookback, TrailingATRMultiplier) : NormalizeDouble(curBid - (scaledTrailStep * symPipPt), dig);
             }
             else if(TrailingStopType == TRAILING_PARABOLIC_SAR)
             {
-               desiredSL = NormalizeDouble(iSAR(Symbol(), Period(), ParabolicSAR_Step, ParabolicSAR_Maximum, 1), Digits);
+               desiredSL = NormalizeDouble(iSAR(sym, Period(), ParabolicSAR_Step, ParabolicSAR_Maximum, 1), dig);
             }
             else if(TrailingStopType == TRAILING_MOVING_AVERAGE)
             {
-               desiredSL = CalculateMovingAverageLongStop(EMA_Fast_Period, MODE_EMA);
+               desiredSL = (sym == Symbol()) ? CalculateMovingAverageLongStop(EMA_Fast_Period, MODE_EMA) : NormalizeDouble(curBid - (scaledTrailStep * symPipPt), dig);
             }
 
-
             // Verify trailing stop improves protection beyond current stop loss
-            if(desiredSL > currentSL + (pipPt * 0.5) && desiredSL < Bid)
+            if(desiredSL > currentSL + (symPipPt * 0.5) && desiredSL < curBid)
             {
                if(SafeOrderModify(ticket, openPrice, desiredSL, currentTP, 0, clrGold))
                {
-                  Telegram_NotifyTrailing(ticket, desiredSL, profitPips);
+                  Telegram_NotifyTrailing(ticket, desiredSL, profitPips, sym);
                }
             }
          }
@@ -2738,76 +2778,74 @@ void ManageActiveTradeLifecycle()
       // Short / Sell Position Management
       else if(type == OP_SELL)
       {
-         double profitPips = (openPrice - Ask) / pipPt;
-
+         double profitPips = (openPrice - curAsk) / symPipPt;
 
          // 1. Automated Break-Even Logic
          if(UseBreakEven && profitPips >= scaledBE_Pips)
          {
-            double beLevel = NormalizeDouble(openPrice - (BreakEvenLockPips * pipPt), Digits);
+            double beLevel = NormalizeDouble(openPrice - (BreakEvenLockPips * symPipPt), dig);
             if(currentSL > openPrice || currentSL == 0.0)
             {
                if(SafeOrderModify(ticket, openPrice, beLevel, currentTP, 0, clrAqua))
                {
-                  Telegram_NotifyBreakEven(ticket, openPrice, beLevel, BreakEvenLockPips);
+                  Telegram_NotifyBreakEven(ticket, openPrice, beLevel, BreakEvenLockPips, sym);
                }
             }
          }
-
 
          // 2. Partial Profit Taking
          if(UsePartialProfitTaking && profitPips >= PartialCloseTriggerPips && !IsTicketPartiallyClosed(ticket))
          {
-            if(lots > g_MinLot && lots > MarketInfo(Symbol(), MODE_MINLOT))
+            double symMinLot = MarketInfo(sym, MODE_MINLOT);
+            if(symMinLot <= 0.0) symMinLot = 0.01;
+            if(lots > symMinLot)
             {
-               double closeVolume = NormalizeLotStep(lots * PartialCloseRatio);
-               if(closeVolume >= g_MinLot && (lots - closeVolume) >= g_MinLot)
+               double closeVolume = NormalizeLotStep(lots * PartialCloseRatio, sym);
+               if(closeVolume >= symMinLot && (lots - closeVolume) >= symMinLot)
                {
                   if(SafeOrderClose(ticket, closeVolume, GetScaledSlippage(), clrDarkGoldenrod))
                   {
                      RegisterTicketPartialClose(ticket);
-                     PrintFormat("[PARTIAL CLOSE] Ticket #%d closed %.2f lots at %f", ticket, closeVolume, Ask);
+                     PrintFormat("[PARTIAL CLOSE] Ticket #%d (%s) closed %.2f lots at %f", ticket, sym, closeVolume, curAsk);
                   }
                }
             }
          }
-
 
          // 3. Multi-Mode Trailing Stop Engine
          if(TrailingStopType != TRAILING_NONE && profitPips >= scaledTrailStart)
          {
             double desiredSL = 0.0;
 
-
             if(TrailingStopType == TRAILING_FIXED_PIPS)
             {
-               desiredSL = NormalizeDouble(Ask + (scaledTrailStep * pipPt), Digits);
+               desiredSL = NormalizeDouble(curAsk + (scaledTrailStep * symPipPt), dig);
             }
             else if(TrailingStopType == TRAILING_ATR_DYNAMIC)
             {
-               double atr = iATR(Symbol(), Period(), ATRPeriod, 1);
-               desiredSL = NormalizeDouble(Ask + (atr * TrailingATRMultiplier), Digits);
+               double atr = iATR(sym, Period(), ATRPeriod, 1);
+               if(atr <= 0.0) atr = iATR(sym, PERIOD_H1, ATRPeriod, 1);
+               desiredSL = NormalizeDouble(curAsk + (atr * TrailingATRMultiplier), dig);
             }
             else if(TrailingStopType == TRAILING_CHANDELIER)
             {
-               desiredSL = CalculateChandelierShortStop(ChandelierCandleLookback, TrailingATRMultiplier);
+               desiredSL = (sym == Symbol()) ? CalculateChandelierShortStop(ChandelierCandleLookback, TrailingATRMultiplier) : NormalizeDouble(curAsk + (scaledTrailStep * symPipPt), dig);
             }
             else if(TrailingStopType == TRAILING_PARABOLIC_SAR)
             {
-               desiredSL = NormalizeDouble(iSAR(Symbol(), Period(), ParabolicSAR_Step, ParabolicSAR_Maximum, 1), Digits);
+               desiredSL = NormalizeDouble(iSAR(sym, Period(), ParabolicSAR_Step, ParabolicSAR_Maximum, 1), dig);
             }
             else if(TrailingStopType == TRAILING_MOVING_AVERAGE)
             {
-               desiredSL = CalculateMovingAverageShortStop(EMA_Fast_Period, MODE_EMA);
+               desiredSL = (sym == Symbol()) ? CalculateMovingAverageShortStop(EMA_Fast_Period, MODE_EMA) : NormalizeDouble(curAsk + (scaledTrailStep * symPipPt), dig);
             }
 
-
             // Verify trailing stop improves protection beyond current stop loss
-            if((desiredSL < currentSL - (pipPt * 0.5) || currentSL == 0.0) && desiredSL > Ask)
+            if((desiredSL < currentSL - (symPipPt * 0.5) || currentSL == 0.0) && desiredSL > curAsk)
             {
                if(SafeOrderModify(ticket, openPrice, desiredSL, currentTP, 0, clrGold))
                {
-                  Telegram_NotifyTrailing(ticket, desiredSL, profitPips);
+                  Telegram_NotifyTrailing(ticket, desiredSL, profitPips, sym);
                }
             }
          }
@@ -4754,15 +4792,19 @@ void Telegram_PollCommands()
 //+------------------------------------------------------------------+
 //| Notification: Break-Even Activated                               |
 //+------------------------------------------------------------------+
-void Telegram_NotifyBreakEven(int ticket, double openPrice, double bePrice, int lockPips)
+void Telegram_NotifyBreakEven(int ticket, double openPrice, double bePrice, int lockPips, string targetSymbol = "")
 {
    if(!TelegramNotifyBreakEven) return;
+   string sym = (targetSymbol == "" || targetSymbol == "CURRENT") ? Symbol() : targetSymbol;
+   int dig = (int)MarketInfo(sym, MODE_DIGITS);
+   if(dig <= 0) dig = Digits;
+
    string msg = TG_SHIELD + " <b>BREAK-EVEN PROTECTION ACTIVATED</b>\n";
    msg += TG_DIVIDER + "\n";
    msg += TG_BULLET + " <b>Ticket:</b> #" + IntegerToString(ticket) + "\n";
-   msg += TG_BULLET + " <b>Symbol:</b> <code>" + Symbol() + "</code>\n";
-   msg += TG_BULLET + " <b>Entry:</b> " + Telegram_FormatPrice(openPrice, Digits) + "\n";
-   msg += TG_BULLET + " <b>New Stop Loss:</b> " + Telegram_FormatPrice(bePrice, Digits) + " (+" + IntegerToString(lockPips) + " pips locked)\n";
+   msg += TG_BULLET + " <b>Symbol:</b> <code>" + sym + "</code>\n";
+   msg += TG_BULLET + " <b>Entry:</b> " + Telegram_FormatPrice(openPrice, dig) + "\n";
+   msg += TG_BULLET + " <b>New Stop Loss:</b> " + Telegram_FormatPrice(bePrice, dig) + " (+" + IntegerToString(lockPips) + " pips locked)\n";
    msg += TG_BULLET + " <b>Status:</b> <b>Risk-Free Trade! " + TG_LOCK + "</b>";
    Telegram_SendMessage(TelegramBotToken, TelegramChatID, msg, 2, 1);
 }
@@ -4770,14 +4812,18 @@ void Telegram_NotifyBreakEven(int ticket, double openPrice, double bePrice, int 
 //+------------------------------------------------------------------+
 //| Notification: Trailing Stop Profit Locked                        |
 //+------------------------------------------------------------------+
-void Telegram_NotifyTrailing(int ticket, double newSL, double profitPips)
+void Telegram_NotifyTrailing(int ticket, double newSL, double profitPips, string targetSymbol = "")
 {
    if(!TelegramNotifyTrailing) return;
+   string sym = (targetSymbol == "" || targetSymbol == "CURRENT") ? Symbol() : targetSymbol;
+   int dig = (int)MarketInfo(sym, MODE_DIGITS);
+   if(dig <= 0) dig = Digits;
+
    string msg = TG_CHART_UP + " <b>TRAILING STOP UPDATED</b>\n";
    msg += TG_DIVIDER + "\n";
    msg += TG_BULLET + " <b>Ticket:</b> #" + IntegerToString(ticket) + "\n";
-   msg += TG_BULLET + " <b>Symbol:</b> <code>" + Symbol() + "</code>\n";
-   msg += TG_BULLET + " <b>New Stop Loss:</b> " + Telegram_FormatPrice(newSL, Digits) + "\n";
+   msg += TG_BULLET + " <b>Symbol:</b> <code>" + sym + "</code>\n";
+   msg += TG_BULLET + " <b>New Stop Loss:</b> " + Telegram_FormatPrice(newSL, dig) + "\n";
    msg += TG_BULLET + " <b>Profit Secured:</b> +" + DoubleToString(profitPips, 1) + " pips";
    Telegram_SendMessage(TelegramBotToken, TelegramChatID, msg, 2, 1);
 }
@@ -4944,7 +4990,8 @@ void Telegram_ProcessTradeEvents()
                {
                   int digits = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
                   if(digits == 0) digits = Digits;
-                  double approxClose = (type == OP_BUY) ? Bid : Ask;
+                  double approxClose = (type == OP_BUY) ? MarketInfo(OrderSymbol(), MODE_BID) : MarketInfo(OrderSymbol(), MODE_ASK);
+                  if(approxClose <= 0.0) approxClose = (type == OP_BUY) ? Bid : Ask;
                   string pmsg = TG_SCISSORS + " <b>POSITION PARTIALLY CLOSED</b>\n";
                   pmsg += TG_DIVIDER + "\n";
                   pmsg += TG_CHART + " <b>Asset:</b> <code>" + Telegram_EscapeHtml(OrderSymbol()) + "</code> (" + (type == OP_BUY ? ("BUY " + TG_ARROW_UP) : ("SELL " + TG_ARROW_DOWN)) + ")   " + TG_BULLET + "   <b>Ticket:</b> <code>#" + IntegerToString(ticket) + "</code>\n";
@@ -5629,14 +5676,25 @@ void MonitorStealthStops()
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderSymbol() != Symbol() || OrderMagicNumber() != MagicNumber) continue;
+      if(OrderMagicNumber() != MagicNumber) continue;
 
-      int type = OrderType();
-      int ticket = OrderTicket();
+      int type         = OrderType();
+      int ticket       = OrderTicket();
+      string sym       = OrderSymbol();
       double openPrice = OrderOpenPrice();
-      double lots = OrderLots();
+      double lots      = OrderLots();
 
-      RefreshRates();
+      if(sym == Symbol()) RefreshRates();
+      double curBid = (sym == Symbol()) ? Bid : MarketInfo(sym, MODE_BID);
+      double curAsk = (sym == Symbol()) ? Ask : MarketInfo(sym, MODE_ASK);
+      if(curBid <= 0.0 || curAsk <= 0.0) continue;
+
+      int dig = (int)MarketInfo(sym, MODE_DIGITS);
+      if(dig <= 0) dig = Digits;
+      double pt = MarketInfo(sym, MODE_POINT);
+      if(pt <= 0.0) pt = Point;
+      double symPipPt = (dig == 3 || dig == 5) ? (pt * 10.0) : pt;
+      if(symPipPt <= 0.0) symPipPt = pt;
 
       double virtualSL = 0.0, virtualTP = 0.0;
       if(!GetStealthOrderLevels(ticket, virtualSL, virtualTP))
@@ -5644,29 +5702,29 @@ void MonitorStealthStops()
          // Fallback calculation if not explicitly registered
          if(type == OP_BUY)
          {
-            virtualSL = openPrice - (StopLossPips * g_PipPoint);
-            virtualTP = (TakeProfitPips > 0) ? (openPrice + (TakeProfitPips * g_PipPoint)) : 0.0;
+            virtualSL = openPrice - (StopLossPips * symPipPt);
+            virtualTP = (TakeProfitPips > 0) ? (openPrice + (TakeProfitPips * symPipPt)) : 0.0;
          }
          else if(type == OP_SELL)
          {
-            virtualSL = openPrice + (StopLossPips * g_PipPoint);
-            virtualTP = (TakeProfitPips > 0) ? (openPrice - (TakeProfitPips * g_PipPoint)) : 0.0;
+            virtualSL = openPrice + (StopLossPips * symPipPt);
+            virtualTP = (TakeProfitPips > 0) ? (openPrice - (TakeProfitPips * symPipPt)) : 0.0;
          }
       }
 
       if(type == OP_BUY)
       {
-         if(virtualSL > 0.0 && Bid <= virtualSL)
+         if(virtualSL > 0.0 && curBid <= virtualSL)
          {
-            PrintFormat("[STEALTH SL TRIGGERED] Ticket #%d reached Virtual SL at %f", ticket, Bid);
+            PrintFormat("[STEALTH SL TRIGGERED] Ticket #%d reached Virtual SL at %f", ticket, curBid);
             if(!SafeOrderClose(ticket, lots, scaledSlippage, clrRed))
             {
                PrintFormat("[STEALTH ERROR] Failed to close Ticket #%d at Virtual SL", ticket);
             }
          }
-         else if(virtualTP > 0.0 && Bid >= virtualTP)
+         else if(virtualTP > 0.0 && curBid >= virtualTP)
          {
-            PrintFormat("[STEALTH TP TRIGGERED] Ticket #%d reached Virtual TP at %f", ticket, Bid);
+            PrintFormat("[STEALTH TP TRIGGERED] Ticket #%d reached Virtual TP at %f", ticket, curBid);
             if(!SafeOrderClose(ticket, lots, scaledSlippage, clrLime))
             {
                PrintFormat("[STEALTH ERROR] Failed to close Ticket #%d at Virtual TP", ticket);
@@ -5675,17 +5733,17 @@ void MonitorStealthStops()
       }
       else if(type == OP_SELL)
       {
-         if(virtualSL > 0.0 && Ask >= virtualSL)
+         if(virtualSL > 0.0 && curAsk >= virtualSL)
          {
-            PrintFormat("[STEALTH SL TRIGGERED] Ticket #%d reached Virtual SL at %f", ticket, Ask);
+            PrintFormat("[STEALTH SL TRIGGERED] Ticket #%d reached Virtual SL at %f", ticket, curAsk);
             if(!SafeOrderClose(ticket, lots, scaledSlippage, clrRed))
             {
                PrintFormat("[STEALTH ERROR] Failed to close Ticket #%d at Virtual SL", ticket);
             }
          }
-         else if(virtualTP > 0.0 && Ask <= virtualTP)
+         else if(virtualTP > 0.0 && curAsk <= virtualTP)
          {
-            PrintFormat("[STEALTH TP TRIGGERED] Ticket #%d reached Virtual TP at %f", ticket, Ask);
+            PrintFormat("[STEALTH TP TRIGGERED] Ticket #%d reached Virtual TP at %f", ticket, curAsk);
             if(!SafeOrderClose(ticket, lots, scaledSlippage, clrLime))
             {
                PrintFormat("[STEALTH ERROR] Failed to close Ticket #%d at Virtual TP", ticket);
@@ -6012,7 +6070,7 @@ void EnforceTradeExpiration()
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderSymbol() != Symbol() || OrderMagicNumber() != MagicNumber) continue;
+      if(OrderMagicNumber() != MagicNumber) continue;
 
       if(OrderOpenTime() < thresholdTime)
       {
@@ -6691,7 +6749,13 @@ void Autonomous_MultiSymbolScan()
             totalOpen++;
       }
    }
-   if(totalOpen >= MaxTotalPortfolioPositions) return;
+   int maxPositions = MathMin(AutonomousMaxConcurrentTrades, MaxTotalPortfolioPositions);
+   if(totalOpen >= maxPositions) return;
+
+   // Static cooldown tracking per symbol in memory
+   static string s_coolSyms[32];
+   static datetime s_coolTimes[32];
+   static int s_coolCount = 0;
    
    // Parse symbols from AutonomousWatchlist
    int start = 0;
@@ -6721,10 +6785,50 @@ void Autonomous_MultiSymbolScan()
                symOpenCount++;
          }
       }
-      if(symOpenCount >= MaxOpenPositionsPerSymbol) continue;
+      if(symOpenCount > 0 || symOpenCount >= MaxOpenPositionsPerSymbol) continue;
+
+      // Check per-symbol cooldown guard
+      datetime nowCurrent = TimeCurrent();
+      datetime cooldownSec = (datetime)(AutonomousCooldownMinutes * 60);
+      bool inCooldown = false;
+
+      for(int c = 0; c < s_coolCount; c++)
+      {
+         if(s_coolSyms[c] == sym)
+         {
+            if(nowCurrent - s_coolTimes[c] < cooldownSec)
+            {
+               inCooldown = true;
+               break;
+            }
+         }
+      }
+      if(inCooldown) continue;
+
+      // Check order history for this symbol within cooldown period
+      int histTotal = OrdersHistoryTotal();
+      for(int h = histTotal - 1; h >= 0 && h >= histTotal - 50; h--)
+      {
+         if(OrderSelect(h, SELECT_BY_POS, MODE_HISTORY))
+         {
+            if(OrderSymbol() == sym && (OrderType() == OP_BUY || OrderType() == OP_SELL) && OrderMagicNumber() == MagicNumber)
+            {
+               if((nowCurrent - OrderCloseTime() < cooldownSec) || (nowCurrent - OrderOpenTime() < cooldownSec))
+               {
+                  inCooldown = true;
+                  break;
+               }
+            }
+         }
+      }
+      if(inCooldown) continue;
       
       double pt = MarketInfo(sym, MODE_POINT);
       if(pt <= 0.0) continue;
+      
+      double askPrice = MarketInfo(sym, MODE_ASK);
+      double bidPrice = MarketInfo(sym, MODE_BID);
+      if(askPrice <= 0.0 || bidPrice <= 0.0) continue;
       
       // Check spread
       double spread = Zmq_GetSpreadPoints(sym);
@@ -6732,6 +6836,7 @@ void Autonomous_MultiSymbolScan()
       
       // Multi-indicator confluence scoring on H1
       ENUM_TIMEFRAMES tf = PERIOD_H1;
+      if(iBars(sym, tf) < 50) continue;
       double ema20  = iMA(sym, tf, 20,  0, MODE_EMA, PRICE_CLOSE, 1);
       double ema50  = iMA(sym, tf, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
       double ema200 = iMA(sym, tf, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
@@ -6791,6 +6896,8 @@ void Autonomous_MultiSymbolScan()
          double tpPrice = (cmd == OP_BUY) ? (entryPrice + tpDistance) : (entryPrice - tpDistance);
          
          int dig = (int)MarketInfo(sym, MODE_DIGITS);
+         if(dig <= 0) dig = Digits;
+         ValidateStopLevels(cmd, entryPrice, slPrice, tpPrice, sym);
          slPrice = NormalizeDouble(slPrice, dig);
          tpPrice = NormalizeDouble(tpPrice, dig);
          
@@ -6800,6 +6907,22 @@ void Autonomous_MultiSymbolScan()
          {
             PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Successfully placed %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d)",
                         (cmd == OP_BUY ? "BUY" : "SELL"), sym, orderLots, finalScore, ticket);
+            bool foundCool = false;
+            for(int c = 0; c < s_coolCount; c++)
+            {
+               if(s_coolSyms[c] == sym)
+               {
+                  s_coolTimes[c] = TimeCurrent();
+                  foundCool = true;
+                  break;
+               }
+            }
+            if(!foundCool && s_coolCount < 32)
+            {
+               s_coolSyms[s_coolCount] = sym;
+               s_coolTimes[s_coolCount] = TimeCurrent();
+               s_coolCount++;
+            }
             break; // Max 1 new order per scan cycle
          }
       }
@@ -6818,6 +6941,11 @@ void OnTimer()
    uint nowTimerTick = GetTickCount();
    if(nowTimerTick - s_lastEATimerTick < 1000) return;
    s_lastEATimerTick = nowTimerTick;
+
+   // Multi-Symbol Lifecycle Management & Protection (Runs 1 Hz across entire portfolio)
+   ManageActiveTradeLifecycle();
+   MonitorStealthStops();
+   EnforceTradeExpiration();
 
    // --- Dynamic Account Switch & Safeguard Sanity Recalibration ---
    static int s_lastEAAccountNumber = 0;

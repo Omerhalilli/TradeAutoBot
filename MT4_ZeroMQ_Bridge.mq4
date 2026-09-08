@@ -1066,6 +1066,9 @@ string HandleScanSymbols(const string reqJson)
       
       double bid = MarketInfo(sym, MODE_BID);
       double ask = MarketInfo(sym, MODE_ASK);
+      if(bid <= 0.0 || ask <= 0.0) continue;
+      if(iBars(sym, tf) < 50) continue;
+      
       double spread = MarketInfo(sym, MODE_SPREAD);
       if(spread <= 0.0 && pt > 0.0 && ask > bid)
       {
@@ -1140,6 +1143,7 @@ string HandleScanSymbols(const string reqJson)
       if(validCount > 0) json += ",";
       json += "{";
       json += "\"symbol\":\"" + JsonEscape(sym) + "\",";
+      json += "\"raw_symbol\":\"" + JsonEscape(rawSym) + "\",";
       json += "\"bid\":" + DoubleToString(bid, dig) + ",";
       json += "\"ask\":" + DoubleToString(ask, dig) + ",";
       json += "\"spread\":" + DoubleToString(spread, 1) + ",";
