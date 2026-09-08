@@ -339,26 +339,7 @@ bool Zmq_SymbolsMatch(string orderSym, string targetSym)
    
    if(s2 == "" || s2 == "*" || s2 == "ALL") return true;
    if(s1 == s2) return true;
-
-   // Normalize financial aliases
-   if(s2 == "GOLD") s2 = "XAUUSD";
-   if(s2 == "SILVER") s2 = "XAGUSD";
-   if(s2 == "OIL" || s2 == "CRUDE" || s2 == "WTI") s2 = "USOIL";
-   if(s2 == "BRENT") s2 = "UKOIL";
-   if(s2 == "BITCOIN" || s2 == "CRYPTO") s2 = "BTCUSD";
-
-   if(s1 == "GOLD") s1 = "XAUUSD";
-   if(s1 == "SILVER") s1 = "XAGUSD";
-   if(s1 == "OIL" || s1 == "CRUDE" || s1 == "WTI") s1 = "USOIL";
-   if(s1 == "BRENT") s1 = "UKOIL";
-   if(s1 == "BITCOIN" || s1 == "CRYPTO") s1 = "BTCUSD";
-
-   if(s1 == s2) return true;
-   // User passed GBPUSD, broker has GBPUSDm, GBPUSD.ecn, pro.GBPUSD
-   if(StringFind(s1, s2) >= 0) return true;
-   // User passed GBPUSDm, broker has GBPUSD
-   if(StringFind(s2, s1) >= 0) return true;
-   return false;
+   return AreSymbolsMatching(s1, s2);
 }
 
 //+------------------------------------------------------------------+

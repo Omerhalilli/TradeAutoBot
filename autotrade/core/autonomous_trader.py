@@ -48,7 +48,12 @@ def canonical_symbol(sym: str) -> str:
     if s in ("BITCOIN", "CRYPTO"):
         return "BTCUSD"
 
-    std_pairs = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD", "XAUUSD", "EURJPY", "GBPJPY"]
+    std_pairs = [
+        "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD", "XAUUSD", "XAGUSD",
+        "EURGBP", "EURJPY", "GBPJPY", "EURCHF", "EURAUD", "EURNZD", "EURCAD", "GBPAUD", "GBPCAD",
+        "GBPCHF", "GBPNZD", "AUDCAD", "AUDCHF", "AUDJPY", "AUDNZD", "CADCHF", "CADJPY", "CHFJPY",
+        "NZDCAD", "NZDCHF", "NZDJPY", "USDTRY", "USDRUB", "USDZAR", "USDSEK", "USDNOK", "USDMXN"
+    ]
     for pair in std_pairs:
         if pair in s:
             return pair
@@ -62,6 +67,14 @@ def canonical_symbol(sym: str) -> str:
     if len(s) == 7 and s[0] in ("M", "R") and s[1:] in std_pairs:
         s = s[1:]
     return s
+
+
+def split_currency_pair(sym: str) -> Tuple[str, str]:
+    """Deconstructs instrument symbol into canonical base and quote currency components."""
+    clean = canonical_symbol(sym)
+    if len(clean) >= 6:
+        return clean[:3], clean[3:6]
+    return clean, "USD"
 
 
 class AutonomousMultiSymbolTrader:
@@ -218,11 +231,16 @@ class AutonomousMultiSymbolTrader:
             # Extract symbols currently holding open positions (raw and canonical normalized)
             open_symbols = set()
             canonical_open_symbols = set()
+            currency_exposure: Dict[str, int] = {}
             for p in open_positions:
                 sym = str(p.get("symbol", "")).strip().upper()
                 if sym:
                     open_symbols.add(sym)
-                    canonical_open_symbols.add(canonical_symbol(sym))
+                    canon_p = canonical_symbol(sym)
+                    canonical_open_symbols.add(canon_p)
+                    b_curr, q_curr = split_currency_pair(canon_p)
+                    currency_exposure[b_curr] = currency_exposure.get(b_curr, 0) + 1
+                    currency_exposure[q_curr] = currency_exposure.get(q_curr, 0) + 1
 
             executed_trades: List[Dict[str, Any]] = []
             now = time.time()
@@ -241,6 +259,17 @@ class AutonomousMultiSymbolTrader:
                     continue
                 if raw_sym in open_symbols or canon_sym in canonical_open_symbols:
                     continue  # Already in an active trade on this symbol
+                
+                # Currency exposure / correlation clamping (max 1 position per currency)
+                cand_base, cand_quote = split_currency_pair(canon_sym)
+                max_curr_exposure = 1
+                if currency_exposure.get(cand_base, 0) >= max_curr_exposure or currency_exposure.get(cand_quote, 0) >= max_curr_exposure:
+                    logger.debug(
+                        f"AutonomousTrader: Skipping {raw_sym} due to currency exposure limit "
+                        f"({cand_base}: {currency_exposure.get(cand_base, 0)}, {cand_quote}: {currency_exposure.get(cand_quote, 0)})"
+                    )
+                    continue
+
                 if spread > self.max_spread and spread > 0.0:
                     logger.debug(f"AutonomousTrader: Skipping {raw_sym} due to wide spread ({spread} pts > {self.max_spread})")
                     continue
@@ -298,6 +327,8 @@ class AutonomousMultiSymbolTrader:
                     self.last_trade_times[canon_sym] = now
                     open_symbols.add(raw_sym)
                     canonical_open_symbols.add(canon_sym)
+                    currency_exposure[cand_base] = currency_exposure.get(cand_base, 0) + 1
+                    currency_exposure[cand_quote] = currency_exposure.get(cand_quote, 0) + 1
 
                     trade_record = {
                         "symbol": raw_sym,

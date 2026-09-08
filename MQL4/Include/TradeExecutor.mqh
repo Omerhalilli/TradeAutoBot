@@ -24,21 +24,46 @@ bool ClampStopLevels(const string sym, const int cmd, const double openPrice, do
 
    double stopLevelPoints   = MarketInfo(sym, MODE_STOPLEVEL);
    double freezeLevelPoints = MarketInfo(sym, MODE_FREEZELEVEL);
-   double minDistance       = (MathMax(stopLevelPoints, freezeLevelPoints) + 2.0) * pt;
+   double minDistance       = (MathMax(stopLevelPoints, freezeLevelPoints) + 3.0) * pt;
+
+   double currentBid = MarketInfo(sym, MODE_BID);
+   double currentAsk = MarketInfo(sym, MODE_ASK);
+   if(currentBid <= 0.0) currentBid = (sym == Symbol()) ? Bid : openPrice;
+   if(currentAsk <= 0.0) currentAsk = (sym == Symbol()) ? Ask : openPrice;
 
    if(cmd == OP_BUY)
    {
-      if(sl > 0.0 && (openPrice - sl) < minDistance)
-         sl = NormalizeDouble(openPrice - minDistance, dig);
-      if(tp > 0.0 && (tp - openPrice) < minDistance)
-         tp = NormalizeDouble(openPrice + minDistance, dig);
+      // Buy order: StopLoss must be at least minDistance below BOTH Bid and openPrice
+      if(sl > 0.0)
+      {
+         double maxAllowedSL = MathMin(currentBid, openPrice) - minDistance;
+         if(sl > maxAllowedSL)
+            sl = NormalizeDouble(maxAllowedSL, dig);
+      }
+      // Buy order: TakeProfit must be at least minDistance above BOTH Bid and openPrice
+      if(tp > 0.0)
+      {
+         double minAllowedTP = MathMax(currentBid, openPrice) + minDistance;
+         if(tp < minAllowedTP)
+            tp = NormalizeDouble(minAllowedTP, dig);
+      }
    }
    else if(cmd == OP_SELL)
    {
-      if(sl > 0.0 && (sl - openPrice) < minDistance)
-         sl = NormalizeDouble(openPrice + minDistance, dig);
-      if(tp > 0.0 && (openPrice - tp) < minDistance)
-         tp = NormalizeDouble(openPrice - minDistance, dig);
+      // Sell order: StopLoss must be at least minDistance above BOTH Ask and openPrice
+      if(sl > 0.0)
+      {
+         double minAllowedSL = MathMax(currentAsk, openPrice) + minDistance;
+         if(sl < minAllowedSL)
+            sl = NormalizeDouble(minAllowedSL, dig);
+      }
+      // Sell order: TakeProfit must be at least minDistance below BOTH Ask and openPrice
+      if(tp > 0.0)
+      {
+         double maxAllowedTP = MathMin(currentAsk, openPrice) - minDistance;
+         if(tp > maxAllowedTP)
+            tp = NormalizeDouble(maxAllowedTP, dig);
+      }
    }
 
    if(sl > 0.0) sl = NormalizeDouble(sl, dig);
@@ -59,17 +84,19 @@ bool Executor_SafeOrderModify(const int ticket, const double price, double sl, d
    int dig = (int)MarketInfo(sym, MODE_DIGITS);
    if(dig <= 0) dig = Digits;
 
-   ClampStopLevels(sym, cmd, OrderOpenPrice(), sl, tp);
-
    for(int m = 0; m < 3; m++)
    {
       ResetLastError();
       if(sym == Symbol()) RefreshRates();
 
-      bool res = OrderModify(ticket, OrderOpenPrice(), sl, tp, expiration, arrowColor);
+      double modifySL = sl;
+      double modifyTP = tp;
+      ClampStopLevels(sym, cmd, OrderOpenPrice(), modifySL, modifyTP);
+
+      bool res = OrderModify(ticket, OrderOpenPrice(), modifySL, modifyTP, expiration, arrowColor);
       if(res)
       {
-         PrintFormat("[ORDER MODIFY SUCCESS] Ticket #%d updated with SL: %f | TP: %f", ticket, sl, tp);
+         PrintFormat("[ORDER MODIFY SUCCESS] Ticket #%d updated with SL: %f | TP: %f", ticket, modifySL, modifyTP);
          return true;
       }
 
@@ -179,6 +206,13 @@ int ExecuteOrderSafe(const string sym,
       if(sym == Symbol()) RefreshRates();
 
       // Retrieve fresh quotes per attempt
+      if(!IsQuoteFresh(sym, 5))
+      {
+         PrintFormat("[STALE FEED VETO] Attempt %d: Price on %s is dormant (> 5s). Waiting for fresh quote...", attempts, sym);
+         Sleep(200 * (1 << (attempts - 1)));
+         continue;
+      }
+
       double execPrice = (cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
       if(execPrice <= 0.0)
       {

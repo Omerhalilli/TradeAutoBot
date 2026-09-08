@@ -308,6 +308,47 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         self.assertEqual(canonical_symbol("GBPUSD+"), "GBPUSD")
         self.assertEqual(canonical_symbol("rEURUSD"), "EURUSD")
         self.assertEqual(canonical_symbol("mGBPUSD"), "GBPUSD")
+        self.assertEqual(canonical_symbol("mEURGBP"), "EURGBP")
+        self.assertEqual(canonical_symbol("rGBPJPY"), "GBPJPY")
+        self.assertEqual(canonical_symbol("USDTRY.pro"), "USDTRY")
+        self.assertEqual(canonical_symbol("mUSDTRY"), "USDTRY")
+        self.assertEqual(canonical_symbol("GOLD"), "XAUUSD")
+        self.assertEqual(canonical_symbol("SILVER"), "XAGUSD")
+
+        from autotrade.core.autonomous_trader import split_currency_pair
+        self.assertEqual(split_currency_pair("EURUSD"), ("EUR", "USD"))
+        self.assertEqual(split_currency_pair("GBPUSD_min"), ("GBP", "USD"))
+        self.assertEqual(split_currency_pair("mEURGBP"), ("EUR", "GBP"))
+        self.assertEqual(split_currency_pair("GOLD"), ("XAU", "USD"))
+
+    def test_currency_exposure_clamping(self):
+        """Verifies that an autonomous trade is rejected if open currency exposure ceiling is reached."""
+        async def run_test():
+            trader = AutonomousMultiSymbolTrader(symbols=["GBPUSD"], min_score=6)
+            mock_scan = {
+                "status": "ok",
+                "results": [
+                    {
+                        "symbol": "GBPUSD",
+                        "score": 8,
+                        "signal": "BUY",
+                        "spread": 10.0,
+                        "sl_pips": 30.0,
+                        "tp_pips": 60.0
+                    }
+                ]
+            }
+            # Open position already exists on EURUSD (involving USD)
+            open_pos = [{"ticket": 1001, "symbol": "EURUSD", "cmd": "BUY", "lots": 0.05}]
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value={"status": "ok", "positions": open_pos}), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                executed = await trader.execute_autonomous_cycle()
+                # Should be clamped because USD already has 1 open position
+                self.assertEqual(len(executed), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
 
     def test_order_failure_backoff_cooldown(self):
         """Verifies that an order placement failure sets failure backoff and skips retries."""

@@ -26,11 +26,13 @@ string CleanSymbolBase(string sym)
    if(StringFind(s, "UKOIL") >= 0 || StringFind(s, "BRENT") >= 0) return "UKOIL";
    if(StringFind(s, "BTC") >= 0) return "BTCUSD";
    
-   // Check known forex & metal currency combinations (10x10)
-   string currs[10] = {"EUR", "GBP", "USD", "AUD", "NZD", "CAD", "CHF", "JPY", "XAU", "XAG"};
-   for(int i = 0; i < 10; i++)
+   // Check known forex & metal currency combinations (23x23)
+   string currs[23] = {"EUR", "GBP", "USD", "AUD", "NZD", "CAD", "CHF", "JPY", 
+                       "XAU", "XAG", "BTC", "ETH", "TRY", "ZAR", "SEK", "NOK", 
+                       "MXN", "SGD", "HKD", "PLN", "CNH", "HUF", "CZK"};
+   for(int i = 0; i < 23; i++)
    {
-      for(int j = 0; j < 10; j++)
+      for(int j = 0; j < 23; j++)
       {
          if(i == j) continue;
          string pair = currs[i] + currs[j];
@@ -91,7 +93,6 @@ string ResolveBrokerSymbol(string standardName)
    {
       string s = SymbolName(i, true);
       if(CleanSymbolBase(s) == canonTarget) return s;
-      if(StringFind(s, canonTarget) == 0) return s;
    }
    
    // 3. Scan full broker catalog (SymbolsTotal(false))
@@ -256,36 +257,97 @@ int DiscoverMarketWatchSymbols(string &outSymbols[], string includeSymbols = "",
 //+------------------------------------------------------------------+
 bool IsQuoteFresh(string sym, int maxAgeSec = 5)
 {
+   if(IsTesting()) return true;
    datetime quoteTime = (datetime)MarketInfo(sym, MODE_TIME);
-   if(quoteTime <= 0) return false;
-   if(TimeCurrent() - quoteTime > maxAgeSec) return false;
+   if(quoteTime <= 0)
+   {
+      if(sym == Symbol() && TimeCurrent() > 0) quoteTime = TimeCurrent();
+      else return false;
+   }
+   datetime now = TimeCurrent();
+   if(quoteTime > now) return true; // Clock skew/future tick
+   if(now - quoteTime > maxAgeSec) return false;
    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Deconstruct symbol into base and quote currencies                |
+//+------------------------------------------------------------------+
+void GetSymbolCurrencies(string sym, string &baseCurr, string &quoteCurr)
+{
+   string canon = CleanSymbolBase(sym);
+   if(StringLen(canon) >= 6)
+   {
+      baseCurr  = StringSubstr(canon, 0, 3);
+      quoteCurr = StringSubstr(canon, 3, 3);
+   }
+   else
+   {
+      baseCurr  = canon;
+      quoteCurr = "USD";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Session & Liquidity filter per symbol class                      |
+//+------------------------------------------------------------------+
+bool IsSessionActiveForSymbol(string sym)
+{
+   datetime now = TimeCurrent();
+   int hour = TimeHour(now);
+   int min  = TimeMinute(now);
+   string base = "", quote = "";
+   GetSymbolCurrencies(sym, base, quote);
+   
+   // 1. Universal rollover blackout window (21:50 - 23:30 server time)
+   // Spreads on ALL pairs widen up to 10x-20x during bank rollover
+   if((hour == 21 && min >= 50) || hour == 22 || (hour == 23 && min <= 30))
+   {
+      return false; // Dead rollover window across entire broker feed
+   }
+
+   // 2. Asian pairs: Active during Tokyo session & London overlap (00:00 - 10:00)
+   if(base == "JPY" || quote == "JPY" || base == "AUD" || quote == "AUD" || base == "NZD" || quote == "NZD")
+   {
+      return true; // Active in Asian session & major European overlap
+   }
+   
+   // 3. European & US pairs: Active during London/NY core hours (06:00 - 21:00)
+   if(hour >= 6 && hour <= 21)
+   {
+      return true;
+   }
+   
+   return true; // Outside core hours, PreFilterSymbol spread check provides secondary guard
 }
 
 //+------------------------------------------------------------------+
 //| Pre-filter symbol before expensive indicator calculations        |
 //+------------------------------------------------------------------+
-bool PreFilterSymbol(string sym, double maxSpreadPoints = 50.0, int minBars = 50, ENUM_TIMEFRAMES tf = PERIOD_H1)
+bool PreFilterSymbol(string sym, double maxSpreadPoints = 50.0, int minBars = 50, ENUM_TIMEFRAMES tf = PERIOD_H1, bool checkSession = true)
 {
-   // 1. Broker allows trading
+   // 1. Session & liquidity filter (protect against dead liquidity hours)
+   if(checkSession && !IsSessionActiveForSymbol(sym)) return false;
+
+   // 2. Broker allows trading
    if(MarketInfo(sym, MODE_TRADEALLOWED) <= 0.0) return false;
    
-   // 2. Quote freshness check (skip dormant / desynchronized feeds)
+   // 3. Quote freshness check (skip dormant / desynchronized feeds)
    if(!IsQuoteFresh(sym, 5)) return false;
    
-   // 3. Valid price quotes
+   // 4. Valid price quotes
    double bid = MarketInfo(sym, MODE_BID);
    double ask = MarketInfo(sym, MODE_ASK);
    if(bid <= 0.0 || ask <= 0.0 || ask < bid) return false;
    
-   // 4. Spread check
+   // 5. Spread check
    double pt = MarketInfo(sym, MODE_POINT);
    if(pt <= 0.0) return false;
    double spread = MarketInfo(sym, MODE_SPREAD);
    if(spread <= 0.0) spread = (ask - bid) / pt;
    if(maxSpreadPoints > 0.0 && spread > maxSpreadPoints) return false;
    
-   // 5. History depth and volume check
+   // 6. History depth and volume check
    if(iBars(sym, tf) < minBars) return false;
    if(iVolume(sym, tf, 0) == 0 && (sym != Symbol() || Volume[0] == 0))
    {
@@ -330,49 +392,6 @@ double GetSymbolPipValue(string sym)
    double pipVal = tickValue * (pipSize / tickSize);
    if(pipVal <= 0.0) pipVal = 10.0;
    return pipVal;
-}
-
-//+------------------------------------------------------------------+
-//| Deconstruct symbol into base and quote currencies                |
-//+------------------------------------------------------------------+
-void GetSymbolCurrencies(string sym, string &baseCurr, string &quoteCurr)
-{
-   string canon = CleanSymbolBase(sym);
-   if(StringLen(canon) >= 6)
-   {
-      baseCurr  = StringSubstr(canon, 0, 3);
-      quoteCurr = StringSubstr(canon, 3, 3);
-   }
-   else
-   {
-      baseCurr  = canon;
-      quoteCurr = "USD";
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Session & Liquidity filter per symbol class                      |
-//+------------------------------------------------------------------+
-bool IsSessionActiveForSymbol(string sym)
-{
-   int hour = TimeHour(TimeCurrent());
-   string base = "", quote = "";
-   GetSymbolCurrencies(sym, base, quote);
-   
-   // Asian pairs: Active during Tokyo session (00:00 - 09:00 UTC)
-   if(base == "JPY" || quote == "JPY" || base == "AUD" || quote == "AUD" || base == "NZD" || quote == "NZD")
-   {
-      return true; // Active in Asian and overlap
-   }
-   
-   // European & US pairs: Best during London/NY (07:00 - 21:00 UTC)
-   // During dead rollover hours (21:30 - 23:30), spreads widen significantly
-   if(hour >= 21 && hour <= 23)
-   {
-      return false; // Dead rollover window
-   }
-   
-   return true;
 }
 
 #endif // __SYMBOL_MANAGER_MQH__

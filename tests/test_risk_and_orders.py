@@ -32,6 +32,12 @@ class TestRiskAndOrders(unittest.TestCase):
         )
         self.acc_patcher.start()
         self.addCleanup(self.acc_patcher.stop)
+        self.pos_patcher = patch(
+            "zmq_client.zmq_client.get_positions",
+            return_value={"status": "ok", "positions": []}
+        )
+        self.pos_patcher.start()
+        self.addCleanup(self.pos_patcher.stop)
 
     def test_position_sizer_methods(self):
         # 1. Percent risk

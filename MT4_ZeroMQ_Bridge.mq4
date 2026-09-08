@@ -329,9 +329,7 @@ string HandleCloseSymbol(const string reqJson)
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       
       string orderSym = OrderSymbol();
-      string upperOSym = orderSym;
-      StringToUpper(upperOSym);
-      if(StringFind(upperOSym, targetSymbol) < 0) continue;
+      if(!AreSymbolsMatching(orderSym, targetSymbol)) continue;
       
       int type = OrderType();
       if(type != OP_BUY && type != OP_SELL)
@@ -393,14 +391,7 @@ string HandleModifySL(const string reqJson)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(ticket > 0 && OrderTicket() != ticket) continue;
-      if(symbol != "")
-      {
-         string upperSym = symbol;
-         StringToUpper(upperSym);
-         string upperOSym = OrderSymbol();
-         StringToUpper(upperOSym);
-         if(StringFind(upperOSym, upperSym) < 0) continue;
-      }
+      if(symbol != "" && !AreSymbolsMatching(OrderSymbol(), symbol)) continue;
       
       int symDig = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
       if(symDig <= 0) symDig = Digits;
@@ -428,14 +419,7 @@ string HandleModifyTP(const string reqJson)
    {
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(ticket > 0 && OrderTicket() != ticket) continue;
-      if(symbol != "")
-      {
-         string upperSym = symbol;
-         StringToUpper(upperSym);
-         string upperOSym = OrderSymbol();
-         StringToUpper(upperOSym);
-         if(StringFind(upperOSym, upperSym) < 0) continue;
-      }
+      if(symbol != "" && !AreSymbolsMatching(OrderSymbol(), symbol)) continue;
       
       int symDig = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
       if(symDig <= 0) symDig = Digits;

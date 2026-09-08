@@ -6046,8 +6046,9 @@ bool ValidateCurrencyBasketExposure()
       return true;
    }
 
-   string baseCurr  = StringSubstr(symCurrent, 0, 3);
-   string quoteCurr = StringSubstr(symCurrent, 3, 3);
+   string baseCurr = "";
+   string quoteCurr = "";
+   GetSymbolCurrencies(symCurrent, baseCurr, quoteCurr);
 
    if(StringLen(baseCurr) < 3 || StringLen(quoteCurr) < 3)
       return true;
@@ -6060,9 +6061,10 @@ bool ValidateCurrencyBasketExposure()
       if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
       if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
 
-      string sym = OrderSymbol();
-      if(StringLen(sym) >= 3 && StringFind(sym, baseCurr) >= 0)  baseCount++;
-      if(StringLen(sym) >= 6 && StringFind(sym, quoteCurr) >= 0) quoteCount++;
+      string oBase = "", oQuote = "";
+      GetSymbolCurrencies(OrderSymbol(), oBase, oQuote);
+      if(oBase == baseCurr || oQuote == baseCurr)   baseCount++;
+      if(oBase == quoteCurr || oQuote == quoteCurr) quoteCount++;
    }
 
    if(baseCount >= MaxSimultaneousPerCurrency)

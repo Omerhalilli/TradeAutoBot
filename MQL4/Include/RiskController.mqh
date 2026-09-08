@@ -143,6 +143,14 @@ double CalculateRiskLots(string sym, double riskPercent, double slPips)
    if(marginReq > 0.0)
    {
       double maxAffordableLots = (AccountFreeMargin() * 0.85) / marginReq;
+      double minLot = MarketInfo(sym, MODE_MINLOT);
+      if(minLot <= 0.0) minLot = 0.01;
+      
+      if(maxAffordableLots < minLot)
+      {
+         PrintFormat("[RISK SIZING] Insufficient margin on %s: Max affordable %.4f < Min lot %.2f", sym, maxAffordableLots, minLot);
+         return 0.0;
+      }
       if(rawLots > maxAffordableLots && maxAffordableLots > 0.0)
       {
          rawLots = maxAffordableLots;
@@ -155,48 +163,84 @@ double CalculateRiskLots(string sym, double riskPercent, double slPips)
 //+------------------------------------------------------------------+
 //| Daily Loss Circuit Breaker with Persistent State                 |
 //| Halts scanning if daily drawdown exceeds maxDailyLossPct         |
+//| Latches halted state until midnight server time                  |
 //+------------------------------------------------------------------+
 bool CheckDailyLossCircuitBreaker(double maxDailyLossPct = 3.0, int magicFilter = -1)
 {
    datetime today = iTime(Symbol(), PERIOD_D1, 0);
-   string gvDateKey = "AT_CB_DATE";
-   string gvPeakKey = "AT_CB_PEAK";
-
-   double peakEquity = AccountEquity();
-   if(GlobalVariableCheck(gvDateKey))
+   if(today <= 0)
    {
-      datetime savedDate = (datetime)GlobalVariableGet(gvDateKey);
-      if(savedDate == today && GlobalVariableCheck(gvPeakKey))
-      {
-         peakEquity = GlobalVariableGet(gvPeakKey);
-         if(AccountEquity() > peakEquity)
-         {
-            peakEquity = AccountEquity();
-            GlobalVariableSet(gvPeakKey, peakEquity);
-         }
-      }
-      else
-      {
-         GlobalVariableSet(gvDateKey, (double)today);
-         GlobalVariableSet(gvPeakKey, peakEquity);
-      }
+      datetime now = TimeCurrent();
+      today = now - (now % 86400);
    }
-   else
+
+   string gvDateKey    = "AT_CB_DATE";
+   string gvPeakKey    = "AT_CB_PEAK";
+   string gvStartEqKey = "AT_CB_STARTEQ";
+   string gvTripKey    = "AT_CB_TRIPPED";
+
+   // Check if new day started (midnight reset)
+   if(!GlobalVariableCheck(gvDateKey) || (datetime)GlobalVariableGet(gvDateKey) != today)
    {
       GlobalVariableSet(gvDateKey, (double)today);
+      GlobalVariableSet(gvPeakKey, AccountEquity());
+      GlobalVariableSet(gvStartEqKey, AccountEquity());
+      GlobalVariableSet(gvTripKey, 0.0);
+   }
+
+   // If already tripped today, halt all autonomous activity until midnight server time
+   if(GlobalVariableCheck(gvTripKey) && GlobalVariableGet(gvTripKey) > 0.5)
+   {
+      return true;
+   }
+
+   // Update intraday peak equity
+   double peakEquity = GlobalVariableGet(gvPeakKey);
+   double currentEquity = AccountEquity();
+   if(currentEquity > peakEquity)
+   {
+      peakEquity = currentEquity;
       GlobalVariableSet(gvPeakKey, peakEquity);
    }
 
-   if(peakEquity > 0.0)
+   double startEquity = GlobalVariableGet(gvStartEqKey);
+   if(startEquity <= 0.0) startEquity = AccountBalance();
+   if(startEquity <= 0.0) startEquity = 100.0;
+
+   // 1. Peak equity drawdown %
+   double ddPct = (peakEquity > 0.0) ? (((peakEquity - currentEquity) / peakEquity) * 100.0) : 0.0;
+
+   // 2. Closed loss + floating loss today
+   double closedPLToday = 0.0;
+   int histTotal = OrdersHistoryTotal();
+   for(int h = 0; h < histTotal; h++)
    {
-      double currentEquity = AccountEquity();
-      double ddPct = ((peakEquity - currentEquity) / peakEquity) * 100.0;
-      if(ddPct >= maxDailyLossPct)
+      if(!OrderSelect(h, SELECT_BY_POS, MODE_HISTORY)) continue;
+      if(magicFilter != -1 && OrderMagicNumber() != magicFilter) continue;
+      if(OrderCloseTime() >= today)
       {
-         PrintFormat("[CIRCUIT BREAKER HALT] Daily loss limit breached: %.2f%% >= %.2f%% (Peak: $%.2f, Equity: $%.2f)",
-                     ddPct, maxDailyLossPct, peakEquity, currentEquity);
-         return true; // Breached - HALT!
+         closedPLToday += (OrderProfit() + OrderCommission() + OrderSwap());
       }
+   }
+
+   double floatingPL = 0.0;
+   int openTotal = OrdersTotal();
+   for(int o = 0; o < openTotal; o++)
+   {
+      if(!OrderSelect(o, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(magicFilter != -1 && OrderMagicNumber() != magicFilter) continue;
+      floatingPL += (OrderProfit() + OrderCommission() + OrderSwap());
+   }
+
+   double totalDailyPL = closedPLToday + floatingPL;
+   double dailyLossPct = (totalDailyPL < 0.0) ? ((MathAbs(totalDailyPL) / startEquity) * 100.0) : 0.0;
+
+   if(ddPct >= maxDailyLossPct || dailyLossPct >= maxDailyLossPct)
+   {
+      GlobalVariableSet(gvTripKey, 1.0);
+      PrintFormat("[CIRCUIT BREAKER HALT] Daily loss limit breached: dd=%.2f%%, netLoss=%.2f%% >= %.2f%% (Peak: $%.2f, Equity: $%.2f, DayPL: $%.2f). Halted until midnight.",
+                  ddPct, dailyLossPct, maxDailyLossPct, peakEquity, currentEquity, totalDailyPL);
+      return true; // Breached - HALTED until midnight!
    }
 
    return false;
