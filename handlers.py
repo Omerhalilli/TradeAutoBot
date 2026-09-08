@@ -322,7 +322,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• /resume — Resume automated EA order entry scanning\n\n"
         "🤖 <b>AUTONOMOUS MULTI-SYMBOL TRADING</b>\n"
         "• /autotrade — Autonomous multi-symbol trading status, toggle & portfolio control\n"
-        "  └ <code>/autotrade on</code> | <code>/autotrade off</code> | <code>/autotrade add [SYM]</code> | <code>/autotrade remove [SYM]</code>\n"
+        "  └ <code>/autotrade [on|off|status]</code> | <code>/autotrade add [SYM]</code> | <code>/autotrade remove [SYM]</code>\n"
         "• /scan — Live multi-indicator technical confluence scanner matrix (Score 0-10)\n"
         "• /symbols — Portfolio watchlist surveillance management\n\n"
         "📸 <b>CHARTS & MARKET INTELLIGENCE</b>\n"
@@ -1420,26 +1420,35 @@ async def cmd_resume_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Institutional Autonomous Multi-Symbol Control Panel."""
     args = context.args or []
+    banner = ""
     if args:
         sub = args[0].lower()
         if sub in ["on", "start", "enable", "resume"]:
             autonomous_trader.set_enabled(True)
             write_autotrade_flag("ACTIVE")
             await zmq_async(zmq_client.resume_bot)
+            banner = "✅ <b>Autonomous Multi-Symbol Trading has been ACTIVATED.</b>\n\n"
         elif sub in ["off", "stop", "disable", "pause"]:
             autonomous_trader.set_enabled(False)
             write_autotrade_flag("PAUSED")
             await zmq_async(zmq_client.pause_bot)
+            banner = "⏸️ <b>Autonomous Multi-Symbol Trading has been PAUSED.</b>\n\n"
         elif sub in ["status", "info", "state", "check"]:
-            pass  # Explicit status query, renders format_status_panel below
+            banner = "ℹ️ <b>Autonomous Multi-Symbol Trading Status</b>\n\n"
         elif sub == "add" and len(args) > 1:
             sym = clean_symbol(args[1])
-            autonomous_trader.add_symbol(sym)
+            if autonomous_trader.add_symbol(sym):
+                banner = f"➕ Symbol <code>{sym}</code> added to autonomous watchlist.\n\n"
+            else:
+                banner = f"⚠️ Symbol <code>{sym}</code> is already in watchlist.\n\n"
         elif sub == "remove" and len(args) > 1:
             sym = clean_symbol(args[1])
-            autonomous_trader.remove_symbol(sym)
+            if autonomous_trader.remove_symbol(sym):
+                banner = f"➖ Symbol <code>{sym}</code> removed from autonomous watchlist.\n\n"
+            else:
+                banner = f"⚠️ Symbol <code>{sym}</code> not found or minimum watchlist size reached.\n\n"
 
-    text = autonomous_trader.format_status_panel()
+    text = banner + autonomous_trader.format_status_panel()
     is_active = autonomous_trader.is_autotrade_active()
     toggle_btn_text = "⏸️ Pause Autonomous" if is_active else "▶️ Resume Autonomous"
     toggle_data = "autotrade_toggle:pause" if is_active else "autotrade_toggle:resume"

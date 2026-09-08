@@ -37,12 +37,15 @@ DEFAULT_PORTFOLIO_SYMBOLS = [
 def canonical_symbol(sym: str) -> str:
     """Normalizes symbol string by removing whitespace, broker prefixes/suffixes, and delimiters."""
     s = str(sym).strip().upper()
-    for delimiter in ["/", "\\", ".", "-", "_", "#"]:
+    for delimiter in ["/", "\\", ".", "-", "_", "#", "+"]:
         s = s.replace(delimiter, "")
     for suffix in ["MIN", "PRO", "RAW", "ECN", "MICRO", "STP", "I", "M"]:
         if s.endswith(suffix) and len(s) > len(suffix) + 3:
             s = s[:-len(suffix)]
             break
+    std_pairs = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD", "XAUUSD", "EURJPY", "GBPJPY"]
+    if len(s) == 7 and s[0] in ("M", "R") and s[1:] in std_pairs:
+        s = s[1:]
     return s
 
 
@@ -75,23 +78,29 @@ class AutonomousMultiSymbolTrader:
         self.timeframe: str = "H1"
         self.total_trades_executed: int = 0
         self.last_trade_times: Dict[str, float] = {}
+        self.last_failure_times: Dict[str, float] = {}
         self.last_scan_data: Dict[str, Any] = {}
         self.last_scan_timestamp: float = 0.0
         self._lock = asyncio.Lock()
 
     def is_autotrade_active(self) -> bool:
-        """Checks both internal state and autotrade_state.flag file."""
+        """Reads external flag file and checks internal state."""
         if not self.is_enabled:
             return False
         if os.path.exists(AUTOTRADE_FLAG_FILE):
             try:
                 with open(AUTOTRADE_FLAG_FILE, "r", encoding="utf-8") as f:
-                    content = f.read().strip().upper()
-                    if content == "PAUSED":
-                        return False
+                    for line in f:
+                        line = line.strip().upper()
+                        if not line:
+                            continue
+                        if line == "PAUSED" or line.startswith("PAUSED"):
+                            return False
+                        elif line == "ACTIVE" or line.startswith("ACTIVE"):
+                            return True
             except Exception:
                 pass
-        return True
+        return self.is_enabled
 
     def set_enabled(self, active: bool) -> None:
         """Toggles the autonomous trader state."""
@@ -180,7 +189,10 @@ class AutonomousMultiSymbolTrader:
 
             # 2. Check open positions & account safety
             pos_data = await asyncio.to_thread(zmq_client.get_positions)
-            open_positions = pos_data.get("positions", []) if pos_data.get("status") == "ok" else []
+            if pos_data.get("status") != "ok":
+                logger.debug("AutonomousTrader: Unable to fetch open positions from MT4 ZeroMQ bridge; aborting cycle for safety.")
+                return []
+            open_positions = pos_data.get("positions", [])
             total_open = len(open_positions)
 
             effective_max = min(self.max_positions, MAX_OPEN_POSITIONS)
@@ -216,6 +228,14 @@ class AutonomousMultiSymbolTrader:
                     continue  # Already in an active trade on this symbol
                 if spread > self.max_spread and spread > 0.0:
                     logger.debug(f"AutonomousTrader: Skipping {raw_sym} due to wide spread ({spread} pts > {self.max_spread})")
+                    continue
+
+                # Failure retry backoff check (e.g. longs not allowed, market closed, broker error)
+                last_fail = max(
+                    self.last_failure_times.get(raw_sym, 0.0),
+                    self.last_failure_times.get(canon_sym, 0.0)
+                )
+                if now - last_fail < 300.0:
                     continue
 
                 # Cooldown check
@@ -287,6 +307,9 @@ class AutonomousMultiSymbolTrader:
                 else:
                     err_msg = order_res.get("message", "Unknown error")
                     logger.warning(f"Autonomous order dispatch failed for {raw_sym}: {err_msg}")
+                    # Enforce 300s failure backoff to prevent spamming the MT4 terminal every cycle
+                    self.last_failure_times[raw_sym] = now
+                    self.last_failure_times[canon_sym] = now
 
             return executed_trades
 

@@ -12,6 +12,7 @@
 #property strict
 
 #include "TelegramShared.mqh"
+#include <AutoTradeFlagCheck.mqh>
 
 
 /*
@@ -2895,7 +2896,7 @@ void RegisterTicketPartialClose(const int ticket)
    for(int j = OrdersTotal() - 1; j >= 0; j--)
    {
       if(!OrderSelect(j, SELECT_BY_POS, MODE_TRADES)) continue;
-      if(OrderSymbol() != Symbol() || OrderMagicNumber() != MagicNumber) continue;
+      if(OrderMagicNumber() != MagicNumber) continue;
       string comment = OrderComment();
       if(StringFind(comment, ticketStr) >= 0 || StringFind(comment, "from #") >= 0)
       {
@@ -6732,6 +6733,7 @@ void Autonomous_MultiSymbolScan()
    if(!EnableAutonomousMultiSymbol) return;
    if(!g_AutoTradingRuntimeActive) return;
    if(g_DailyLossCircuitTripped || g_PropLockoutActive) return;
+   if(IsAutoTradePausedByTelegram()) return;
    if(GlobalVariableCheck("AutoTrading_Paused") && GlobalVariableGet("AutoTrading_Paused") > 0.5) return;
    
    static uint s_lastAutonomousScanTick = 0;
@@ -6752,49 +6754,98 @@ void Autonomous_MultiSymbolScan()
    int maxPositions = MathMin(AutonomousMaxConcurrentTrades, MaxTotalPortfolioPositions);
    if(totalOpen >= maxPositions) return;
 
-   // Static cooldown tracking per symbol in memory
-   static string s_coolSyms[32];
-   static datetime s_coolTimes[32];
+   // Static cooldown tracking per symbol in memory (with FIFO eviction)
+   static string s_coolSyms[64];
+   static datetime s_coolTimes[64];
    static int s_coolCount = 0;
    
-   // Parse symbols from AutonomousWatchlist
-   int start = 0;
-   int totalLen = StringLen(AutonomousWatchlist);
-   while(start < totalLen)
+   datetime nowCurrent = TimeCurrent();
+   datetime cooldownSec = (datetime)(AutonomousCooldownMinutes * 60);
+
+   // Purge expired cooldowns from static array
+   for(int c = s_coolCount - 1; c >= 0; c--)
    {
-      int comma = StringFind(AutonomousWatchlist, ",", start);
-      string symToken = (comma >= 0) ? StringSubstr(AutonomousWatchlist, start, comma - start) : StringSubstr(AutonomousWatchlist, start);
-      StringTrimLeft(symToken);
-      StringTrimRight(symToken);
-      StringToUpper(symToken);
-      start = (comma >= 0) ? (comma + 1) : totalLen;
-      
-      if(StringLen(symToken) == 0) continue;
-      
-      string sym = Zmq_ResolveSymbol(symToken);
-      if(sym == "") sym = symToken;
+      if(nowCurrent - s_coolTimes[c] >= cooldownSec)
+      {
+         for(int shift = c; shift < s_coolCount - 1; shift++)
+         {
+            s_coolSyms[shift] = s_coolSyms[shift + 1];
+            s_coolTimes[shift] = s_coolTimes[shift + 1];
+         }
+         s_coolCount--;
+      }
+   }
+
+   // Build symbols list: support specific symbols, or "MARKET_WATCH" / "ALL"
+   string scanSymbols[];
+   int numSymbols = 0;
+   
+   string trimmedWatchlist = AutonomousWatchlist;
+   StringTrimLeft(trimmedWatchlist);
+   StringTrimRight(trimmedWatchlist);
+   StringToUpper(trimmedWatchlist);
+   
+   if(trimmedWatchlist == "" || trimmedWatchlist == "MARKET_WATCH" || trimmedWatchlist == "ALL" || trimmedWatchlist == "PROFILE")
+   {
+      int totalMW = SymbolsTotal(true);
+      ArrayResize(scanSymbols, totalMW);
+      for(int s = 0; s < totalMW; s++)
+      {
+         string mwSym = SymbolName(s, true);
+         if(mwSym != "")
+         {
+            scanSymbols[numSymbols] = mwSym;
+            numSymbols++;
+         }
+      }
+      ArrayResize(scanSymbols, numSymbols);
+   }
+   else
+   {
+      int start = 0;
+      int totalLen = StringLen(AutonomousWatchlist);
+      while(start < totalLen)
+      {
+         int comma = StringFind(AutonomousWatchlist, ",", start);
+         string symToken = (comma >= 0) ? StringSubstr(AutonomousWatchlist, start, comma - start) : StringSubstr(AutonomousWatchlist, start);
+         StringTrimLeft(symToken);
+         StringTrimRight(symToken);
+         start = (comma >= 0) ? (comma + 1) : totalLen;
+         if(StringLen(symToken) == 0) continue;
+         
+         string resolved = Zmq_ResolveSymbol(symToken);
+         if(resolved == "") resolved = symToken;
+         
+         ArrayResize(scanSymbols, numSymbols + 1);
+         scanSymbols[numSymbols] = resolved;
+         numSymbols++;
+      }
+   }
+   
+   for(int sIdx = 0; sIdx < numSymbols; sIdx++)
+   {
+      string sym = scanSymbols[sIdx];
       SymbolSelect(sym, true);
       
-      // Do not double-trade if EA already has an open position on this symbol
+      // Do not double-trade if EA already has an open position on this symbol (or base)
       int symOpenCount = 0;
       for(int k = 0; k < OrdersTotal(); k++)
       {
          if(OrderSelect(k, SELECT_BY_POS, MODE_TRADES))
          {
-            if((OrderType() == OP_BUY || OrderType() == OP_SELL) && OrderSymbol() == sym)
+            string oSym = OrderSymbol();
+            if((OrderType() == OP_BUY || OrderType() == OP_SELL) &&
+               (oSym == sym || StringFind(oSym, sym) >= 0 || StringFind(sym, oSym) >= 0))
                symOpenCount++;
          }
       }
       if(symOpenCount > 0 || symOpenCount >= MaxOpenPositionsPerSymbol) continue;
 
       // Check per-symbol cooldown guard
-      datetime nowCurrent = TimeCurrent();
-      datetime cooldownSec = (datetime)(AutonomousCooldownMinutes * 60);
       bool inCooldown = false;
-
       for(int c = 0; c < s_coolCount; c++)
       {
-         if(s_coolSyms[c] == sym)
+         if(s_coolSyms[c] == sym || StringFind(s_coolSyms[c], sym) >= 0 || StringFind(sym, s_coolSyms[c]) >= 0)
          {
             if(nowCurrent - s_coolTimes[c] < cooldownSec)
             {
@@ -6811,7 +6862,9 @@ void Autonomous_MultiSymbolScan()
       {
          if(OrderSelect(h, SELECT_BY_POS, MODE_HISTORY))
          {
-            if(OrderSymbol() == sym && (OrderType() == OP_BUY || OrderType() == OP_SELL) && OrderMagicNumber() == MagicNumber)
+            string hSym = OrderSymbol();
+            if((hSym == sym || StringFind(hSym, sym) >= 0 || StringFind(sym, hSym) >= 0) &&
+               (OrderType() == OP_BUY || OrderType() == OP_SELL) && OrderMagicNumber() == MagicNumber)
             {
                if((nowCurrent - OrderCloseTime() < cooldownSec) || (nowCurrent - OrderOpenTime() < cooldownSec))
                {
@@ -6822,6 +6875,9 @@ void Autonomous_MultiSymbolScan()
          }
       }
       if(inCooldown) continue;
+      
+      // Verify trading is allowed by broker for this symbol
+      if(MarketInfo(sym, MODE_TRADEALLOWED) == 0.0) continue;
       
       double pt = MarketInfo(sym, MODE_POINT);
       if(pt <= 0.0) continue;
@@ -6851,11 +6907,19 @@ void Autonomous_MultiSymbolScan()
       int buyScore = 0;
       int sellScore = 0;
       
-      if(ema20 > ema50 && ema50 > ema200) buyScore += 3;
-      else if(ema20 > ema50) buyScore += 2;
-      
-      if(ema20 < ema50 && ema50 < ema200) sellScore += 3;
-      else if(ema20 < ema50) sellScore += 2;
+      if(ema200 > 0.0)
+      {
+         if(ema20 > ema50 && ema50 > ema200) buyScore += 3;
+         else if(ema20 > ema50) buyScore += 2;
+         
+         if(ema20 < ema50 && ema50 < ema200) sellScore += 3;
+         else if(ema20 < ema50) sellScore += 2;
+      }
+      else
+      {
+         if(ema20 > ema50) buyScore += 2;
+         if(ema20 < ema50) sellScore += 2;
+      }
       
       if(rsi > 50.0 && rsi < 70.0) buyScore += 2;
       else if(rsi <= 32.0) buyScore += 2;
@@ -6917,11 +6981,29 @@ void Autonomous_MultiSymbolScan()
                   break;
                }
             }
-            if(!foundCool && s_coolCount < 32)
+            if(!foundCool)
             {
-               s_coolSyms[s_coolCount] = sym;
-               s_coolTimes[s_coolCount] = TimeCurrent();
-               s_coolCount++;
+               if(s_coolCount < 64)
+               {
+                  s_coolSyms[s_coolCount] = sym;
+                  s_coolTimes[s_coolCount] = TimeCurrent();
+                  s_coolCount++;
+               }
+               else
+               {
+                  int oldestIdx = 0;
+                  datetime oldestTime = s_coolTimes[0];
+                  for(int c = 1; c < s_coolCount; c++)
+                  {
+                     if(s_coolTimes[c] < oldestTime)
+                     {
+                        oldestTime = s_coolTimes[c];
+                        oldestIdx = c;
+                     }
+                  }
+                  s_coolSyms[oldestIdx] = sym;
+                  s_coolTimes[oldestIdx] = TimeCurrent();
+               }
             }
             break; // Max 1 new order per scan cycle
          }
@@ -7147,7 +7229,7 @@ void OnTick()
       // Check Filters and Execute if AutoTrading is enabled
       if(ValidateTradeFilters(decision))
       {
-         if(g_AutoTradingRuntimeActive)
+         if(g_AutoTradingRuntimeActive && !IsAutoTradePausedByTelegram())
          {
             double entryPrice = (decision == SIGNAL_LONG) ? Ask : Bid;
             int cmd = (decision == SIGNAL_LONG) ? OP_BUY : OP_SELL;

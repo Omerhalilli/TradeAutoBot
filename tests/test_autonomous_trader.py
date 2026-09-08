@@ -18,12 +18,20 @@ import handlers
 
 class TestAutonomousMultiSymbolTrader(unittest.TestCase):
     def setUp(self):
+        self.temp_flag_dir = tempfile.TemporaryDirectory()
+        self.flag_path = os.path.join(self.temp_flag_dir.name, "autotrade_state.flag")
+        self.flag_patch = patch("autotrade.core.autonomous_trader.AUTOTRADE_FLAG_FILE", self.flag_path)
+        self.flag_patch.start()
         self.trader = AutonomousMultiSymbolTrader(
             symbols=["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"],
             min_score=6,
             cooldown_sec=300,
             max_spread=40.0
         )
+
+    def tearDown(self):
+        self.flag_patch.stop()
+        self.temp_flag_dir.cleanup()
 
     def test_initialization_and_watchlist(self):
         """Verifies symbol watchlist initialization, additions, and removals."""
@@ -57,16 +65,15 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         self.trader.set_enabled(True)
         self.assertTrue(self.trader.is_autotrade_active())
 
-        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-            f.write("PAUSED\n")
-            temp_flag = f.name
+        # Test multi-line PAUSED flag file
+        with open(self.flag_path, "w", encoding="utf-8") as f:
+            f.write("PAUSED\nTimestamp=1788853039\n")
+        self.assertFalse(self.trader.is_autotrade_active())
 
-        try:
-            with patch("autotrade.core.autonomous_trader.AUTOTRADE_FLAG_FILE", temp_flag):
-                self.assertFalse(self.trader.is_autotrade_active())
-        finally:
-            if os.path.exists(temp_flag):
-                os.unlink(temp_flag)
+        # Test multi-line ACTIVE flag file
+        with open(self.flag_path, "w", encoding="utf-8") as f:
+            f.write("ACTIVE\nTimestamp=1788853039\n")
+        self.assertTrue(self.trader.is_autotrade_active())
 
     def test_scan_portfolio_mock(self):
         """Verifies portfolio scan parses bridge responses and falls back cleanly."""
@@ -297,6 +304,61 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         self.assertEqual(canonical_symbol("EUR/USD"), "EURUSD")
         self.assertEqual(canonical_symbol("USDCADm"), "USDCAD")
         self.assertEqual(canonical_symbol("BTCUSD"), "BTCUSD")
+        self.assertEqual(canonical_symbol("EURUSD+"), "EURUSD")
+        self.assertEqual(canonical_symbol("GBPUSD+"), "GBPUSD")
+        self.assertEqual(canonical_symbol("rEURUSD"), "EURUSD")
+        self.assertEqual(canonical_symbol("mGBPUSD"), "GBPUSD")
+
+    def test_order_failure_backoff_cooldown(self):
+        """Verifies that an order placement failure sets failure backoff and skips retries."""
+        async def run_test():
+            trader = AutonomousMultiSymbolTrader(symbols=["GBPUSD"], min_score=6)
+            mock_scan = {
+                "status": "ok",
+                "results": [
+                    {
+                        "symbol": "GBPUSD",
+                        "score": 7,
+                        "signal": "BUY",
+                        "spread": 10.0,
+                        "sl_pips": 30.0,
+                        "tp_pips": 60.0
+                    }
+                ]
+            }
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value={"status": "ok", "positions": []}), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order", return_value={"status": "error", "message": "OrderSend failed: Longs not allowed"}) as mock_open:
+                # First run fails
+                executed = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(executed), 0)
+                mock_open.assert_called_once()
+                self.assertIn("GBPUSD", trader.last_failure_times)
+
+                # Immediate second run is throttled by failure backoff
+                mock_open.reset_mock()
+                executed_2 = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(executed_2), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
+
+    def test_get_positions_failure_aborts_cycle(self):
+        """Verifies that failure to fetch open positions aborts the cycle for safety."""
+        async def run_test():
+            trader = AutonomousMultiSymbolTrader(symbols=["EURUSD"], min_score=6)
+            mock_scan = {
+                "status": "ok",
+                "results": [{"symbol": "EURUSD", "score": 8, "signal": "BUY", "spread": 10.0}]
+            }
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value={"status": "error", "message": "Timeout"}), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                executed = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(executed), 0)
+                mock_open.assert_not_called()
+
+        asyncio.run(run_test())
 
     def test_execute_autonomous_cycle_symbol_already_open_with_broker_suffix(self):
         """
@@ -450,8 +512,14 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
     def setUp(self):
         self.patcher = patch("handlers.ALLOWED_CHAT_IDS", [123456789])
         self.patcher.start()
+        self.temp_flag_dir = tempfile.TemporaryDirectory()
+        self.flag_path = os.path.join(self.temp_flag_dir.name, "autotrade_state.flag")
+        self.flag_patch = patch("autotrade.core.autonomous_trader.AUTOTRADE_FLAG_FILE", self.flag_path)
+        self.flag_patch.start()
 
     def tearDown(self):
+        self.flag_patch.stop()
+        self.temp_flag_dir.cleanup()
         self.patcher.stop()
 
     def _make_mock_update(self, chat_id=123456789, args=None, query_data=None):
@@ -478,7 +546,8 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
         """Verifies /autotrade status command and argument handling."""
         async def run_test():
             update, context = self._make_mock_update(args=["on"])
-            with patch("handlers.zmq_client.resume_bot", return_value={"status": "ok"}):
+            with patch("handlers.write_autotrade_flag"), \
+                 patch("handlers.zmq_client.resume_bot", return_value={"status": "ok"}):
                 await handlers.cmd_autotrade(update, context)
                 self.assertTrue(autonomous_trader.is_enabled)
                 update.message.reply_text.assert_called_once()
@@ -521,7 +590,8 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
         """Verifies callback query 1-tap pause/resume toggle."""
         async def run_test():
             update, context = self._make_mock_update(query_data="autotrade_toggle:pause")
-            with patch("handlers.zmq_client.pause_bot", return_value={"status": "ok"}):
+            with patch("handlers.write_autotrade_flag"), \
+                 patch("handlers.zmq_client.pause_bot", return_value={"status": "ok"}):
                 await handlers.cb_autotrade_toggle(update, context)
                 self.assertFalse(autonomous_trader.is_enabled)
                 update.callback_query.answer.assert_called()

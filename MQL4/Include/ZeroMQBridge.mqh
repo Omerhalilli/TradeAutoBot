@@ -2081,34 +2081,57 @@ string Zmq_HandleGetBoost()
 string Zmq_HandleScanSymbols(const string reqJson)
 {
    string symListStr = Zmq_ExtractJsonString(reqJson, "symbols");
-   if(symListStr == "")
-   {
-      symListStr = "EURUSD,GBPUSD,USDJPY,USDCHF,USDCAD,AUDUSD,NZDUSD,XAUUSD";
-   }
+   StringTrimLeft(symListStr);
+   StringTrimRight(symListStr);
+   StringToUpper(symListStr);
    
    string tfParam = Zmq_ExtractJsonString(reqJson, "timeframe");
    ENUM_TIMEFRAMES tf = (tfParam != "") ? Zmq_StringToTimeframe(tfParam) : PERIOD_H1;
    
    string symbols[];
    ArrayResize(symbols, 0);
-   
-   int start = 0;
-   int totalLen = StringLen(symListStr);
-   while(start < totalLen)
+
+   if(symListStr == "MARKET_WATCH" || symListStr == "ALL")
    {
-      int comma = StringFind(symListStr, ",", start);
-      string token = (comma >= 0) ? StringSubstr(symListStr, start, comma - start) : StringSubstr(symListStr, start);
-      StringTrimLeft(token);
-      StringTrimRight(token);
-      StringToUpper(token);
-      if(StringLen(token) > 0)
+      int totalMW = SymbolsTotal(true);
+      if(totalMW > 0)
       {
-         int sz = ArraySize(symbols);
-         ArrayResize(symbols, sz + 1);
-         symbols[sz] = token;
+         ArrayResize(symbols, totalMW);
+         for(int s = 0; s < totalMW; s++)
+         {
+            symbols[s] = SymbolName(s, true);
+         }
       }
-      if(comma < 0) break;
-      start = comma + 1;
+      else
+      {
+         symListStr = "EURUSD,GBPUSD,USDJPY,USDCHF,USDCAD,AUDUSD,NZDUSD,XAUUSD";
+      }
+   }
+   else if(symListStr == "" || symListStr == "WATCHLIST" || symListStr == "DEFAULT")
+   {
+      symListStr = "EURUSD,GBPUSD,USDJPY,USDCHF,USDCAD,AUDUSD,NZDUSD,XAUUSD";
+   }
+   
+   if(ArraySize(symbols) == 0)
+   {
+      int start = 0;
+      int totalLen = StringLen(symListStr);
+      while(start < totalLen)
+      {
+         int comma = StringFind(symListStr, ",", start);
+         string token = (comma >= 0) ? StringSubstr(symListStr, start, comma - start) : StringSubstr(symListStr, start);
+         StringTrimLeft(token);
+         StringTrimRight(token);
+         StringToUpper(token);
+         if(StringLen(token) > 0)
+         {
+            int sz = ArraySize(symbols);
+            ArrayResize(symbols, sz + 1);
+            symbols[sz] = token;
+         }
+         if(comma < 0) break;
+         start = comma + 1;
+      }
    }
    
    string json = "{";
@@ -2152,11 +2175,19 @@ string Zmq_HandleScanSymbols(const string reqJson)
       int sellScore = 0;
       
       // 1. Trend (0 - 3)
-      if(ema20 > ema50 && ema50 > ema200) buyScore += 3;
-      else if(ema20 > ema50) buyScore += 2;
-      
-      if(ema20 < ema50 && ema50 < ema200) sellScore += 3;
-      else if(ema20 < ema50) sellScore += 2;
+      if(ema200 > 0.0)
+      {
+         if(ema20 > ema50 && ema50 > ema200) buyScore += 3;
+         else if(ema20 > ema50) buyScore += 2;
+         
+         if(ema20 < ema50 && ema50 < ema200) sellScore += 3;
+         else if(ema20 < ema50) sellScore += 2;
+      }
+      else
+      {
+         if(ema20 > ema50) buyScore += 2;
+         if(ema20 < ema50) sellScore += 2;
+      }
       
       // 2. Momentum RSI (0 - 2)
       if(rsi > 50.0 && rsi < 70.0) buyScore += 2;
@@ -2184,10 +2215,18 @@ string Zmq_HandleScanSymbols(const string reqJson)
       if(sellScore > 10) sellScore = 10;
       
       string trend = "NEUTRAL";
-      if(ema20 > ema50 && ema50 > ema200) trend = "STRONG BULLISH";
-      else if(ema20 > ema50) trend = "BULLISH";
-      else if(ema20 < ema50 && ema50 < ema200) trend = "STRONG BEARISH";
-      else if(ema20 < ema50) trend = "BEARISH";
+      if(ema200 > 0.0)
+      {
+         if(ema20 > ema50 && ema50 > ema200) trend = "STRONG BULLISH";
+         else if(ema20 > ema50) trend = "BULLISH";
+         else if(ema20 < ema50 && ema50 < ema200) trend = "STRONG BEARISH";
+         else if(ema20 < ema50) trend = "BEARISH";
+      }
+      else
+      {
+         if(ema20 > ema50) trend = "BULLISH";
+         else if(ema20 < ema50) trend = "BEARISH";
+      }
       
       string signal = "HOLD";
       int finalScore = MathMax(buyScore, sellScore);

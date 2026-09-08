@@ -686,6 +686,8 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         # Test canonical symbol helper
         self.assertEqual(canonical_symbol("EURUSD_min"), "EURUSD")
         self.assertEqual(canonical_symbol("GBPUSD.pro"), "GBPUSD")
+        self.assertEqual(canonical_symbol("EURUSD+"), "EURUSD")
+        self.assertEqual(canonical_symbol("rEURUSD"), "EURUSD")
         
         # Test status and scanner formatters
         status_text = autonomous_trader.format_status_panel()
@@ -717,7 +719,8 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         mock_order = {"status": "ok", "ticket": 999123, "price": 1.08500}
         
         async def run_cycle():
-            with patch.object(autonomous_trader, "scan_portfolio_async", return_value=mock_scan), \
+            with patch.object(autonomous_trader, "is_autotrade_active", return_value=True), \
+                 patch.object(autonomous_trader, "scan_portfolio_async", return_value=mock_scan), \
                  patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_pos), \
                  patch("autotrade.core.autonomous_trader.zmq_client.open_order", return_value=mock_order):
                 trades = await autonomous_trader.execute_autonomous_cycle()

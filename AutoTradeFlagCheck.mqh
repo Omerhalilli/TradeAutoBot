@@ -47,6 +47,11 @@ bool IsAutoTradePausedByTelegram()
             s_cachedFilePaused = true;
             GlobalVariableSet("AutoTrading_Paused", 1.0);
          }
+         else if(StringFind(firstLine, "ACTIVE") >= 0)
+         {
+            s_cachedFilePaused = false;
+            GlobalVariableSet("AutoTrading_Paused", 0.0);
+         }
       }
    }
 
