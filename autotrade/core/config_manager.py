@@ -49,14 +49,17 @@ class ZmqConfig:
 @dataclass
 class RiskLimitsConfig:
     """Institutional Prop-Firm & Account Safeguard Parameters."""
-    max_account_risk_pct: float = 2.0         # Max risk % per single trade
-    max_daily_loss_pct: float = 4.0           # Halt threshold if daily drawdown >= 4%
-    max_total_drawdown_pct: float = 8.0       # Global kill-switch drawdown
-    max_open_positions: int = 10              # Maximum concurrent open orders
+    max_account_risk_pct: float = 0.5         # Max risk % per single trade (0.5%)
+    max_daily_loss_pct: float = 2.0           # Halt threshold if daily drawdown >= 2%
+    max_total_drawdown_pct: float = 10.0      # Global peak equity kill-switch drawdown (10%)
+    max_open_positions: int = 1               # Maximum concurrent open orders (1)
     max_lots_per_symbol: float = 5.0          # Max cumulative volume per currency pair
     max_total_lots: float = 15.0              # Max portfolio volume exposure
-    max_margin_usage_pct: float = 50.0        # Max margin utilization %
-    max_correlated_positions: int = 2         # Max orders on pairs with correlation > 0.70
+    max_margin_usage_pct: float = 50.0        # Max margin utilization % (50%)
+    max_correlated_positions: int = 1         # Max orders on correlated currency pairs
+    min_risk_reward_ratio: float = 1.5        # Minimum Reward-to-Risk ratio (1.5:1)
+    max_consecutive_losses: int = 3           # Max consecutive losing trades before cooldown
+    consecutive_loss_cooldown_sec: int = 1800 # Cooldown duration after max losses (30 min)
     daily_trade_limit: int = 50               # Maximum total orders executed per 24h
     news_volatility_reduction_pct: float = 50.0 # Reduce lot size by 50% around red news
     enable_trailing_stop: bool = True

@@ -11,6 +11,7 @@
 
 #include <SymbolManager.mqh>
 #include <TelegramShared.mqh>
+#include <RiskController.mqh>
 
 //+------------------------------------------------------------------+
 //| Broker StopLevel & FreezeLevel Clamp                             |
@@ -158,7 +159,205 @@ void DispatchExecutionAlertOutbox(int ticket, string sym, int cmd, double lots, 
 }
 
 //+------------------------------------------------------------------+
+//| Audit Open Orders & Enforce Mandatory Stop Loss / Take Profit    |
+//| Ensures unexpected restart never leaves unprotected trades       |
+//+------------------------------------------------------------------+
+void AuditAndEnforceOpenOrderStops(int magicFilter = -1, double defaultATRMultiplierSL = 1.5, double defaultATRMultiplierTP = 3.0)
+{
+   int total = OrdersTotal();
+   for(int i = 0; i < total; i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+      if(magicFilter != -1 && OrderMagicNumber() != magicFilter) continue;
+
+      int ticket = OrderTicket();
+      string sym = OrderSymbol();
+      int cmd    = OrderType();
+      double sl  = OrderStopLoss();
+      double tp  = OrderTakeProfit();
+      double openPrice = OrderOpenPrice();
+
+      if(sl <= 0.0 || tp <= 0.0)
+      {
+         int dig = (int)MarketInfo(sym, MODE_DIGITS);
+         if(dig <= 0) dig = Digits;
+         double pipPt = GetSymbolPipSize(sym);
+         if(pipPt <= 0.0) pipPt = 0.0001;
+
+         double atr = iATR(sym, PERIOD_H1, 14, 1);
+         double slDist = (atr > 0.0) ? (atr * defaultATRMultiplierSL) : (pipPt * 30.0);
+         double tpDist = (atr > 0.0) ? (atr * defaultATRMultiplierTP) : (pipPt * 60.0);
+         if(slDist < pipPt * 20.0) slDist = pipPt * 20.0;
+         if(tpDist < slDist * 1.5) tpDist = slDist * 1.5;
+
+         double newSL = sl;
+         double newTP = tp;
+         if(cmd == OP_BUY)
+         {
+            if(newSL <= 0.0) newSL = NormalizeDouble(openPrice - slDist, dig);
+            if(newTP <= 0.0) newTP = NormalizeDouble(openPrice + tpDist, dig);
+         }
+         else if(cmd == OP_SELL)
+         {
+            if(newSL <= 0.0) newSL = NormalizeDouble(openPrice + slDist, dig);
+            if(newTP <= 0.0) newTP = NormalizeDouble(openPrice - tpDist, dig);
+         }
+
+         PrintFormat("[STOP AUDIT] Attaching mandatory SL: %f | TP: %f to unshielded Ticket #%d (%s)", newSL, newTP, ticket, sym);
+         Executor_SafeOrderModify(ticket, openPrice, newSL, newTP, 0, clrOrange);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Active Position Lifecycle Manager (Break-Even, Trailing, Partial)|
+//+------------------------------------------------------------------+
+void Executor_ManageOpenPositions(int magicFilter = -1,
+                                 bool useBreakEven = true,
+                                 int beTriggerPips = 15,
+                                 int beLockPips = 1,
+                                 bool useTrailing = true,
+                                 int trailStartPips = 20,
+                                 int trailStepPips = 10,
+                                 bool usePartialClose = false,
+                                 int partialClosePips = 25,
+                                 double partialCloseRatio = 0.50,
+                                 int slippage = 15)
+{
+   int total = OrdersTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES)) continue;
+      if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+      if(magicFilter != -1 && OrderMagicNumber() != magicFilter) continue;
+
+      int ticket       = OrderTicket();
+      string sym       = OrderSymbol();
+      int cmd          = OrderType();
+      double openPrice = OrderOpenPrice();
+      double currentSL = OrderStopLoss();
+      double currentTP = OrderTakeProfit();
+      double lots      = OrderLots();
+
+      int dig = (int)MarketInfo(sym, MODE_DIGITS);
+      if(dig <= 0) dig = Digits;
+      double pt = MarketInfo(sym, MODE_POINT);
+      if(pt <= 0.0) pt = Point;
+      double pipPt = GetSymbolPipSize(sym);
+      if(pipPt <= 0.0) pipPt = pt * 10.0;
+
+      double bid = MarketInfo(sym, MODE_BID);
+      double ask = MarketInfo(sym, MODE_ASK);
+      if(bid <= 0.0 || ask <= 0.0) continue;
+
+      double currentPrice = (cmd == OP_BUY) ? bid : ask;
+      double profitPips = (cmd == OP_BUY) ? ((currentPrice - openPrice) / pipPt) : ((openPrice - currentPrice) / pipPt);
+
+      // 1. Partial Close Management
+      if(usePartialClose && profitPips >= partialClosePips)
+      {
+         string pcKey = StringFormat("AT_PC_%d", ticket);
+         if(!GlobalVariableCheck(pcKey))
+         {
+            double minLot = MarketInfo(sym, MODE_MINLOT);
+            double lotStep = MarketInfo(sym, MODE_LOTSTEP);
+            double closeLots = NormalizeDouble(MathFloor((lots * partialCloseRatio) / lotStep) * lotStep, 2);
+            if(closeLots >= minLot && (lots - closeLots) >= minLot)
+            {
+               ResetLastError();
+               if(OrderClose(ticket, closeLots, currentPrice, slippage, clrAqua))
+               {
+                  GlobalVariableSet(pcKey, 1.0);
+                  PrintFormat("[PARTIAL CLOSE] Closed %.2f lots on Ticket #%d at +%.1f pips (Remaining: %.2f)",
+                              closeLots, ticket, profitPips, lots - closeLots);
+                  string alert = StringFormat(
+                     "✂️ <b>PARTIAL PROFIT TAKEN</b>\n" +
+                     "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                     "• <b>Ticket:</b> #%d (%s)\n" +
+                     "• <b>Liquidated:</b> %.2f Lots\n" +
+                     "• <b>Profit Secured:</b> +%.1f pips\n" +
+                     "• <b>Remaining Volume:</b> %.2f Lots",
+                     ticket, sym, closeLots, profitPips, lots - closeLots
+                  );
+                  Telegram_WriteOutboxPayload(alert, "", "");
+               }
+            }
+         }
+      }
+
+      // 2. Break-Even Stop Management
+      if(useBreakEven && profitPips >= beTriggerPips)
+      {
+         double bePrice = 0.0;
+         bool needsBE = false;
+
+         if(cmd == OP_BUY)
+         {
+            bePrice = NormalizeDouble(openPrice + (beLockPips * pipPt), dig);
+            if(currentSL < bePrice) needsBE = true;
+         }
+         else if(cmd == OP_SELL)
+         {
+            bePrice = NormalizeDouble(openPrice - (beLockPips * pipPt), dig);
+            if(currentSL <= 0.0 || currentSL > bePrice) needsBE = true;
+         }
+
+         if(needsBE)
+         {
+            if(Executor_SafeOrderModify(ticket, openPrice, bePrice, currentTP, 0, clrDodgerBlue))
+            {
+               PrintFormat("[BREAK-EVEN ACTIVATED] Ticket #%d SL locked at %f (+%d pip lock)", ticket, bePrice, beLockPips);
+               string alert = StringFormat(
+                  "🛡️ <b>BREAK-EVEN SECURED</b>\n" +
+                  "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                  "• <b>Ticket:</b> #%d (%s)\n" +
+                  "• <b>New Stop Loss:</b> %f (+%d pips)\n" +
+                  "• <b>Trade is now risk-free!</b>",
+                  ticket, sym, bePrice, beLockPips
+               );
+               Telegram_WriteOutboxPayload(alert, "", "");
+            }
+         }
+      }
+
+      // 3. Trailing Stop Management
+      if(useTrailing && profitPips >= trailStartPips)
+      {
+         double newSL = 0.0;
+         bool needsTrail = false;
+
+         if(cmd == OP_BUY)
+         {
+            newSL = NormalizeDouble(bid - (trailStepPips * pipPt), dig);
+            if(newSL > currentSL + (pipPt * 2.0) && newSL < bid)
+            {
+               needsTrail = true;
+            }
+         }
+         else if(cmd == OP_SELL)
+         {
+            newSL = NormalizeDouble(ask + (trailStepPips * pipPt), dig);
+            if((currentSL <= 0.0 || newSL < currentSL - (pipPt * 2.0)) && newSL > ask)
+            {
+               needsTrail = true;
+            }
+         }
+
+         if(needsTrail)
+         {
+            if(Executor_SafeOrderModify(ticket, openPrice, newSL, currentTP, 0, clrGold))
+            {
+               PrintFormat("[TRAILING STOP ADJUSTED] Ticket #%d SL trailed to %f (+%.1f pips profit)", ticket, newSL, profitPips);
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Safe Order Execution Engine with ECN 2-Step & Requote Backoff    |
+//| Enforces connection check, mandatory SL/TP, and RR >= 1.5        |
 //+------------------------------------------------------------------+
 int ExecuteOrderSafe(const string sym, 
                      const int cmd, 
@@ -169,14 +368,33 @@ int ExecuteOrderSafe(const string sym,
                      const string comment = "AutoBot", 
                      const int slippagePoints = 15)
 {
-   // 1. Validate quote freshness (reject stale feeds)
+   // 1. Connection check
+   if(!IsConnected())
+   {
+      PrintFormat("[CONNECTION VETO] Cannot dispatch order on %s: Terminal is disconnected.", sym);
+      return -1;
+   }
+   if(!IsTradeAllowed())
+   {
+      PrintFormat("[TRADE CONTEXT VETO] Cannot dispatch order on %s: Trading context is busy or disabled.", sym);
+      return -1;
+   }
+
+   // 2. Validate quote freshness (reject stale feeds)
    if(!IsQuoteFresh(sym, 5))
    {
       PrintFormat("[STALE FEED VETO] Cannot dispatch order on %s: Quote is older than 5 seconds.", sym);
       return -1;
    }
 
-   // 2. Pre-execution free margin verification
+   // 3. Mandatory SL and TP verification (never allow 0 stops)
+   if(stopLoss <= 0.0 || takeProfit <= 0.0)
+   {
+      PrintFormat("[SAFETY VETO] Cannot dispatch order on %s: Mandatory SL and TP required (SL: %f, TP: %f)", sym, stopLoss, takeProfit);
+      return -1;
+   }
+
+   // 4. Pre-execution free margin verification
    ResetLastError();
    double freeMarginCheck = AccountFreeMarginCheck(sym, cmd, volume);
    if(GetLastError() == 134 || freeMarginCheck <= 0.0)
@@ -221,6 +439,15 @@ int ExecuteOrderSafe(const string sym,
       }
       execPrice = NormalizeDouble(execPrice, dig);
 
+      // Verify Reward-to-Risk ratio >= 1.49
+      double riskDist = (cmd == OP_BUY) ? (execPrice - stopLoss) : (stopLoss - execPrice);
+      double rewardDist = (cmd == OP_BUY) ? (takeProfit - execPrice) : (execPrice - takeProfit);
+      if(riskDist > 0.0 && (rewardDist / riskDist) < 1.49)
+      {
+         PrintFormat("[SAFETY VETO] Reward-to-risk ratio on %s is %.2f < 1.50 minimum. Order rejected.", sym, rewardDist / riskDist);
+         return -1;
+      }
+
       double sendSL = stopLoss;
       double sendTP = takeProfit;
       if(sendSL > 0.0 || sendTP > 0.0)
@@ -248,7 +475,10 @@ int ExecuteOrderSafe(const string sym,
          {
             if(!Executor_SafeOrderModify(ticket, execPrice, stopLoss, takeProfit, 0, arrowColor))
             {
-               PrintFormat("[ECN WARNING] Failed to attach SL/TP on Ticket #%d after execution.", ticket);
+               PrintFormat("[CRITICAL SAFETY ERROR] Failed to attach mandatory SL/TP to Ticket #%d. Liquidating position to preserve capital!", ticket);
+               bool closeRes = OrderClose(ticket, volume, (cmd == OP_BUY ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK)), slippagePoints, clrRed);
+               if(!closeRes) PrintFormat("[CRITICAL SAFETY ERROR] OrderClose failed for Ticket #%d. Error: %d", ticket, GetLastError());
+               return -1;
             }
          }
 

@@ -324,7 +324,7 @@ bool IsSessionActiveForSymbol(string sym)
 //+------------------------------------------------------------------+
 //| Pre-filter symbol before expensive indicator calculations        |
 //+------------------------------------------------------------------+
-bool PreFilterSymbol(string sym, double maxSpreadPoints = 50.0, int minBars = 50, ENUM_TIMEFRAMES tf = PERIOD_H1, bool checkSession = true)
+bool PreFilterSymbol(string sym, double maxSpreadPoints = 40.0, int minBars = 50, ENUM_TIMEFRAMES tf = PERIOD_H1, bool checkSession = true)
 {
    // 1. Session & liquidity filter (protect against dead liquidity hours)
    if(checkSession && !IsSessionActiveForSymbol(sym)) return false;

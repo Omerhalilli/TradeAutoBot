@@ -173,9 +173,9 @@ input bool               UseAutoTrading                = true;              // A
 input int                MagicNumber                   = 8882026;           // EA Magic Identification Number
 input string             TradeCommentPrefix            = "SmartAutoEA";     // Order Execution Comment Tag
 input int                MaxOpenPositionsPerSymbol     = 1;                 // Maximum Concurrent Positions per Symbol
-input int                MaxTotalPortfolioPositions    = 5;                 // Maximum Total Open Positions across Account
+input int                MaxTotalPortfolioPositions    = 1;                 // Maximum Total Open Positions across Account
 input int                MinBarsBetweenTrades          = 10;                // Minimum Number of Bars Elapsed Between Trades
-input int                MaxSpreadPoints               = 50;                // Maximum Allowable Spread in Broker Points
+input int                MaxSpreadPoints               = 40;                // Maximum Allowable Spread in Broker Points
 input int                ExecutionSlippage             = 3;                 // Maximum Permissible Execution Slippage (Points)
 input int                OrderRetryAttempts            = 5;                 // Number of Order Retries on Server Requote/Busy
 input int                OrderRetryDelayMilliseconds   = 250;               // Sleep Interval Between Order Retries (ms)
@@ -228,7 +228,7 @@ input double             Stoch_Oversold                = 20.0;              // S
 input string             Sec_Risk                      = "=== [05] RISK & MONEY MANAGEMENT ===";
 input ENUM_LOT_CALC_MODE LotSizingMethod               = LOT_MODE_RISK_PERCENT; // Lot Allocation Methodology
 input double             FixedLotSize                  = 0.10;              // Static Lot Size (If Fixed Mode Selected)
-input double             RiskPercent                   = 1.0;               // Risk Percent (% of Account Balance)
+input double             RiskPercent                   = 0.5;               // Risk Percent (% of Account Balance)
 input int                StopLossPips                  = 30;                // Base Stop Loss (Pips)
 input int                TakeProfitPips                = 60;                // Base Take Profit (Pips)
 input bool               UseATR                        = true;              // Method: ATR Stop Loss & Take Profit
@@ -237,8 +237,8 @@ input double             ATRMultiplierSL               = 1.5;               // A
 input double             ATRMultiplierTP               = 3.0;               // ATR Multiplier for Take Profit
 input bool               UseSupportResistance          = true;              // Method: Support / Resistance Levels for SL/TP
 input int                LookbackBars                  = 50;                // S/R Swing Lookback (Bars)
-input bool               UseRiskRewardRatio            = false;             // Enforce Dynamic Risk:Reward Ratio for TP
-input double             RiskRewardRatio               = 2.0;               // Risk:Reward Target Multiplier (e.g. 2.0 = 1:2)
+input bool               UseRiskRewardRatio            = true;              // Enforce Dynamic Risk:Reward Ratio for TP
+input double             RiskRewardRatio               = 1.5;               // Risk:Reward Target Multiplier (e.g. 1.5 = 1:1.5)
 input bool               UseBreakEven                  = true;              // Enable Automated Break-Even Protection
 input int                BreakEvenPips                 = 10;                // Profit Target to Move SL to Entry (Pips)
 input int                BreakEvenLockPips             = 1;                 // Profit Offset to Lock Beyond Entry (Pips)
@@ -253,7 +253,7 @@ input double             ParabolicSAR_Maximum          = 0.20;              // P
 input bool               UsePartialProfitTaking        = true;              // Enable Scaling Out (Partial Close)
 input double             PartialCloseRatio             = 0.50;              // Proportion of Position to Liquidate (0.5 = 50%)
 input int                PartialCloseTriggerPips       = 25;                // Profit Threshold for Partial Liquidation (Pips)
-input double             MaxDailyDrawdownPercent       = 5.0;               // Daily Equity Drawdown Circuit Breaker (%)
+input double             MaxDailyDrawdownPercent       = 2.0;               // Daily Equity Drawdown Circuit Breaker (%)
 input double             MaxDailyProfitPercent         = 10.0;              // Daily Profit Target Circuit Breaker (%)
 input bool               EnforceAccountProtection      = true;              // Activate Daily Drawdown/Profit Guards
 
@@ -281,7 +281,7 @@ input double             VolatilityThresholdATR        = 50.0;              // V
 
 //--- [07. TIME & SESSION FILTERS]
 input string             Sec_Filters                   = "=== [07] TEMPORAL & SESSION FILTERS ===";
-input bool               UseTimeFilter                 = false;             // Enable Trading Schedule Filter (False = 24/7 Unrestricted)
+input bool               UseTimeFilter                 = true;              // Enable Trading Schedule Filter (True = Liquid Session Guard)
 input int                StartHourGMT                  = 8;                 // Active Trading Window Start Hour (GMT)
 input int                EndHourGMT                    = 21;                // Active Trading Window End Hour (GMT)
 input int                BrokerGMT_Offset              = 0;                 // Broker Server Offset Relative to GMT (Hours)

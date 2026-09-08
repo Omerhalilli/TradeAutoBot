@@ -41,6 +41,9 @@ class RiskManager:
         self._daily_trades_count: int = 0
         self._daily_loss_amount: float = 0.0
         self._peak_daily_equity: float = 0.0
+        self._peak_all_time_equity: float = 0.0
+        self._consecutive_losses: int = 0
+        self._consecutive_pause_until: float = 0.0
         self._daily_start_balance: float = 0.0
         self._is_daily_halted: bool = False
         self._last_day_reset: float = time.time()
@@ -50,10 +53,27 @@ class RiskManager:
         self._daily_trades_count = 0
         self._daily_loss_amount = 0.0
         self._peak_daily_equity = max(current_balance, current_equity)
+        if self._peak_all_time_equity <= 0:
+            self._peak_all_time_equity = max(current_balance, current_equity)
         self._daily_start_balance = current_balance
         self._is_daily_halted = False
         self._last_day_reset = time.time()
         logger.info(f"Daily risk safeguards reset. Baseline balance: ${current_balance:,.2f}")
+
+    def record_trade_result(self, profit: float) -> None:
+        """Tracks consecutive loss streaks for cooldown enforcement."""
+        if profit < 0:
+            self._consecutive_losses += 1
+            max_losses = getattr(self.config.risk, "max_consecutive_losses", 3)
+            if self._consecutive_losses >= max_losses:
+                cooldown_sec = getattr(self.config.risk, "consecutive_loss_cooldown_sec", 1800)
+                self._consecutive_pause_until = time.time() + cooldown_sec
+                logger.warning(
+                    f"RiskManager: {self._consecutive_losses} consecutive losses reached. "
+                    f"Cooldown activated for {cooldown_sec} seconds."
+                )
+        else:
+            self._consecutive_losses = 0
 
     def evaluate_order_risk(
         self,
@@ -76,9 +96,43 @@ class RiskManager:
         equity = float(account_info.get("equity", balance))
         margin_free = float(account_info.get("margin_free", balance))
 
-        # Check 0: Calibration baseline check
+        # Check 0: Mandatory SL and TP verification (never allow 0 stops)
+        if sl <= 0.0 or tp <= 0.0:
+            result.passed = False
+            result.reason = "Mandatory Stop Loss and Take Profit must be specified."
+            return result
+
+        # Check 0b: Minimum Reward-to-Risk Ratio check (default 1.5:1)
+        sl_dist = abs(price - sl)
+        tp_dist = abs(tp - price)
+        rr = tp_dist / sl_dist if sl_dist > 0 else 0.0
+        min_rr = getattr(self.config.risk, "min_risk_reward_ratio", 1.5)
+        if rr < (min_rr - 0.01):
+            result.passed = False
+            result.reason = f"Reward-to-risk ratio ({rr:.2f}) is below minimum required ({min_rr:.2f}:1)."
+            return result
+
+        # Check 0c: Calibration baseline check
         if self._daily_start_balance <= 0:
             self.reset_daily_stats(balance, equity)
+
+        # Update all-time peak equity
+        if equity > self._peak_all_time_equity:
+            self._peak_all_time_equity = equity
+
+        # Check 0d: Peak Equity Drawdown Limit (Global Account Protection)
+        if self._peak_all_time_equity > 0:
+            peak_dd_pct = ((self._peak_all_time_equity - equity) / self._peak_all_time_equity) * 100.0
+            if peak_dd_pct >= self.config.risk.max_total_drawdown_pct:
+                result.passed = False
+                result.reason = f"Peak equity drawdown ({peak_dd_pct:.2f}%) exceeded maximum allowed ({self.config.risk.max_total_drawdown_pct}%)."
+                return result
+
+        # Check 0e: Consecutive Loss Cooldown check
+        if time.time() < self._consecutive_pause_until:
+            result.passed = False
+            result.reason = f"Consecutive loss cooldown is active until {time.ctime(self._consecutive_pause_until)}."
+            return result
 
         # Check 1: Daily Loss Circuit Breaker
         if self._is_daily_halted:
@@ -150,11 +204,12 @@ class RiskManager:
             result.reason = f"Portfolio volume ({total_open_lots + lots:.2f}) exceeds maximum allowable lots ({self.config.risk.max_total_lots})."
             return result
 
-        # Check 5: Margin Capacity Check
+        # Check 5: Margin Capacity Check (Maximum Margin Usage limit)
         est_margin_needed = (lots * 100000.0) / 100.0  # Approx 1:100 leverage
-        if est_margin_needed > margin_free * 0.70:
+        max_margin_usage = getattr(self.config.risk, "max_margin_usage_pct", 50.0)
+        if est_margin_needed > margin_free * (max_margin_usage / 100.0):
             result.passed = False
-            result.reason = "Insufficient free margin to sustain order buffer."
+            result.reason = f"Order margin requirement exceeds allowable free margin buffer ({max_margin_usage:.1f}%)."
             return result
 
         # Check 6: Currency Correlation Exposure Control

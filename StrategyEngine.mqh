@@ -34,8 +34,15 @@ struct StrategySignal
 
 //+------------------------------------------------------------------+
 //| Quantitative Confluence Scoring (Pure Math & Multi-Timeframe)    |
+//| Enforces score >= 6 for trade entry, minimum 1.5:1 RR, and ATR   |
+//| volatility bounds.                                               |
 //+------------------------------------------------------------------+
-StrategySignal EvaluateSymbolOpportunity(string sym, ENUM_TIMEFRAMES tf = PERIOD_H1, int minConfluenceScore = 6)
+StrategySignal EvaluateSymbolOpportunity(string sym, 
+                                         ENUM_TIMEFRAMES tf = PERIOD_H1, 
+                                         int minConfluenceScore = 6,
+                                         double minRewardToRisk = 1.5,
+                                         double minATRPips = 10.0,
+                                         double maxATRPips = 150.0)
 {
    StrategySignal sig;
    sig.symbol     = sym;
@@ -79,6 +86,17 @@ StrategySignal EvaluateSymbolOpportunity(string sym, ENUM_TIMEFRAMES tf = PERIOD
 
    sig.rsi = rsi;
    sig.atr = atr;
+
+   // Volatility Filter: avoid dead chop (< minATRPips) or news volatility spikes (> maxATRPips)
+   double atrPips = (pipPt > 0.0) ? (atr / pipPt) : 0.0;
+   if(minATRPips > 0.0 && atrPips < minATRPips)
+   {
+      return sig; // Dead/ranging market
+   }
+   if(maxATRPips > 0.0 && atrPips > maxATRPips)
+   {
+      return sig; // Excessive news volatility
+   }
 
    int buyScore  = 0;
    int sellScore = 0;
@@ -129,6 +147,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym, ENUM_TIMEFRAMES tf = PERIOD
    int finalScore = MathMax(buyScore, sellScore);
    sig.score = finalScore;
 
+   // Score threshold: must stand on 6 or past 6 (>= minConfluenceScore)
    if(finalScore < minConfluenceScore)
    {
       return sig; // Insufficient confluence
@@ -149,7 +168,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym, ENUM_TIMEFRAMES tf = PERIOD
       return sig; // Indecisive or tied
    }
 
-   // Dynamic ATR-based Stop Loss & Take Profit calculation
+   // Dynamic ATR-based Stop Loss & Take Profit calculation (conservative institutional sizing)
    double slDist = (atr > 0.0) ? (atr * 1.5) : (pipPt * 30.0);
    double tpDist = (atr > 0.0) ? (atr * 3.0) : (pipPt * 60.0);
 
@@ -159,7 +178,15 @@ StrategySignal EvaluateSymbolOpportunity(string sym, ENUM_TIMEFRAMES tf = PERIOD
       sig.tpPips = NormalizeDouble(tpDist / pipPt, 1);
    }
    if(sig.slPips < 15.0) { sig.slPips = 20.0; slDist = sig.slPips * pipPt; }
-   if(sig.tpPips < 20.0) { sig.tpPips = 40.0; tpDist = sig.tpPips * pipPt; }
+
+   // Enforce strict minimum Reward-to-Risk ratio (default 1.5:1)
+   if(minRewardToRisk < 1.0) minRewardToRisk = 1.5;
+   if(tpDist < slDist * minRewardToRisk)
+   {
+      tpDist = slDist * minRewardToRisk;
+      if(pipPt > 0.0) sig.tpPips = NormalizeDouble(tpDist / pipPt, 1);
+   }
+   if(sig.tpPips < 30.0) { sig.tpPips = 30.0; tpDist = sig.tpPips * pipPt; }
 
    if(sig.cmd == OP_BUY)
    {
@@ -170,6 +197,13 @@ StrategySignal EvaluateSymbolOpportunity(string sym, ENUM_TIMEFRAMES tf = PERIOD
    {
       sig.slPrice = NormalizeDouble(sig.entryPrice + slDist, dig);
       sig.tpPrice = NormalizeDouble(sig.entryPrice - tpDist, dig);
+   }
+
+   // Mandatory stops verification: never allow 0 SL or 0 TP
+   if(sig.slPrice <= 0.0 || sig.tpPrice <= 0.0)
+   {
+      sig.valid = false;
+      return sig;
    }
 
    sig.valid = true;

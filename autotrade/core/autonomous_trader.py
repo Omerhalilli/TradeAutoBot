@@ -290,13 +290,18 @@ class AutonomousMultiSymbolTrader:
                 if now - last_time < self.cooldown_sec:
                     continue
 
-                # Calculate protective SL & TP
+                # Calculate protective SL & TP (mandatory stops with min 1.5:1 reward-to-risk)
                 sl_pips = float(item.get("sl_pips", 30.0))
                 tp_pips = float(item.get("tp_pips", 60.0))
                 if sl_pips < 15.0:
                     sl_pips = 25.0
-                if tp_pips < 20.0:
-                    tp_pips = 50.0
+                min_rr = 1.5
+                if tp_pips < sl_pips * min_rr:
+                    tp_pips = round(sl_pips * min_rr, 1)
+                if tp_pips < 30.0:
+                    tp_pips = 30.0
+                if sl_pips <= 0.0 or tp_pips <= 0.0:
+                    continue  # Refuse trade without valid stops
 
                 # Determine lot size safely
                 lots = float(DEFAULT_FIXED_LOT)
