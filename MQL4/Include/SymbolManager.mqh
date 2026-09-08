@@ -333,42 +333,61 @@ double GetSymbolMinLotMargin(string sym)
    double minLot = MarketInfo(sym, MODE_MINLOT);
    if(minLot <= 0.0) minLot = 0.01;
    
+   // Priority 1: Built-in MT4 AccountFreeMarginCheck (authoritative broker calculation)
+   ResetLastError();
+   double freeMarginBefore = AccountFreeMargin();
+   if(freeMarginBefore > 0.0)
+   {
+      double check = AccountFreeMarginCheck(sym, OP_BUY, minLot);
+      int err = GetLastError();
+      if(err == 0 && check > 0.0 && check < freeMarginBefore)
+      {
+         return (freeMarginBefore - check);
+      }
+   }
+
+   // Priority 2: MODE_MARGINREQUIRED
    double marginPerLot = MarketInfo(sym, MODE_MARGINREQUIRED);
-   double marginReq = 0.0;
-   
    if(marginPerLot > 0.0)
    {
-      marginReq = marginPerLot * minLot;
+      return (marginPerLot * minLot);
    }
-   else
+
+   // Priority 3: Mathematical Currency-Aware Margin Approximation
+   double contractSize = MarketInfo(sym, MODE_LOTSIZE);
+   if(contractSize <= 0.0) contractSize = 100000.0;
+   double leverage = (double)AccountLeverage();
+   if(leverage <= 0.0) leverage = 100.0;
+
+   string canon = CleanSymbolBase(sym);
+   string baseCurr = (StringLen(canon) >= 3) ? StringSubstr(canon, 0, 3) : "USD";
+   string quoteCurr = (StringLen(canon) >= 6) ? StringSubstr(canon, 3, 3) : "USD";
+   string accCurr = AccountCurrency();
+   if(accCurr == "") accCurr = "USD";
+
+   double notionalInBase = contractSize * minLot;
+   double marginReq = notionalInBase / leverage;
+
+   if(baseCurr != accCurr)
    {
-      // Fallback 1: AccountFreeMarginCheck
-      ResetLastError();
-      double freeMarginBefore = AccountFreeMargin();
-      if(freeMarginBefore > 0.0)
+      if(quoteCurr == accCurr)
       {
-         double check = AccountFreeMarginCheck(sym, OP_BUY, minLot);
-         if(GetLastError() == 0 && check > 0.0 && check < freeMarginBefore)
-         {
-            marginReq = freeMarginBefore - check;
-         }
-      }
-      
-      // Fallback 2: Contract size / Leverage / Ask price
-      if(marginReq <= 0.0)
-      {
-         double contractSize = MarketInfo(sym, MODE_LOTSIZE);
-         if(contractSize <= 0.0) contractSize = 100000.0;
-         double leverage = (double)AccountLeverage();
-         if(leverage <= 0.0) leverage = 100.0;
          double price = MarketInfo(sym, MODE_ASK);
          if(price <= 0.0) price = MarketInfo(sym, MODE_BID);
-         if(price > 0.0)
+         if(price > 0.0) marginReq = (notionalInBase * price) / leverage;
+      }
+      else
+      {
+         string convSym = baseCurr + accCurr;
+         string brokerConv = ResolveBrokerSymbol(convSym);
+         double convP = MarketInfo(brokerConv, MODE_BID);
+         if(convP > 0.0)
          {
-            marginReq = ((price * contractSize) / leverage) * minLot;
+            marginReq = (notionalInBase * convP) / leverage;
          }
       }
    }
+
    return marginReq;
 }
 
@@ -402,7 +421,8 @@ bool IsSymbolTradeableForBalance(string sym, double maxMarginUsagePct = 50.0)
    // 4. Validate AccountFreeMarginCheck directly if available
    ResetLastError();
    double testCheck = AccountFreeMarginCheck(sym, OP_BUY, minLot);
-   if(GetLastError() == 134 || (testCheck <= 0.0 && freeMargin > 0.0))
+   int err = GetLastError();
+   if(err == 134 || (testCheck <= 0.0 && freeMargin > 0.0 && err == 0))
    {
       return false;
    }
@@ -432,6 +452,35 @@ int DiscoverMarketWatchSymbols(string &outSymbols[], string includeSymbols = "",
       ArrayResize(outSymbols, count + 1);
       outSymbols[count] = sym;
       count++;
+   }
+
+   // If Market Watch has very few symbols (< 5) or count == 0, scan broker catalog
+   if(count < 5)
+   {
+      int totalAll = SymbolsTotal(false);
+      int maxCatalog = (totalAll > 200) ? 200 : totalAll;
+      for(int j = 0; j < maxCatalog; j++)
+      {
+         string catSym = SymbolName(j, false);
+         if(catSym == "") continue;
+         
+         bool exists = false;
+         for(int k = 0; k < count; k++)
+         {
+            if(outSymbols[k] == catSym) { exists = true; break; }
+         }
+         if(exists) continue;
+         
+         if(!IsSymbolAllowed(catSym, includeSymbols, excludeSymbols)) continue;
+         if(!IsSymbolTradeAllowed(catSym)) continue;
+         if(!IsSymbolTradeableForBalance(catSym, maxMarginUsagePct)) continue;
+         
+         SymbolSelect(catSym, true);
+         ArrayResize(outSymbols, count + 1);
+         outSymbols[count] = catSym;
+         count++;
+         if(count >= 50) break;
+      }
    }
    
    return count;

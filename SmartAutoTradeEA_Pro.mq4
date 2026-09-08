@@ -2308,7 +2308,18 @@ double NormalizeLotStep(double rawLots, string targetSymbol = "")
       rawLots = MathFloor((rawLots / lotStep) + 0.0000001) * lotStep;
    }
 
-   if(rawLots < minLot) rawLots = minLot;
+   if(rawLots < minLot)
+   {
+      double freeMargin = AccountFreeMargin();
+      double balance = AccountBalance();
+      double maxMarginPct = (MaxMarginUsagePct > 0.0) ? MaxMarginUsagePct : 50.0;
+      double marginReq = GetSymbolMinLotMargin(sym);
+      if(marginReq > freeMargin * (maxMarginPct / 100.0) || marginReq > balance)
+      {
+         return 0.0;
+      }
+      rawLots = minLot;
+   }
    if(rawLots > maxLot) rawLots = maxLot;
 
    return NormalizeDouble(rawLots, stepDecimals);
@@ -6930,13 +6941,14 @@ void Autonomous_MultiSymbolScan()
       if(GetGlobalActivePositions(MagicNumber) >= MaxOpenPositions) return;
 
       string sym = scanSymbols[i];
+
+      // 5. Check persistent symbol cooldown FIRST
+      if(IsSymbolInCooldown(sym, AutonomousCooldownMinutes)) continue;
+
       SymbolSelect(sym, true);
 
-      // 5. Pre-filter before expensive indicator calculations (liquidity, trade permission, margin affordability)
+      // 6. Pre-filter before expensive indicator calculations (liquidity, trade permission, margin affordability)
       if(!PreFilterSymbol(sym, (double)MaxSpreadPoints, 50, PERIOD_H1, true, MaxMarginUsagePct)) continue;
-
-      // 6. Check persistent symbol cooldown
-      if(IsSymbolInCooldown(sym, AutonomousCooldownMinutes)) continue;
 
       // 7. Exact canonical symbol matching: verify no existing position is open for this pair
       bool hasOpenPosition = false;

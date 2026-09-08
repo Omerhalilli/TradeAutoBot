@@ -95,7 +95,7 @@ class RiskManager:
         result = RiskCheckResult(passed=True, adjusted_lots=lots)
         balance = float(account_info.get("balance", 0.0))
         equity = float(account_info.get("equity", balance))
-        margin_free = float(account_info.get("margin_free", balance))
+        margin_free = float(account_info.get("margin_free", account_info.get("free_margin", balance)))
 
         # Check 0: Mandatory SL and TP verification (never allow 0 stops)
         if sl <= 0.0 or tp <= 0.0:

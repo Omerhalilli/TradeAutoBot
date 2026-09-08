@@ -109,7 +109,17 @@ double NormalizeSymbolLots(string sym, double rawLots)
    if(maxLot <= 0.0)  maxLot  = 100.0;
    
    double lots = MathFloor((rawLots / lotStep) + 0.0000001) * lotStep;
-   if(lots < minLot) lots = minLot;
+   if(lots < minLot)
+   {
+      double freeMargin = AccountFreeMargin();
+      double balance = AccountBalance();
+      double marginReq = GetSymbolMinLotMargin(sym);
+      if(marginReq > freeMargin * 0.50 || marginReq > balance)
+      {
+         return 0.0;
+      }
+      lots = minLot;
+   }
    if(lots > maxLot) lots = maxLot;
 
    int stepDecimals = 2;
