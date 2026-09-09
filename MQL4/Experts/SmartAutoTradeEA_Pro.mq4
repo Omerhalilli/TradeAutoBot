@@ -578,6 +578,17 @@ datetime g_lastNewsCalendarReadTime    = 0;
 bool     g_isNewsShieldVetoActive      = false;
 int      g_PartiallyClosedTickets[];
 
+// Autonomous Multi-Symbol Portfolio Telemetry (Live HUD Display)
+datetime g_AutoScanLastTime            = 0;
+int      g_AutoScanTotalSymbols        = 0;
+int      g_AutoScanQualifiedCount      = 0;
+string   g_AutoScanBestSymbol          = "";
+string   g_AutoScanBestCmd             = "";
+int      g_AutoScanBestScore           = 0;
+double   g_AutoScanBestAnalysis        = 0.0;
+double   g_AutoScanBestLots            = 0.0;
+string   g_AutoScanStatusDesc          = "Surveillance Active (24 Symbols)";
+
 
 // Stealth mode virtual stop registry
 struct SStealthOrderRecord
@@ -804,17 +815,17 @@ void CalculateTrendModule(int &outTrendBuy, int &outTrendSell)
    }
 
 
-   // 1. Strong Uptrend Alignment: EMA 20 > EMA 50 > EMA 200
+   // 1. Strong Uptrend Alignment: EMA 20 > EMA 50 > EMA 200 (Requires ADX >= 22.0 for STRONG status)
    if(ema20 > ema50 && ema50 > ema200)
    {
-      g_ActiveTrendRegime = TREND_STRONG_BULLISH;
-      outTrendBuy = adxFilterPass ? 3 : 2;
+      g_ActiveTrendRegime = adxFilterPass ? TREND_STRONG_BULLISH : TREND_WEAK_BULLISH;
+      outTrendBuy = adxFilterPass ? 3 : 1;
    }
-   // 2. Strong Downtrend Alignment: EMA 20 < EMA 50 < EMA 200
+   // 2. Strong Downtrend Alignment: EMA 20 < EMA 50 < EMA 200 (Requires ADX >= 22.0 for STRONG status)
    else if(ema20 < ema50 && ema50 < ema200)
    {
-      g_ActiveTrendRegime = TREND_STRONG_BEARISH;
-      outTrendSell = adxFilterPass ? 3 : 2;
+      g_ActiveTrendRegime = adxFilterPass ? TREND_STRONG_BEARISH : TREND_WEAK_BEARISH;
+      outTrendSell = adxFilterPass ? 3 : 1;
    }
    // 3. Weak Uptrend: EMA 20 > EMA 50 but EMA 50 < EMA 200
    else if(ema20 > ema50 && ema50 < ema200)
@@ -3214,6 +3225,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    }
 
    int totalRows = (lockReasonNotice != "" ? 14 : 13);
+   if(EnableAutonomousMultiSymbol) totalRows += 3;
    double baseTotalHeight = (2.0 * basePadY) + (totalRows * baseRowHeight) + 30.0;
 
    // User-defined scale override (0 = Auto-Scale)
@@ -3315,31 +3327,77 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
 
    // Trend & Momentum Metrics
    string trendDesc = (g_ActiveTrendRegime == TREND_STRONG_BULLISH ? "STRONG BULLISH" :
-                      (g_ActiveTrendRegime == TREND_WEAK_BULLISH   ? "WEAK BULLISH" :
+                      (g_ActiveTrendRegime == TREND_WEAK_BULLISH   ? "WEAK BULLISH (ADX < 22 Choppy)" :
                       (g_ActiveTrendRegime == TREND_STRONG_BEARISH ? "STRONG BEARISH" :
-                      (g_ActiveTrendRegime == TREND_WEAK_BEARISH   ? "WEAK BEARISH" : "SIDEWAYS"))));
-   color trendColor = (StringFind(trendDesc, "BULLISH") >= 0) ? clrLime : ((StringFind(trendDesc, "BEARISH") >= 0) ? clrTomato : clrWheat);
+                      (g_ActiveTrendRegime == TREND_WEAK_BEARISH   ? "WEAK BEARISH (ADX < 22 Choppy)" : "SIDEWAYS / FLAT"))));
+   color trendColor = (g_ActiveTrendRegime == TREND_STRONG_BULLISH) ? clrLime :
+                      ((g_ActiveTrendRegime == TREND_STRONG_BEARISH) ? clrTomato :
+                      ((StringFind(trendDesc, "BULLISH") >= 0 || StringFind(trendDesc, "BEARISH") >= 0) ? clrGold : clrWheat));
    RenderHUDLabel("01_Trend", "Trend Regime: " + trendDesc, textX, y, trendColor, fontNormal, true);
    y += rowHeight;
 
    // Signal Scores Breakdown & Live Evaluation Progress
    int liveBuyScore  = g_ScoreTrendBuy + g_ScoreMomBuy + g_ScoreSRBuy + g_ScoreCandleBuy;
    int liveSellScore = g_ScoreTrendSell + g_ScoreMomSell + g_ScoreSRSell + g_ScoreCandleSell;
+   int maxLiveScore  = MathMax(liveBuyScore, liveSellScore);
+   string bestBias   = (liveBuyScore > liveSellScore) ? "BUY" : ((liveSellScore > liveBuyScore) ? "SELL" : "FLAT");
+   string biasStr    = StringFormat("%s %d/10", bestBias, maxLiveScore);
+   int effectiveMinScore = MathMax(6, MinRequiredScore);
+
+   double chartAtr = iATR(Symbol(), Period(), 14, 1);
+   int chartDig = (int)MarketInfo(Symbol(), MODE_DIGITS);
+   double chartPt = MarketInfo(Symbol(), MODE_POINT);
+   double chartPip = (chartDig == 3 || chartDig == 5) ? chartPt * 10.0 : chartPt;
+   double chartAtrPips = (chartPip > 0.0) ? (chartAtr / chartPip) : 0.0;
 
    string signalSummary = "";
    color sigColor = clrWhite;
 
    if(g_LastSignalVerdict != "NONE")
    {
-      signalSummary = StringFormat("Last Signal: %s (Score: %d/10)", g_LastSignalVerdict, g_LastSignalScore);
+      signalSummary = StringFormat("Chart [%s]: Last Signal %s (Score: %d/10)", Symbol(), g_LastSignalVerdict, g_LastSignalScore);
       sigColor = (g_LastSignalVerdict == "BUY") ? clrLime : clrTomato;
+   }
+   else if(maxLiveScore < effectiveMinScore)
+   {
+      signalSummary = StringFormat("Chart [%s]: %s (Need: %d) -> [NO TRADE: Capital Preserved]", Symbol(), biasStr, effectiveMinScore);
+      sigColor = clrSilver;
    }
    else
    {
-      string biasStr = (liveSellScore > liveBuyScore) ? StringFormat("SELL %d/10", liveSellScore) :
-                       ((liveBuyScore > liveSellScore) ? StringFormat("BUY %d/10", liveBuyScore) : "FLAT 0/10");
-      signalSummary = StringFormat("Evaluating: %s (Min Confluence: %d/10)", biasStr, MinRequiredScore);
-      sigColor = (liveSellScore > liveBuyScore) ? clrLightSalmon : ((liveBuyScore > liveSellScore) ? clrPaleGreen : clrSilver);
+      // Score meets minimum threshold (>= 6) - display transparent reason if any technical gate vetoes execution
+      string gateReason = "";
+      if(UseADX_Filter && g_CalculatedADX < ADX_MinStrengthThreshold)
+      {
+         gateReason = StringFormat("VETO: ADX %.1f < %.0f (Choppy)", g_CalculatedADX, ADX_MinStrengthThreshold);
+      }
+      else if(chartAtrPips > 0.0 && chartAtrPips < 10.0)
+      {
+         gateReason = StringFormat("VETO: Low ATR %.1fp < 10p", chartAtrPips);
+      }
+      else if(bestBias == "BUY" && g_ActiveTrendRegime != TREND_STRONG_BULLISH)
+      {
+         gateReason = "VETO: EMA Stack Misaligned";
+      }
+      else if(bestBias == "SELL" && g_ActiveTrendRegime != TREND_STRONG_BEARISH)
+      {
+         gateReason = "VETO: EMA Stack Misaligned";
+      }
+      else if(!IsNewBar(Symbol(), (ENUM_TIMEFRAMES)Period()))
+      {
+         gateReason = "Awaiting Bar Close (Anti-Repaint)";
+      }
+
+      if(gateReason != "")
+      {
+         signalSummary = StringFormat("Chart [%s]: %s (Need: %d) -> [%s]", Symbol(), biasStr, effectiveMinScore, gateReason);
+         sigColor = clrGold;
+      }
+      else
+      {
+         signalSummary = StringFormat("Chart [%s]: %s (Need: %d) -> [READY TO EXECUTE]", Symbol(), biasStr, effectiveMinScore);
+         sigColor = (bestBias == "BUY") ? clrLime : clrTomato;
+      }
    }
    RenderHUDLabel("02_Signal", signalSummary, textX, y, sigColor, fontNormal, true);
    y += rowHeight;
@@ -3441,6 +3499,26 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
                                 g_CalculatedCCI, g_CalculatedPercentB,
                                 (g_VSA_StoppingVolume ? "Stopping Vol" : (g_VSA_AbsorptionVolume ? "Absorption" : "Normal")));
    RenderHUDLabel("11_ExtInd", extStr, textX, y, clrMediumSpringGreen, fontSmall, false);
+   y += rowHeight;
+
+   // ── Autonomous Multi-Symbol Portfolio Surveillance ───
+   if(EnableAutonomousMultiSymbol)
+   {
+      y += 2;
+      RenderHUDLabel("12_AutoHeader", "=== AUTONOMOUS 24-SYMBOL PORTFOLIO ===", textX, y, clrCyan, fontNormal, true);
+      y += rowHeight;
+
+      string autoLine1 = (g_AutoScanStatusDesc != "" ? g_AutoScanStatusDesc : "Surveillance Active (24 Symbols)");
+      color autoCol = (g_AutoScanQualifiedCount > 0) ? clrLime : clrSilver;
+      RenderHUDLabel("13_AutoStatus", autoLine1, textX, y, autoCol, fontSmall, false);
+      y += rowHeight;
+
+      int tfSec = Period() * 60;
+      datetime nextBarTime = (datetime)iTime(Symbol(), Period(), 0) + tfSec;
+      int secUntilScan = MathMax(0, (int)(nextBarTime - TimeCurrent()));
+      string scanCountdown = StringFormat("Next Portfolio Scan: in %02dm %02ds (H1 Synchronized)", secUntilScan / 60, secUntilScan % 60);
+      RenderHUDLabel("14_AutoTimer", scanCountdown, textX, y, clrWheat, fontSmall, false);
+   }
 
    // Render On-Chart Action Buttons directly below HUD
    RenderInteractiveButtons(startX, startY + panelHeight + (int)MathRound((isCapturing ? 4.0 : 8.0) * finalScale), panelWidth, finalScale, fontNormal, isCapturing);
@@ -7174,12 +7252,26 @@ void Autonomous_MultiSymbolScan()
       }
    }
 
+   g_AutoScanLastTime       = TimeCurrent();
+   g_AutoScanTotalSymbols   = numSymbols;
+   g_AutoScanQualifiedCount = qualifiedCount;
+
    // 10. Post-scan decision: If one or more qualified setups found, select and execute the best one!
    // Must strictly satisfy score >= 6 and score >= effectiveMinScore
    if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= 6 && bestSig.score >= effectiveMinScore && bestSymbol != "")
    {
+      g_AutoScanBestSymbol   = bestSymbol;
+      g_AutoScanBestCmd      = (bestSig.cmd == OP_BUY ? "BUY" : "SELL");
+      g_AutoScanBestScore    = bestSig.score;
+      g_AutoScanBestAnalysis = bestSig.analysisScore;
+      g_AutoScanBestLots     = bestLots;
+      g_AutoScanStatusDesc   = StringFormat("FILLED %s %s (Score %d/10, %.1f/100, %.2fL) | Qual: %d/%d",
+                                            bestSymbol, g_AutoScanBestCmd, bestSig.score, bestSig.analysisScore, bestLots, qualifiedCount, numSymbols);
+
       if(AutonomousTradeDirectly)
       {
+         int chartScore = MathMax(g_ScoreTrendBuy + g_ScoreMomBuy + g_ScoreSRBuy + g_ScoreCandleBuy,
+                                  g_ScoreTrendSell + g_ScoreMomSell + g_ScoreSRSell + g_ScoreCandleSell);
          PrintFormat("[AUTONOMOUS MULTI-SYMBOL SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
                      numSymbols, qualifiedCount, effectiveMinScore, bestSymbol,
                      (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSig.score, bestSig.analysisScore, bestLots, bestSig.rrRatio);
@@ -7187,8 +7279,8 @@ void Autonomous_MultiSymbolScan()
          int ticket = ExecuteSmartOrder(bestSig.cmd, bestLots, bestSig.entryPrice, bestSig.slPrice, bestSig.tpPrice, bestSymbol);
          if(ticket > 0)
          {
-            PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Successfully filled %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d)",
-                        (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSymbol, bestLots, bestSig.score, ticket);
+            PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Successfully filled %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d) | Note: Attached chart %s was %d/10 (not traded).",
+                        (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSymbol, bestLots, bestSig.score, ticket, Symbol(), chartScore);
             RecordSymbolCooldown(bestSymbol);
          }
          else
@@ -7200,9 +7292,11 @@ void Autonomous_MultiSymbolScan()
    }
    else
    {
+      g_AutoScanBestSymbol = "";
+      g_AutoScanStatusDesc = StringFormat("Preserved: 0/%d qualified >= %d/10. Capital safe.", numSymbols, effectiveMinScore);
       // No symbol reached confluence threshold >= 6; wait cleanly for next cycle
-      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). Capital safely preserved.",
-                  numSymbols, effectiveMinScore);
+      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). Capital safely preserved on %s and portfolio.",
+                  numSymbols, effectiveMinScore, Symbol());
    }
 }
 
