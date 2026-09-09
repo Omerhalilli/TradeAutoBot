@@ -44,6 +44,18 @@ struct StrategySignal
    string pattern;           // Recognized candlestick pattern
    string htfTrend;          // Higher timeframe H4 trend confirmation
    bool   valid;             // Flag indicating if signal is valid and actionable
+   double trendBuyPts;       // 0 - 25 points (Trend alignment + ADX strength)
+   double trendSellPts;
+   double momBuyPts;         // 0 - 25 points (RSI + MACD + Stoch)
+   double momSellPts;
+   double volBuyPts;         // 0 - 15 points (Bollinger Bands + ATR expansion)
+   double volSellPts;
+   double srBuyPts;          // 0 - 15 points (Swing S/R + Daily Pivots)
+   double srSellPts;
+   double cndlBuyPts;        // 0 - 10 points (Candlestick pattern + Tick volume)
+   double cndlSellPts;
+   double mtfBuyPts;         // 0 - 10 points (MTF H4 confluence)
+   double mtfSellPts;
 };
 
 //+------------------------------------------------------------------+
@@ -149,6 +161,55 @@ string DetectCandlePattern(string sym, ENUM_TIMEFRAMES tf, int &candleBuy, int &
 }
 
 //+------------------------------------------------------------------+
+//| Distribute 0-100 sub-points to 0-10 HUD categories strictly      |
+//| ensuring sum(pts) == targetScore                                 |
+//+------------------------------------------------------------------+
+void DistributeHUDPoints(double trendPts, double momPts, double srPts, double cndlVolPts, 
+                         int targetScore, int &outTrend, int &outMom, int &outSR, int &outCndl)
+{
+   if(targetScore <= 0)
+   {
+      outTrend = 0; outMom = 0; outSR = 0; outCndl = 0;
+      return;
+   }
+   
+   outTrend = (int)MathRound(trendPts / 10.0);
+   outMom   = (int)MathRound(momPts / 10.0);
+   outSR    = (int)MathRound(srPts / 10.0);
+   outCndl  = (int)MathRound(cndlVolPts / 10.0);
+   
+   int currentSum = outTrend + outMom + outSR + outCndl;
+   int diff = targetScore - currentSum;
+   
+   // Reconcile any rounding difference so the sum strictly equals targetScore
+   if(diff != 0)
+   {
+      if(diff > 0)
+      {
+         if(trendPts >= momPts && trendPts >= srPts && trendPts >= cndlVolPts) outTrend += diff;
+         else if(momPts >= srPts && momPts >= cndlVolPts) outMom += diff;
+         else if(srPts >= cndlVolPts) outSR += diff;
+         else outCndl += diff;
+      }
+      else
+      {
+         while(diff < 0)
+         {
+            if(outTrend > 0 && outTrend >= outMom && outTrend >= outSR && outTrend >= outCndl) { outTrend--; diff++; }
+            else if(outMom > 0 && outMom >= outSR && outMom >= outCndl) { outMom--; diff++; }
+            else if(outSR > 0 && outSR >= outCndl) { outSR--; diff++; }
+            else if(outCndl > 0) { outCndl--; diff++; }
+            else break;
+         }
+      }
+   }
+   if(outTrend < 0) outTrend = 0;
+   if(outMom < 0)   outMom = 0;
+   if(outSR < 0)    outSR = 0;
+   if(outCndl < 0)  outCndl = 0;
+}
+
+//+------------------------------------------------------------------+
 //| Comprehensive 0 - 100 Multi-Indicator Confluence Scoring Engine  |
 //| Enforces score >= 6 for trade entry, minimum 1.5:1 RR, and ATR   |
 //| volatility bounds.                                               |
@@ -188,6 +249,18 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    sig.pattern       = "NONE";
    sig.htfTrend      = "NEUTRAL";
    sig.valid         = false;
+   sig.trendBuyPts   = 0.0;
+   sig.trendSellPts  = 0.0;
+   sig.momBuyPts     = 0.0;
+   sig.momSellPts    = 0.0;
+   sig.volBuyPts     = 0.0;
+   sig.volSellPts    = 0.0;
+   sig.srBuyPts      = 0.0;
+   sig.srSellPts     = 0.0;
+   sig.cndlBuyPts    = 0.0;
+   sig.cndlSellPts   = 0.0;
+   sig.mtfBuyPts     = 0.0;
+   sig.mtfSellPts    = 0.0;
 
    if(iBars(sym, tf) < 205) return sig;
 
@@ -246,6 +319,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    // -----------------------------------------------------------------
    double buyPoints  = 0.0;
    double sellPoints = 0.0;
+   double trendBuyPts  = 0.0, trendSellPts  = 0.0;
+   double momBuyPts    = 0.0, momSellPts    = 0.0;
+   double volBuyPts    = 0.0, volSellPts    = 0.0;
+   double srBuyPts     = 0.0, srSellPts     = 0.0;
+   double cndlBuyPts   = 0.0, cndlSellPts   = 0.0;
+   double mtfBuyPts    = 0.0, mtfSellPts    = 0.0;
 
    // =================================================================
    // 1. TREND ALIGNMENT & ADX STRENGTH (0 - 25 points)
@@ -254,7 +333,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       if(ema20 > ema50 && ema50 > ema200)
       {
-         buyPoints += 14.0;
+         trendBuyPts += 14.0;
          sig.trend = "STRONG BULLISH";
       }
       else if(ema20 > ema50)
@@ -264,7 +343,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
 
       if(ema20 < ema50 && ema50 < ema200)
       {
-         sellPoints += 14.0;
+         trendSellPts += 14.0;
          sig.trend = "STRONG BEARISH";
       }
       else if(ema20 < ema50)
@@ -272,8 +351,8 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          sig.trend = "COUNTER-TREND BEARISH";
       }
 
-      if(close1 > ema200 && ema50 > ema200) buyPoints += 4.0;
-      if(close1 < ema200 && ema50 < ema200) sellPoints += 4.0;
+      if(close1 > ema200 && ema50 > ema200) trendBuyPts += 4.0;
+      if(close1 < ema200 && ema50 < ema200) trendSellPts += 4.0;
    }
    else
    {
@@ -284,63 +363,67 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    if(adx_main >= 25.0)
    {
       // Strong trend regime active
-      if(adx_plus > adx_minus) buyPoints += 7.0;
-      else if(adx_minus > adx_plus) sellPoints += 7.0;
+      if(adx_plus > adx_minus) trendBuyPts += 7.0;
+      else if(adx_minus > adx_plus) trendSellPts += 7.0;
 
       if(adx_main >= 35.0)
       {
-         if(adx_plus > adx_minus) buyPoints += 2.0;
-         else if(adx_minus > adx_plus) sellPoints += 2.0;
+         if(adx_plus > adx_minus) trendBuyPts += 2.0;
+         else if(adx_minus > adx_plus) trendSellPts += 2.0;
       }
    }
    else if(adx_main >= 20.0)
    {
-      if(adx_plus > adx_minus) buyPoints += 4.0;
-      else if(adx_minus > adx_plus) sellPoints += 4.0;
+      if(adx_plus > adx_minus) trendBuyPts += 4.0;
+      else if(adx_minus > adx_plus) trendSellPts += 4.0;
    }
+   if(trendBuyPts > 25.0)  trendBuyPts = 25.0;
+   if(trendSellPts > 25.0) trendSellPts = 25.0;
 
    // =================================================================
    // 2. MOMENTUM & OSCILLATORS (0 - 25 points)
    // =================================================================
    // RSI Momentum (0 - 10 points) - Valid healthy continuation corridors: BUY [45.0, 65.0], SELL [35.0, 55.0]
-   if(rsi >= 50.0 && rsi <= 65.0)      buyPoints += 10.0;
-   else if(rsi >= 45.0 && rsi < 50.0)  buyPoints += 5.0;
+   if(rsi >= 50.0 && rsi <= 65.0)      momBuyPts += 10.0;
+   else if(rsi >= 45.0 && rsi < 50.0)  momBuyPts += 5.0;
 
-   if(rsi >= 35.0 && rsi <= 50.0)      sellPoints += 10.0;
-   else if(rsi > 50.0 && rsi <= 55.0)  sellPoints += 5.0;
+   if(rsi >= 35.0 && rsi <= 50.0)      momSellPts += 10.0;
+   else if(rsi > 50.0 && rsi <= 55.0)  momSellPts += 5.0;
 
    // MACD Crossover & Alignment (0 - 8 points)
    if(macd > macd_sig && macd > 0.0)
    {
-      buyPoints += 8.0;
+      momBuyPts += 8.0;
    }
    else if(macd > macd_sig)
    {
-      buyPoints += 5.0;
+      momBuyPts += 5.0;
    }
-   if(macd > macd_sig && macdPrev <= macdPrevSig) buyPoints += 2.0; // Fresh crossover
+   if(macd > macd_sig && macdPrev <= macdPrevSig) momBuyPts += 2.0; // Fresh crossover
 
    if(macd < macd_sig && macd < 0.0)
    {
-      sellPoints += 8.0;
+      momSellPts += 8.0;
    }
    else if(macd < macd_sig)
    {
-      sellPoints += 5.0;
+      momSellPts += 5.0;
    }
-   if(macd < macd_sig && macdPrev >= macdPrevSig) sellPoints += 2.0; // Fresh crossover
+   if(macd < macd_sig && macdPrev >= macdPrevSig) momSellPts += 2.0; // Fresh crossover
 
    // Stochastic Alignment (0 - 7 points)
    if(stoch_k > stoch_d && stoch_k < 80.0)
    {
-      buyPoints += 5.0;
-      if(stoch_k < 30.0) buyPoints += 2.0; // Oversold turning up
+      momBuyPts += 5.0;
+      if(stoch_k < 30.0) momBuyPts += 2.0; // Oversold turning up
    }
    if(stoch_k < stoch_d && stoch_k > 20.0)
    {
-      sellPoints += 5.0;
-      if(stoch_k > 70.0) sellPoints += 2.0; // Overbought turning down
+      momSellPts += 5.0;
+      if(stoch_k > 70.0) momSellPts += 2.0; // Overbought turning down
    }
+   if(momBuyPts > 25.0)  momBuyPts = 25.0;
+   if(momSellPts > 25.0) momSellPts = 25.0;
 
    // =================================================================
    // 3. VOLATILITY & BOLLINGER BANDS (0 - 15 points)
@@ -351,20 +434,22 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       double low1 = iLow(sym, tf, 1);
       double high1 = iHigh(sym, tf, 1);
 
-      if(low1 <= bb_low && close1 > bb_low) buyPoints += 8.0; // Strong bounce off lower band
-      else if(close1 > bb_mid) buyPoints += 4.0;
+      if(low1 <= bb_low && close1 > bb_low) volBuyPts += 8.0; // Strong bounce off lower band
+      else if(close1 > bb_mid) volBuyPts += 4.0;
 
-      if(high1 >= bb_up && close1 < bb_up) sellPoints += 8.0; // Strong rejection from upper band
-      else if(close1 < bb_mid && low1 > bb_low) sellPoints += 4.0; // Bearish side of bands without conflicting lower bounce
+      if(high1 >= bb_up && close1 < bb_up) volSellPts += 8.0; // Strong rejection from upper band
+      else if(close1 < bb_mid && low1 > bb_low) volSellPts += 4.0; // Bearish side of bands without conflicting lower bounce
    }
 
    // ATR expansion check (0 - 5 points)
    double atrShort = iATR(sym, tf, 7, 1);
    if(atrShort > atr)
    {
-      buyPoints  += 2.5;
-      sellPoints += 2.5;
+      volBuyPts  += 2.5;
+      volSellPts += 2.5;
    }
+   if(volBuyPts > 15.0)  volBuyPts = 15.0;
+   if(volSellPts > 15.0) volSellPts = 15.0;
 
    // =================================================================
    // 4. KEY SUPPORT / RESISTANCE & DAILY PIVOTS (0 - 15 points)
@@ -378,11 +463,11 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    double proximityDist = (atr > 0.0) ? (atr * 1.2) : (pipPt * 20.0);
    if(MathAbs(close1 - swingLow) <= proximityDist && close1 > swingLow)
    {
-      buyPoints += 7.0; // Rebound from swing support
+      srBuyPts += 7.0; // Rebound from swing support
    }
    if(MathAbs(close1 - swingHigh) <= proximityDist && close1 < swingHigh)
    {
-      sellPoints += 7.0; // Rebound from swing resistance
+      srSellPts += 7.0; // Rebound from swing resistance
    }
 
    // Daily Pivot Points
@@ -395,12 +480,14 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       double pivotS1 = (2.0 * pivotP) - dHigh;
       double pivotR1 = (2.0 * pivotP) - dLow;
 
-      if(close1 > pivotP && MathAbs(close1 - pivotP) <= proximityDist) buyPoints += 8.0;
-      else if(close1 > pivotS1 && MathAbs(close1 - pivotS1) <= proximityDist) buyPoints += 8.0;
+      if(close1 > pivotP && MathAbs(close1 - pivotP) <= proximityDist) srBuyPts += 8.0;
+      else if(close1 > pivotS1 && MathAbs(close1 - pivotS1) <= proximityDist) srBuyPts += 8.0;
 
       if(close1 < pivotP && MathAbs(close1 - pivotP) <= proximityDist) sellPoints += 8.0;
       else if(close1 < pivotR1 && MathAbs(close1 - pivotR1) <= proximityDist) sellPoints += 8.0;
    }
+   if(srBuyPts > 15.0)  srBuyPts = 15.0;
+   if(srSellPts > 15.0) srSellPts = 15.0;
 
    // =================================================================
    // 5. PRICE ACTION, CANDLESTICK PATTERNS & VOLUME / VSA (0 - 10 points)
@@ -408,17 +495,19 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    int candleBuy = 0;
    int candleSell = 0;
    sig.pattern = DetectCandlePattern(sym, tf, candleBuy, candleSell);
-   buyPoints  += candleBuy;
-   sellPoints += candleSell;
+   cndlBuyPts  += candleBuy;
+   cndlSellPts += candleSell;
 
    // Tick Volume expansion (0 - 3 points)
    long vol1 = iVolume(sym, tf, 1);
    long vol2 = iVolume(sym, tf, 2);
    if(vol1 > vol2 && vol1 > 0)
    {
-      if(close1 > iOpen(sym, tf, 1)) buyPoints += 3.0;
-      else if(close1 < iOpen(sym, tf, 1)) sellPoints += 3.0;
+      if(close1 > iOpen(sym, tf, 1)) cndlBuyPts += 3.0;
+      else if(close1 < iOpen(sym, tf, 1)) cndlSellPts += 3.0;
    }
+   if(cndlBuyPts > 10.0)  cndlBuyPts = 10.0;
+   if(cndlSellPts > 10.0) cndlSellPts = 10.0;
 
    // =================================================================
    // 6. MULTI-TIMEFRAME (MTF) CONFLUENCE (0 - 10 points)
@@ -431,25 +520,31 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
 
       if(h4_ema50 > h4_ema200 && h4_close > h4_ema50)
       {
-         buyPoints += 10.0;
+         mtfBuyPts += 10.0;
          sig.htfTrend = "BULLISH";
       }
       else if(h4_ema50 > h4_ema200)
       {
-         buyPoints += 6.0;
+         mtfBuyPts += 6.0;
          sig.htfTrend = "MODERATE BULLISH";
       }
       else if(h4_ema50 < h4_ema200 && h4_close < h4_ema50)
       {
-         sellPoints += 10.0;
+         mtfSellPts += 10.0;
          sig.htfTrend = "BEARISH";
       }
       else if(h4_ema50 < h4_ema200)
       {
-         sellPoints += 6.0;
+         mtfSellPts += 6.0;
          sig.htfTrend = "MODERATE BEARISH";
       }
    }
+   if(mtfBuyPts > 10.0)  mtfBuyPts = 10.0;
+   if(mtfSellPts > 10.0) mtfSellPts = 10.0;
+
+   // Combine all component modules
+   buyPoints  = trendBuyPts + momBuyPts + volBuyPts + srBuyPts + cndlBuyPts + mtfBuyPts;
+   sellPoints = trendSellPts + momSellPts + volSellPts + srSellPts + cndlSellPts + mtfSellPts;
 
    // Cap points to maximum 100
    if(buyPoints > 100.0)  buyPoints = 100.0;
@@ -457,6 +552,19 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
 
    sig.buyScore100  = NormalizeDouble(buyPoints, 1);
    sig.sellScore100 = NormalizeDouble(sellPoints, 1);
+
+   sig.trendBuyPts  = trendBuyPts;
+   sig.trendSellPts = trendSellPts;
+   sig.momBuyPts    = momBuyPts;
+   sig.momSellPts   = momSellPts;
+   sig.volBuyPts    = volBuyPts;
+   sig.volSellPts   = volSellPts;
+   sig.srBuyPts     = srBuyPts;
+   sig.srSellPts    = srSellPts;
+   sig.cndlBuyPts   = cndlBuyPts;
+   sig.cndlSellPts  = cndlSellPts;
+   sig.mtfBuyPts    = mtfBuyPts;
+   sig.mtfSellPts   = mtfSellPts;
 
    // Map 0-100 scale to 0-10 Confluence Score (Floor strictly to prevent fractional rounding 5.x -> 6)
    int buyScore10  = (int)MathFloor(buyPoints / 10.0);

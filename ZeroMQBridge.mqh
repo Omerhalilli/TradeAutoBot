@@ -1674,19 +1674,36 @@ string Zmq_HandleScreenshot(const string reqJson)
       telemOsc = StringFormat("RSI: %.1f | MACD: %.5f | ADX: %.1f", rsiVal, macdVal, adxVal);
    }
    
+   string telemPattern = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_10_Pattern", OBJPROP_TEXT) : "";
+   StringReplace(telemPattern, "Pattern: ", "");
+
    string telemSignal = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_02_Signal", OBJPROP_TEXT) : "";
    string telemPoints = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_03_Points", OBJPROP_TEXT) : "";
    if(telemSignal == "")
    {
-      double eF = iMA(matchedSymbol, tf, 20, 0, MODE_EMA, PRICE_CLOSE, 1);
-      double eM = iMA(matchedSymbol, tf, 50, 0, MODE_EMA, PRICE_CLOSE, 1);
-      int buyPts = (eF > eM ? 3 : 0) + (rsiVal > 50.0 && rsiVal < 70.0 ? 2 : 0) + (macdVal > macdSig ? 2 : 0);
-      int sellPts = (eF < eM ? 3 : 0) + (rsiVal < 50.0 && rsiVal > 30.0 ? 2 : 0) + (macdVal < macdSig ? 2 : 0);
-      if(buyPts >= 5) telemSignal = StringFormat("Evaluating: BUY %d/10 (Need: 6)", buyPts);
-      else if(sellPts >= 5) telemSignal = StringFormat("Evaluating: SELL %d/10 (Need: 6)", sellPts);
-      else telemSignal = StringFormat("Evaluating: FLAT %d/10 (Need: 6)", MathMax(buyPts, sellPts));
+      StrategySignal sig = EvaluateSymbolOpportunity(matchedSymbol, (ENUM_TIMEFRAMES)tf, 6, 1.5, 10.0, 150.0);
+      int dispScore = sig.score;
+      string dispCmd = (sig.buyScore > sig.sellScore) ? "BUY" : ((sig.sellScore > sig.buyScore) ? "SELL" : "FLAT");
+      telemSignal = StringFormat("Evaluating: %s %d/10 (%.1f/100) (Need: 6)", dispCmd, dispScore, sig.analysisScore);
       
-      telemPoints = StringFormat("Pts: Trend(%d/%d) Mom(%d/%d) SR(0/0) Cndl(0/0)", (eF>eM?3:0), (eF<eM?3:0), (rsiVal>50?2:0), (rsiVal<50?2:0));
+      double buyTrendCombined  = sig.trendBuyPts + sig.mtfBuyPts;
+      double sellTrendCombined = sig.trendSellPts + sig.mtfSellPts;
+      double buyCndlCombined   = sig.cndlBuyPts + sig.volBuyPts;
+      double sellCndlCombined  = sig.cndlSellPts + sig.volSellPts;
+      
+      int pTrdBuy = 0, pMomBuy = 0, pSRBuy = 0, pCndBuy = 0;
+      int pTrdSell = 0, pMomSell = 0, pSRSell = 0, pCndSell = 0;
+      DistributeHUDPoints(buyTrendCombined, sig.momBuyPts, sig.srBuyPts, buyCndlCombined,
+                          sig.buyScore, pTrdBuy, pMomBuy, pSRBuy, pCndBuy);
+      DistributeHUDPoints(sellTrendCombined, sig.momSellPts, sig.srSellPts, sellCndlCombined,
+                          sig.sellScore, pTrdSell, pMomSell, pSRSell, pCndSell);
+                          
+      telemPoints = StringFormat("Pts: Trend(%d/%d) Mom(%d/%d) SR(%d/%d) Cndl(%d/%d)",
+                                 pTrdBuy, pTrdSell, pMomBuy, pMomSell, pSRBuy, pSRSell, pCndBuy, pCndSell);
+                                 
+      if(telemTrend == "") telemTrend = sig.trend;
+      if(telemOsc == "")   telemOsc = StringFormat("RSI: %.1f | MACD: %.5f | ADX: %.1f", sig.rsi, sig.macd, sig.adx);
+      if(telemPattern == "" || telemPattern == "None") telemPattern = sig.pattern;
    }
    
    string telemSession = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_05_Session", OBJPROP_TEXT) : "London/NY Overlap";
@@ -1711,8 +1728,6 @@ string Zmq_HandleScreenshot(const string reqJson)
    if(telemPnl == "") telemPnl = "$0.00 (0.00%)";
    
    string telemQuant = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_09_Quant", OBJPROP_TEXT) : "KER: 0.35 | Squeeze: None";
-   string telemPattern = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_10_Pattern", OBJPROP_TEXT) : "";
-   StringReplace(telemPattern, "Pattern: ", "");
    if(telemPattern == "") telemPattern = "None";
    string telemExtInd = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_11_ExtInd", OBJPROP_TEXT) : "";
    if(telemExtInd == "")

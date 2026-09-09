@@ -549,6 +549,8 @@ int      g_ScoreCandleBuy       = 0;
 int      g_ScoreCandleSell      = 0;
 int      g_ScoreAggregateBuy    = 0;
 int      g_ScoreAggregateSell   = 0;
+double   g_ScoreAggregateBuy100  = 0.0;
+double   g_ScoreAggregateSell100 = 0.0;
 
 
 // Active analytical metrics cache
@@ -1141,26 +1143,55 @@ void DetectCandlestickPatternsModule(int &outCandleBuy, int &outCandleSell)
 
 
 //+------------------------------------------------------------------+
-//| CONFLUENCE SCORING PIPELINE (0 - 10 SCALE)                       |
+//| CONFLUENCE SCORING PIPELINE (0 - 10 SCALE & 0 - 100 SCALE)       |
+//| Unified with StrategyEngine institutional scoring engine         |
 //+------------------------------------------------------------------+
 void ExecuteScoringPipeline(int &totalBuyScore, int &totalSellScore)
 {
-   CalculateTrendModule(g_ScoreTrendBuy, g_ScoreTrendSell);
-   CalculateMomentumModule(g_ScoreTrendBuy, g_ScoreTrendSell, g_ScoreMomBuy, g_ScoreMomSell);
-   CalculateSupportResistanceModule(g_ScoreTrendBuy, g_ScoreTrendSell, g_ScoreSRBuy, g_ScoreSRSell);
-   DetectCandlestickPatternsModule(g_ScoreCandleBuy, g_ScoreCandleSell);
+   int effectiveMinScore = MathMax(6, MinRequiredScore);
+   StrategySignal sig = EvaluateSymbolOpportunity(Symbol(), (ENUM_TIMEFRAMES)Period(), effectiveMinScore, 1.5, 10.0, 150.0);
 
+   totalBuyScore  = sig.buyScore;
+   totalSellScore = sig.sellScore;
 
-   totalBuyScore  = g_ScoreTrendBuy  + g_ScoreMomBuy  + g_ScoreSRBuy  + g_ScoreCandleBuy;
-   totalSellScore = g_ScoreTrendSell + g_ScoreMomSell + g_ScoreSRSell + g_ScoreCandleSell;
+   g_ScoreAggregateBuy     = sig.buyScore;
+   g_ScoreAggregateSell    = sig.sellScore;
+   g_ScoreAggregateBuy100  = sig.buyScore100;
+   g_ScoreAggregateSell100 = sig.sellScore100;
 
+   // Synchronize active indicator cache strictly with StrategyEngine
+   g_CalculatedRSI      = sig.rsi;
+   g_CalculatedMACDMain = sig.macd;
+   g_CalculatedMACDSig  = sig.macdSig;
+   g_CalculatedADX      = sig.adx;
+   g_CalculatedATR      = sig.atr;
 
-   if(totalBuyScore > 10)  totalBuyScore  = 10;
-   if(totalSellScore > 10) totalSellScore = 10;
+   if(sig.trend == "STRONG BULLISH")             g_ActiveTrendRegime = TREND_STRONG_BULLISH;
+   else if(sig.trend == "STRONG BEARISH")        g_ActiveTrendRegime = TREND_STRONG_BEARISH;
+   else if(StringFind(sig.trend, "BULLISH") >= 0) g_ActiveTrendRegime = TREND_WEAK_BULLISH;
+   else if(StringFind(sig.trend, "BEARISH") >= 0) g_ActiveTrendRegime = TREND_WEAK_BEARISH;
+   else g_ActiveTrendRegime = TREND_FLAT;
 
+   if(sig.pattern == "BULLISH_ENGULFING")      g_LastCandlePattern = CANDLE_BULLISH_ENGULFING;
+   else if(sig.pattern == "BEARISH_ENGULFING") g_LastCandlePattern = CANDLE_BEARISH_ENGULFING;
+   else if(sig.pattern == "HAMMER")            g_LastCandlePattern = CANDLE_HAMMER;
+   else if(sig.pattern == "SHOOTING_STAR")     g_LastCandlePattern = CANDLE_SHOOTING_STAR;
+   else if(sig.pattern == "DOJI" || sig.pattern == "DRAGONFLY_DOJI" || sig.pattern == "GRAVESTONE_DOJI") g_LastCandlePattern = CANDLE_DOJI_REGULAR;
+   else if(sig.pattern == "MORNING_STAR")      g_LastCandlePattern = CANDLE_MORNING_STAR;
+   else if(sig.pattern == "EVENING_STAR")      g_LastCandlePattern = CANDLE_EVENING_STAR;
+   else g_LastCandlePattern = CANDLE_INDECISION;
 
-   g_ScoreAggregateBuy  = totalBuyScore;
-   g_ScoreAggregateSell = totalSellScore;
+   // Distribute 0-100 module points strictly matching 0-10 total score
+   double buyTrendCombined  = sig.trendBuyPts + sig.mtfBuyPts;
+   double sellTrendCombined = sig.trendSellPts + sig.mtfSellPts;
+   double buyCndlCombined   = sig.cndlBuyPts + sig.volBuyPts;
+   double sellCndlCombined  = sig.cndlSellPts + sig.volSellPts;
+
+   DistributeHUDPoints(buyTrendCombined, sig.momBuyPts, sig.srBuyPts, buyCndlCombined,
+                       sig.buyScore, g_ScoreTrendBuy, g_ScoreMomBuy, g_ScoreSRBuy, g_ScoreCandleBuy);
+
+   DistributeHUDPoints(sellTrendCombined, sig.momSellPts, sig.srSellPts, sellCndlCombined,
+                       sig.sellScore, g_ScoreTrendSell, g_ScoreMomSell, g_ScoreSRSell, g_ScoreCandleSell);
 }
 
 
@@ -3325,6 +3356,10 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    RenderHUDLabel("00_Title", headerTitle, textX, y, (isRealAcc ? clrGold : clrWheat), fontTitle, true);
    y += rowHeight;
 
+   // Immediately evaluate confluence scoring with StrategyEngine to ensure 100% synchronization
+   int hudBuy = 0, hudSell = 0;
+   ExecuteScoringPipeline(hudBuy, hudSell);
+
    // Trend & Momentum Metrics
    string trendDesc = (g_ActiveTrendRegime == TREND_STRONG_BULLISH ? "STRONG BULLISH" :
                       (g_ActiveTrendRegime == TREND_WEAK_BULLISH   ? "WEAK BULLISH (ADX < 22 Choppy)" :
@@ -3337,11 +3372,12 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    y += rowHeight;
 
    // Signal Scores Breakdown & Live Evaluation Progress
-   int liveBuyScore  = g_ScoreTrendBuy + g_ScoreMomBuy + g_ScoreSRBuy + g_ScoreCandleBuy;
-   int liveSellScore = g_ScoreTrendSell + g_ScoreMomSell + g_ScoreSRSell + g_ScoreCandleSell;
+   int liveBuyScore  = g_ScoreAggregateBuy;
+   int liveSellScore = g_ScoreAggregateSell;
    int maxLiveScore  = MathMax(liveBuyScore, liveSellScore);
    string bestBias   = (liveBuyScore > liveSellScore) ? "BUY" : ((liveSellScore > liveBuyScore) ? "SELL" : "FLAT");
-   string biasStr    = StringFormat("%s %d/10", bestBias, maxLiveScore);
+   double bestScore100 = (bestBias == "BUY" ? g_ScoreAggregateBuy100 : (bestBias == "SELL" ? g_ScoreAggregateSell100 : MathMax(g_ScoreAggregateBuy100, g_ScoreAggregateSell100)));
+   string biasStr    = StringFormat("%s %d/10 (%.1f/100)", bestBias, maxLiveScore, bestScore100);
    int effectiveMinScore = MathMax(6, MinRequiredScore);
 
    double chartAtr = iATR(Symbol(), Period(), 14, 1);
@@ -3355,7 +3391,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
 
    if(g_LastSignalVerdict != "NONE")
    {
-      signalSummary = StringFormat("Chart [%s]: Last Signal %s (Score: %d/10)", Symbol(), g_LastSignalVerdict, g_LastSignalScore);
+      signalSummary = StringFormat("Chart [%s]: Last Signal %s (Score: %d/10, %.1f/100)", Symbol(), g_LastSignalVerdict, g_LastSignalScore, bestScore100);
       sigColor = (g_LastSignalVerdict == "BUY") ? clrLime : clrTomato;
    }
    else if(maxLiveScore < effectiveMinScore)
