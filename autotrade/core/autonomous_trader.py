@@ -397,6 +397,44 @@ class AutonomousMultiSymbolTrader:
             except (ValueError, TypeError):
                 return False
 
+        # Rule 6: Volatility Gate (ATR must be >= 10.0 pips; reject low-liquidity dormant markets)
+        if "atr" in item and item["atr"] is not None:
+            try:
+                atr_val = float(item["atr"])
+                raw_sym = str(item.get("symbol", "")).strip().upper()
+                canon_sym = canonical_symbol(raw_sym)
+                pip_unit = 0.01 if ("JPY" in canon_sym or "XAU" in canon_sym or "OIL" in canon_sym) else 0.0001
+                atr_pips = (atr_val / pip_unit) if pip_unit > 0 else 0.0
+                if atr_val > 0.0 and atr_pips < 10.0:
+                    logger.debug(f"AutonomousTrader: Rejecting {raw_sym} - ATR {atr_pips:.1f} pips < 10.0 pips threshold.")
+                    return False
+            except (ValueError, TypeError):
+                return False
+
+        # Rule 7: Session Liquidity Gate (European Currencies EUR, GBP, CHF)
+        # Avoid low-liquidity whipsaws during Asian session (00:00 - 06:00 UTC)
+        # unless confluence score is exceptionally high (>= 8)
+        if item.get("session_active") is False:
+            logger.debug(f"AutonomousTrader: Rejecting {item.get('symbol')} - Outside active liquid session hours.")
+            return False
+
+        raw_sym = str(item.get("symbol", "")).strip().upper()
+        canon_sym = canonical_symbol(raw_sym)
+        cand_base, cand_quote = split_currency_pair(canon_sym)
+        if (cand_base in ("EUR", "GBP", "CHF") or cand_quote in ("EUR", "GBP", "CHF")) and sc < 8:
+            server_time_str = item.get("server_time") or ""
+            current_hour = None
+            if server_time_str:
+                try:
+                    from datetime import datetime
+                    dt = datetime.strptime(str(server_time_str).strip(), "%Y.%m.%d %H:%M:%S")
+                    current_hour = dt.hour
+                except Exception:
+                    pass
+            if current_hour is not None and (0 <= current_hour < 7):
+                logger.debug(f"AutonomousTrader: Rejecting {raw_sym} during Asian off-hours (Hour {current_hour}:00) - score {sc} < 8 required.")
+                return False
+
         return True
 
     async def execute_autonomous_cycle(self, bot=None) -> List[Dict[str, Any]]:

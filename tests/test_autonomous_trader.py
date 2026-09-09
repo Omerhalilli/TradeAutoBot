@@ -913,10 +913,22 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "adx": "invalid"}))
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "rsi": "invalid"}))
 
-        # 9. Valid SELL setup accepted and edge cases verified
+        # 9. ATR < 10.0 pips rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "atr": 0.0005, "server_time": "2026.09.08 14:00:00"}))
+        self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "atr": 0.0025, "server_time": "2026.09.08 14:00:00"}))
+
+        # 10. session_active = False rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "session_active": False}))
+
+        # 11. Asian session off-hours for EURUSD with score < 8 rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 7, "server_time": "2026.09.08 02:00:00"}))
+        self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "score": 8, "server_time": "2026.09.08 02:00:00"}))
+
+        # 12. Valid SELL setup accepted and edge cases verified
         valid_sell = {
             "symbol": "GBPUSD", "signal": "SELL", "score": 7, "trend": "STRONG BEARISH",
-            "htf_trend": "BEARISH", "adx": 28.0, "rsi": 45.0
+            "htf_trend": "BEARISH", "adx": 28.0, "rsi": 45.0, "atr": 0.0025, "server_time": "2026.09.08 14:00:00",
+            "session_active": True
         }
         self.assertTrue(self.trader.is_qualified_candidate(valid_sell))
         self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "trend": "BULLISH"}))

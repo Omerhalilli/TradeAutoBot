@@ -839,6 +839,27 @@ string Zmq_HandleOpenOrder(const string reqJson)
             return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":149,\"message\":\"An open position already exists on " + Zmq_JsonEscape(sym) + ".\"}";
          }
       }
+
+      // 1. Session Liquidity Verification: protect against illiquid / dormant session whipsaws
+      if(!IsSessionActiveForSymbol(sym))
+      {
+         PrintFormat("[ZeroMQ VETO] 🛑 Autonomous order rejected for %s: Outside active liquid session hours (Asian session off-hours).", sym);
+         return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":4109,\"message\":\"Autonomous order rejected: Outside active liquid session hours for " + Zmq_JsonEscape(sym) + ".\"}";
+      }
+
+      // 2. Institutional Confluence Gate: independently verify score >= 6 and deep technical confluence
+      ENUM_TIMEFRAMES evalTF = (ENUM_TIMEFRAMES)Period();
+      if(evalTF == PERIOD_CURRENT || evalTF == 0) evalTF = PERIOD_H1;
+      StrategySignal liveSig = EvaluateSymbolOpportunity(sym, evalTF, 6, 1.5, 10.0, 150.0);
+      if(!liveSig.valid || liveSig.cmd != cmd || liveSig.score < 6)
+      {
+         PrintFormat("[ZeroMQ VETO] 🛑 Autonomous order rejected for %s: Live confluence check failed (Score: %d/10, Valid: %s, Cmd: %d vs Req: %d)",
+                     sym, liveSig.score, (liveSig.valid ? "true" : "false"), liveSig.cmd, cmd);
+         return "{\"status\":\"error\",\"action\":\"OPEN_ORDER\",\"error_code\":4109,\"message\":\"Autonomous order vetoed: Confluence threshold >= 6 or technical confirmation not met on " + Zmq_JsonEscape(sym) + ".\"}";
+      }
+
+      PrintFormat("[ZeroMQ AUTONOMOUS] ✅ Verified institutional confluence for %s (Score: %d/10, Analysis: %.1f/100, RR: %.2f). Executing remote order...",
+                  sym, liveSig.score, liveSig.analysisScore, liveSig.rrRatio);
    }
 
    if(!IsSymbolTradeAllowed(sym))
@@ -947,6 +968,8 @@ string Zmq_HandleOpenOrder(const string reqJson)
          fillPrice = price;
          if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
             fillPrice = OrderOpenPrice();
+         PrintFormat("[ZeroMQ ORDER FILLED] Remote %s order executed for %s | Ticket: #%d | Lots: %.2f | Price: %f | SL: %f | TP: %f | Origin: %s",
+                     (cmd == OP_BUY ? "BUY" : "SELL"), sym, ticket, lots, fillPrice, finalSL, finalTP, comment);
          break;
       }
       
@@ -2105,12 +2128,13 @@ string Zmq_HandleScanSymbols(const string reqJson)
       double spread = Zmq_GetSpreadPoints(sym);
       int dig = (int)MarketInfo(sym, MODE_DIGITS);
       
-      // Comprehensive 0-100 Multi-Indicator Analysis
-      StrategySignal sig = EvaluateSymbolOpportunity(sym, tf, 6, 1.5, 5.0, 300.0);
+      // Comprehensive 0-100 Multi-Indicator Analysis (Strict 10.0 pip ATR volatility gate)
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, tf, 6, 1.5, 10.0, 150.0);
+      bool isSessionActive = IsSessionActiveForSymbol(sym);
       
       string signal = "HOLD";
-      if(sig.valid && sig.cmd == OP_BUY && sig.score >= 6) signal = "BUY";
-      else if(sig.valid && sig.cmd == OP_SELL && sig.score >= 6) signal = "SELL";
+      if(isSessionActive && sig.valid && sig.cmd == OP_BUY && sig.score >= 6) signal = "BUY";
+      else if(isSessionActive && sig.valid && sig.cmd == OP_SELL && sig.score >= 6) signal = "SELL";
       else sig.score = 0;
       
       if(validCount > 0) json += ",";
@@ -2139,6 +2163,7 @@ string Zmq_HandleScanSymbols(const string reqJson)
       json += "\"stoch_k\":" + DoubleToString(sig.stochK, 1) + ",";
       json += "\"adx\":" + DoubleToString(sig.adx, 1) + ",";
       json += "\"atr\":" + DoubleToString(sig.atr, dig) + ",";
+      json += "\"session_active\":" + (isSessionActive ? "true" : "false") + ",";
       json += "\"bar_time\":" + IntegerToString((long)iTime(sym, tf, 0));
       json += "}";
       validCount++;
