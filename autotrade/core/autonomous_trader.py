@@ -538,9 +538,9 @@ class AutonomousMultiSymbolTrader:
             candidates.sort(key=_safety_sort_key)
 
             if not candidates:
-                logger.debug(
+                logger.info(
                     f"AutonomousTrader: Scanned {len(results)} symbols. "
-                    f"No actionable setup meeting confluence threshold (Score >= {self.min_score}/10). Capital safely preserved."
+                    f"No actionable setup meeting confluence threshold (Score >= {self.min_score}/10). BYPASSED ALL SYMBOLS. Capital safely preserved. Waiting for next candle boundary."
                 )
                 return []
 
@@ -740,6 +740,12 @@ class AutonomousMultiSymbolTrader:
                         except (ValueError, TypeError):
                             pass
 
+            if not executed_trades and candidates:
+                logger.info(
+                    f"AutonomousTrader: Scanned {len(results)} symbols ({len(candidates)} candidate(s) scored >= {self.min_score}). "
+                    f"All candidates filtered by safety/risk/spread gates. BYPASSED ALL SYMBOLS. Capital safely preserved. Waiting for next candle boundary."
+                )
+
             return executed_trades
 
     async def _dispatch_execution_alert(self, bot, trade: Dict[str, Any]) -> None:
@@ -928,8 +934,8 @@ class AutonomousMultiSymbolTrader:
             )
         else:
             msg += (
-                "⚪ <b>Autonomous Status:</b> <code>PATIENTLY SCANNING & WAITING</code>\n"
-                f"<i>No instrument currently reaches the strict threshold (Score ≥ {self.min_score}/10 [60%]). Capital safely preserved.</i>\n"
+                "⚪ <b>Autonomous Status:</b> <code>ALL SYMBOLS BYPASSED (CAPITAL SAFE)</code>\n"
+                f"<i>Scanned {len(results)} symbols. No instrument meets the strict confluence threshold (Score ≥ {self.min_score}/10 [60%]). Capital 100% preserved. Patiently awaiting next candle boundary scan.</i>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
 

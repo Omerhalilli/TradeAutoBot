@@ -199,6 +199,30 @@ void ScanNextSymbolBatch(int batchSize = 0)
       return;
    }
 
+   // Coordinate master scanner across multiple open chart instances of EA
+   string gvScanMaster = "AUTONOMOUS_BOT_MASTER_CHART";
+   long currentChart = ChartID();
+   if(!GlobalVariableCheck(gvScanMaster))
+   {
+      GlobalVariableSet(gvScanMaster, (double)currentChart);
+   }
+   else
+   {
+      long masterChart = (long)GlobalVariableGet(gvScanMaster);
+      if(masterChart != currentChart)
+      {
+         bool masterAlive = false;
+         long cid = ChartFirst();
+         while(cid >= 0)
+         {
+            if(cid == masterChart) { masterAlive = true; break; }
+            cid = ChartNext(cid);
+         }
+         if(masterAlive) return; // Master chart handles autonomous scanning!
+         GlobalVariableSet(gvScanMaster, (double)currentChart);
+      }
+   }
+
    ENUM_TIMEFRAMES activeTF = (ScanTimeframe == PERIOD_CURRENT || ScanTimeframe == 0) ? (ENUM_TIMEFRAMES)Period() : ScanTimeframe;
 
    uint nowTick = GetTickCount();
@@ -336,9 +360,9 @@ void ScanNextSymbolBatch(int batchSize = 0)
    }
    else
    {
-      // No symbol reached confluence score >= 6 or passed filters; wait cleanly for next cycle
-      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). Capital safely preserved.",
-                  scanCount, MinConfluenceScore);
+      // No symbol reached confluence score >= 6 or passed filters; bypass all symbols and wait cleanly for next cycle
+      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). BYPASSED ALL %d SYMBOLS. Capital safely preserved. Waiting for next candle close.",
+                  scanCount, MinConfluenceScore, scanCount);
    }
 }
 

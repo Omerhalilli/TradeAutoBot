@@ -3545,14 +3545,15 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
       y += rowHeight;
 
       string autoLine1 = (g_AutoScanStatusDesc != "" ? g_AutoScanStatusDesc : "Surveillance Active (24 Symbols)");
-      color autoCol = (g_AutoScanQualifiedCount > 0) ? clrLime : clrSilver;
+      color autoCol = (g_AutoScanQualifiedCount > 0) ? clrLime : clrGold;
       RenderHUDLabel("13_AutoStatus", autoLine1, textX, y, autoCol, fontSmall, false);
       y += rowHeight;
 
       int tfSec = Period() * 60;
       datetime nextBarTime = (datetime)iTime(Symbol(), Period(), 0) + tfSec;
       int secUntilScan = MathMax(0, (int)(nextBarTime - TimeCurrent()));
-      string scanCountdown = StringFormat("Next Portfolio Scan: in %02dm %02ds (H1 Synchronized)", secUntilScan / 60, secUntilScan % 60);
+      string scanCountdown = StringFormat("Next Portfolio Scan: in %02dm %02ds (%s Synchronized)",
+                                          secUntilScan / 60, secUntilScan % 60, EnumToString((ENUM_TIMEFRAMES)Period()));
       RenderHUDLabel("14_AutoTimer", scanCountdown, textX, y, clrWheat, fontSmall, false);
    }
 
@@ -7137,6 +7138,30 @@ void Autonomous_MultiSymbolScan()
    {
       return;
    }
+
+   // Coordinate master scanner across multiple open chart instances of EA
+   string gvScanMaster = "AUTONOMOUS_SCAN_MASTER_CHART";
+   long currentChart = ChartID();
+   if(!GlobalVariableCheck(gvScanMaster))
+   {
+      GlobalVariableSet(gvScanMaster, (double)currentChart);
+   }
+   else
+   {
+      long masterChart = (long)GlobalVariableGet(gvScanMaster);
+      if(masterChart != currentChart)
+      {
+         bool masterAlive = false;
+         long cid = ChartFirst();
+         while(cid >= 0)
+         {
+            if(cid == masterChart) { masterAlive = true; break; }
+            cid = ChartNext(cid);
+         }
+         if(masterAlive) return; // Master chart handles autonomous multi-symbol scanning!
+         GlobalVariableSet(gvScanMaster, (double)currentChart);
+      }
+   }
    
    // Automatically detect active chart timeframe
    ENUM_TIMEFRAMES activeTF = (ENUM_TIMEFRAMES)Period();
@@ -7329,10 +7354,10 @@ void Autonomous_MultiSymbolScan()
    else
    {
       g_AutoScanBestSymbol = "";
-      g_AutoScanStatusDesc = StringFormat("Preserved: 0/%d qualified >= %d/10. Capital safe.", numSymbols, effectiveMinScore);
-      // No symbol reached confluence threshold >= 6; wait cleanly for next cycle
-      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). Capital safely preserved on %s and portfolio.",
-                  numSymbols, effectiveMinScore, Symbol());
+      g_AutoScanStatusDesc = StringFormat("BYPASSED ALL %d: No setup >= %d/10. Capital 100%% safe.", numSymbols, effectiveMinScore);
+      // No symbol reached confluence threshold >= 6; bypass all symbols and wait cleanly for next cycle
+      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). BYPASSED ALL %d SYMBOLS. Capital safely preserved on %s and portfolio. Waiting for next candle boundary.",
+                  numSymbols, effectiveMinScore, numSymbols, Symbol());
    }
 }
 
@@ -7552,7 +7577,11 @@ void OnTick()
 
 
       // Check Filters and Execute if AutoTrading is enabled
-      if(ValidateTradeFilters(decision))
+      // CRITICAL: Standalone single-chart mode only (!EnableAutonomousMultiSymbol).
+      // When EnableAutonomousMultiSymbol is active, ALL portfolio trade decisions are governed strictly
+      // by Autonomous_MultiSymbolScan(), ensuring deep comparison across all 24 symbols, and allowing 
+      // full bypass of all symbols when no setup meets >= 6/10.
+      if(!EnableAutonomousMultiSymbol && ValidateTradeFilters(decision))
       {
          if(g_AutoTradingRuntimeActive && !IsAutoTradePausedByTelegram())
          {
