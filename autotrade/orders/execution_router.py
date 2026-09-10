@@ -30,6 +30,8 @@ class ExecutionRouter:
         Submits market or pending order through MT4 bridge or paper execution simulator.
         """
         t0 = time.perf_counter()
+        order.status = OrderStatus.SUBMITTED
+        order.submitted_at = time.time()
         
         if self.simulation_mode:
             return self._execute_simulated(order)
@@ -37,6 +39,9 @@ class ExecutionRouter:
         try:
             from zmq_client import zmq_client
             cmd_action = "BUY" if order.side == OrderSide.BUY else "SELL"
+            
+            order.status = OrderStatus.ACKNOWLEDGED
+            order.acknowledged_at = time.time()
             
             # Send command via zmq_client
             loop = asyncio.get_running_loop()
@@ -56,21 +61,37 @@ class ExecutionRouter:
             )
 
             latency_ms = (time.perf_counter() - t0) * 1000.0
+            order.latency_ms = round(latency_ms, 2)
             logger.info(f"Order dispatch for {order.symbol} completed in {latency_ms:.2f} ms: {res}")
 
             if res.get("status") == "ok":
                 order.ticket = int(res.get("ticket", 0))
                 order.status = OrderStatus.FILLED
                 order.filled_at = time.time()
-                order.filled_price = float(res.get("price", order.price))
-                
+                filled_p = float(res.get("price", order.price))
+                order.filled_price = filled_p
+
+                # Compute fractional pip slippage: requested vs filled
+                pip_unit = 0.01 if ("JPY" in order.symbol.upper() or "XAU" in order.symbol.upper() or "OIL" in order.symbol.upper()) else 0.0001
+                if order.price > 0.0 and pip_unit > 0.0:
+                    if order.side == OrderSide.BUY:
+                        order.slippage_pips = round((filled_p - order.price) / pip_unit, 2)
+                    else:
+                        order.slippage_pips = round((order.price - filled_p) / pip_unit, 2)
+
                 event_bus.publish(
                     EventType.ORDER_FILLED,
                     payload=order.to_dict(),
                     priority=EventPriority.HIGH,
                     source="ExecutionRouter"
                 )
-                return {"success": True, "ticket": order.ticket, "latency_ms": latency_ms, "response": res}
+                return {
+                    "success": True,
+                    "ticket": order.ticket,
+                    "latency_ms": order.latency_ms,
+                    "slippage_pips": order.slippage_pips,
+                    "response": res
+                }
             else:
                 order.status = OrderStatus.REJECTED
                 event_bus.publish(

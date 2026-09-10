@@ -3,26 +3,50 @@ ZeroMQ Client module for MT4 communication.
 Implements robust Lazy Pirate pattern for REQ/REP socket recovery,
 background 5s heartbeat auto-reconnect, and fault-tolerant query handling.
 """
+import asyncio
 import json
 import logging
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import zmq
+import zmq.asyncio
 from config import ZMQ_SERVER_URL, ZMQ_TIMEOUT_MS, ZMQ_RETRY_INTERVAL_SEC
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MAX_TIMEOUT_MS = 2500
+
+
 class MT4ZmqClient:
-    def __init__(self, server_url: str = ZMQ_SERVER_URL, timeout_ms: int = ZMQ_TIMEOUT_MS, retry_interval: int = ZMQ_RETRY_INTERVAL_SEC):
+    def __init__(
+        self,
+        server_url: str = ZMQ_SERVER_URL,
+        timeout_ms: int = ZMQ_TIMEOUT_MS,
+        retry_interval: int = ZMQ_RETRY_INTERVAL_SEC,
+        sub_url: Optional[str] = None
+    ):
         self.server_url = server_url
-        self.timeout_ms = timeout_ms
+        self.timeout_ms = min(timeout_ms, DEFAULT_MAX_TIMEOUT_MS)
         self.retry_interval = retry_interval
         self.context = zmq.Context()
         self.socket: Optional[zmq.Socket] = None
         self._lock = threading.Lock()
         self.is_connected = False
         self._stop_heartbeat = threading.Event()
+
+        # pyzmq.asyncio context & non-blocking SUB socket
+        self.async_context = zmq.asyncio.Context()
+        self.sub_url = sub_url or (
+            server_url.replace(":5555", ":5556") if ":5555" in server_url else "tcp://127.0.0.1:5556"
+        )
+        self._async_sub_socket: Optional[zmq.asyncio.Socket] = None
+        self._async_lock = asyncio.Lock()
+
+        # Performance & telemetry metrics
+        self.last_latency_ms: float = 0.0
+        self.total_commands_sent: int = 0
+        self.total_commands_failed: int = 0
         
         self._init_socket()
         
@@ -31,6 +55,7 @@ class MT4ZmqClient:
         self._heartbeat_thread.start()
 
     def switch_endpoint(self, new_url: str) -> None:
+
         """Switches the active ZeroMQ connection target to a new server endpoint."""
         with self._lock:
             if self.server_url == new_url and self.socket is not None:
@@ -86,11 +111,12 @@ class MT4ZmqClient:
         """
         Sends a JSON-encoded command to the MT4 ZeroMQ Bridge EA and returns the parsed response.
         If MT4 is closed or times out, safely resets socket and returns "MT4 not connected".
-        Supports per-command timeout_ms override.
+        Enforces maximum 2500ms timeout limit.
         """
         payload = {"action": action, **kwargs}
         req_bytes = json.dumps(payload).encode("utf-8")
-        eff_timeout = timeout_ms if timeout_ms is not None else self.timeout_ms
+        eff_timeout = min(timeout_ms if timeout_ms is not None else self.timeout_ms, DEFAULT_MAX_TIMEOUT_MS)
+        t0 = time.perf_counter()
 
         with self._lock:
             try:
@@ -106,8 +132,11 @@ class MT4ZmqClient:
                 reply_str = reply_bytes.decode("utf-8", errors="replace")
                 res = json.loads(reply_str)
                 self.is_connected = True
+                self.last_latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+                self.total_commands_sent += 1
                 return res
             except zmq.Again:
+                self.total_commands_failed += 1
                 if self.is_connected:
                     logger.warning(f"Timeout ({eff_timeout}ms) waiting for MT4 ZeroMQ response for action '{action}'")
                 else:
@@ -120,6 +149,7 @@ class MT4ZmqClient:
                     "message": "⚠️ MT4 not connected"
                 }
             except Exception as e:
+                self.total_commands_failed += 1
                 logger.error(f"ZeroMQ communication error for '{action}': {e}")
                 self.is_connected = False
                 self._init_socket()
@@ -135,6 +165,15 @@ class MT4ZmqClient:
                         self.socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
                     except Exception:
                         pass
+
+    async def send_command_async(self, action: str, timeout_ms: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+        """
+        Asynchronously sends a JSON command to MT4 bridge without blocking the event loop.
+        Guarantees maximum 2500ms timeout.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: self.send_command(action, timeout_ms=timeout_ms, **kwargs))
+
 
     def open_order(
         self,
@@ -246,7 +285,16 @@ class MT4ZmqClient:
     def get_symbols(self, timeout_ms: int = 5000) -> Dict[str, Any]:
         return self.send_command("GET_SYMBOLS", timeout_ms=timeout_ms)
 
+    def get_quote(self, symbol: str, timeout_ms: int = 3000) -> Dict[str, Any]:
+        """Queries MT4 bridge for live market quotes (bid, ask, spread)."""
+        return self.send_command("GET_QUOTE", symbol=symbol, timeout_ms=timeout_ms)
+
+    def get_rates(self, symbol: str, timeframe: str = "H1", count: int = 100, timeout_ms: int = 5000) -> Dict[str, Any]:
+        """Queries MT4 bridge for historical OHLCV candle rates."""
+        return self.send_command("GET_RATES", symbol=symbol, timeframe=timeframe, count=count, timeout_ms=timeout_ms)
+
     def scan_symbols(self, symbols: str = "", timeframe: str = "H1", timeout_ms: int = 5000) -> Dict[str, Any]:
+
         return self.send_command("SCAN_SYMBOLS", symbols=symbols, timeframe=timeframe, timeout_ms=timeout_ms)
 
     def get_boost(self) -> Dict[str, Any]:
@@ -264,9 +312,81 @@ class MT4ZmqClient:
             return round((t1 - t0) * 1000.0, 2)
         return -1.0
 
+    # --- Asynchronous ZeroMQ Helpers & Market Data Stream (SUB Socket) ---
+
+    def init_async_sub_socket(self, sub_url: Optional[str] = None, topics: Optional[List[str]] = None) -> None:
+        """Initializes non-blocking zmq.asyncio SUB socket for market tick/bar streaming."""
+        if self._async_sub_socket is not None:
+            try:
+                self._async_sub_socket.close()
+            except Exception:
+                pass
+        self.sub_url = sub_url or self.sub_url
+        try:
+            self._async_sub_socket = self.async_context.socket(zmq.SUB)
+            self._async_sub_socket.setsockopt(zmq.LINGER, 0)
+            self._async_sub_socket.setsockopt(zmq.RCVTIMEO, DEFAULT_MAX_TIMEOUT_MS)
+            target_topics = topics or ["", "TICK", "BAR", "MARKET"]
+            for topic in target_topics:
+                self._async_sub_socket.setsockopt_string(zmq.SUBSCRIBE, topic)
+            self._async_sub_socket.connect(self.sub_url)
+            logger.info(f"ZeroMQ Async SUB connected to {self.sub_url}")
+        except Exception as ex:
+            logger.warning(f"Failed to connect ZeroMQ Async SUB socket to {self.sub_url}: {ex}")
+            self._async_sub_socket = None
+
+    async def recv_market_event_async(self) -> Optional[Dict[str, Any]]:
+        """Asynchronously receives next broadcast message from SUB socket without blocking."""
+        if self._async_sub_socket is None:
+            self.init_async_sub_socket()
+        if self._async_sub_socket is None:
+            return None
+        try:
+            msg = await self._async_sub_socket.recv_string()
+            parts = msg.split(" ", 1)
+            json_str = parts[1] if len(parts) > 1 and parts[1].startswith("{") else msg
+            if json_str.startswith("{") and json_str.endswith("}"):
+                return json.loads(json_str)
+            return {"raw": msg}
+        except (zmq.Again, asyncio.TimeoutError):
+            return None
+        except Exception as ex:
+            logger.debug(f"Async SUB receive error: {ex}")
+            return None
+
+    async def open_order_async(self, **kwargs) -> Dict[str, Any]:
+        """Asynchronously executes market order via ZeroMQ bridge."""
+        return await self.send_command_async("OPEN_ORDER", **kwargs)
+
+    async def get_account_async(self) -> Dict[str, Any]:
+        """Asynchronously queries MT4 account metrics."""
+        return await self.send_command_async("GET_ACCOUNT")
+
+    async def get_positions_async(self) -> Dict[str, Any]:
+        """Asynchronously queries MT4 open positions."""
+        return await self.send_command_async("GET_POSITIONS")
+
+    async def get_quote_async(self, symbol: str) -> Dict[str, Any]:
+        """Asynchronously queries MT4 live quote."""
+        return await self.send_command_async("GET_QUOTE", symbol=symbol)
+
+    async def get_rates_async(self, symbol: str, timeframe: str = "H1", count: int = 100) -> Dict[str, Any]:
+        """Asynchronously queries MT4 historical bars."""
+        return await self.send_command_async("GET_RATES", symbol=symbol, timeframe=timeframe, count=count)
+
+    async def scan_symbols_async(self, symbols: str = "", timeframe: str = "H1") -> Dict[str, Any]:
+        """Asynchronously triggers multi-symbol market surveillance."""
+        return await self.send_command_async("SCAN_SYMBOLS", symbols=symbols, timeframe=timeframe)
+
     def close(self):
-        """Stops heartbeat thread and closes socket cleanly."""
+        """Stops heartbeat thread and closes sockets cleanly."""
         self._stop_heartbeat.set()
+        if self._async_sub_socket:
+            try:
+                self._async_sub_socket.close()
+            except Exception:
+                pass
+            self._async_sub_socket = None
         with self._lock:
             if self.socket:
                 try:
@@ -279,6 +399,11 @@ class MT4ZmqClient:
                 self.context.term()
             except Exception:
                 pass
+        try:
+            self.async_context.term()
+        except Exception:
+            pass
+
 
 # Global singleton client
 zmq_client = MT4ZmqClient()

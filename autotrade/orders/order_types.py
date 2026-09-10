@@ -29,6 +29,7 @@ class OrderSide(str, Enum):
 class OrderStatus(str, Enum):
     PENDING = "PENDING"
     SUBMITTED = "SUBMITTED"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
     FILLED = "FILLED"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     CANCELLED = "CANCELLED"
@@ -57,6 +58,7 @@ class TradeOrder:
     price: float = 0.0
     sl: float = 0.0
     tp: float = 0.0
+    atr: float = 0.0
     trailing_stop_pips: int = 0
     breakeven_pips: int = 0
     breakeven_lock_pips: int = 1
@@ -66,9 +68,13 @@ class TradeOrder:
     strategy_name: str = "QuantitativeCore"
     status: OrderStatus = OrderStatus.PENDING
     created_at: float = field(default_factory=time.time)
+    submitted_at: Optional[float] = None
+    acknowledged_at: Optional[float] = None
     filled_at: Optional[float] = None
     filled_price: float = 0.0
     close_price: float = 0.0
+    slippage_pips: float = 0.0
+    latency_ms: float = 0.0
     pnl: float = 0.0
     oco_linked_id: Optional[str] = None
     comment: str = ""
@@ -90,6 +96,8 @@ class TradeOrder:
             "magic": self.magic,
             "strategy_name": self.strategy_name,
             "created_at": self.created_at,
+            "slippage_pips": self.slippage_pips,
+            "latency_ms": self.latency_ms,
             "pnl": self.pnl
         }
 

@@ -283,6 +283,48 @@ class TestRiskAndOrders(unittest.TestCase):
         )
         self.assertEqual(lots_calculated, 0.01)
 
+    def test_rollover_spread_freeze_and_dynamic_pips(self):
+        # 1. Midnight rollover freeze test: 23:58 server time
+        res_rollover_2358 = self.risk.evaluate_order_risk(
+            symbol="EURUSD",
+            cmd="BUY",
+            lots=0.01,
+            price=1.0850,
+            sl=1.0820,
+            tp=1.0910,
+            account_info={"balance": 100000.0, "equity": 100000.0, "margin_free": 90000.0},
+            open_positions=[],
+            server_time_str="2026.09.10 23:58:12"
+        )
+        self.assertFalse(res_rollover_2358.passed)
+        self.assertIn("rollover window", res_rollover_2358.reason)
+
+        # 2. Midnight rollover freeze test: 00:05 server time
+        res_rollover_0005 = self.risk.evaluate_order_risk(
+            symbol="EURUSD",
+            cmd="BUY",
+            lots=0.01,
+            price=1.0850,
+            sl=1.0820,
+            tp=1.0910,
+            account_info={"balance": 100000.0, "equity": 100000.0, "margin_free": 90000.0},
+            open_positions=[],
+            server_time_str="2026.09.11 00:05:00"
+        )
+        self.assertFalse(res_rollover_0005.passed)
+        self.assertIn("rollover window", res_rollover_0005.reason)
+
+        # 3. Dynamic pip calculation tests across assets
+        pv_eurusd = self.sizer.get_dynamic_pip_value("EURUSD")
+        self.assertEqual(pv_eurusd, 10.0)
+
+        pv_xauusd = self.sizer.get_dynamic_pip_value("XAUUSD")
+        self.assertEqual(pv_xauusd, 100.0)
+
+        pv_eurjpy = self.sizer.get_dynamic_pip_value("EURJPY", exchange_rates={"USDJPY": 150.0})
+        self.assertAlmostEqual(pv_eurjpy, 6.67, places=1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

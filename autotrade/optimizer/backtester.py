@@ -12,8 +12,10 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from autotrade.analytics.precision import PrecisionMath
+from autotrade.risk.position_sizer import get_dynamic_pip_value
 
 logger = logging.getLogger("autotrade.optimizer.backtester")
+
 
 
 @dataclass
@@ -127,31 +129,46 @@ class Backtester:
                 exit_reason = "BAR_CLOSE"
 
                 if side == "BUY":
-                    if sl > 0 and cur_low <= sl:
+                    sl_hit = (sl > 0 and cur_low <= sl)
+                    tp_hit = (tp > 0 and cur_high >= tp)
+                    if sl_hit and tp_hit:
+                        # Intra-bar ambiguity: conservative worst-case fills assume Stop Loss struck before Take Profit
                         exit_price = sl
                         exit_reason = "STOP_LOSS"
                         hit_exit = True
-                    elif tp > 0 and cur_high >= tp:
+                    elif sl_hit:
+                        exit_price = sl
+                        exit_reason = "STOP_LOSS"
+                        hit_exit = True
+                    elif tp_hit:
                         exit_price = tp
                         exit_reason = "TAKE_PROFIT"
                         hit_exit = True
                 else: # SELL
-                    if sl > 0 and cur_high >= sl:
+                    sl_hit = (sl > 0 and cur_high >= sl)
+                    tp_hit = (tp > 0 and cur_low <= tp)
+                    if sl_hit and tp_hit:
+                        # Intra-bar ambiguity: conservative worst-case fills assume Stop Loss struck before Take Profit
                         exit_price = sl
                         exit_reason = "STOP_LOSS"
                         hit_exit = True
-                    elif tp > 0 and cur_low <= tp:
+                    elif sl_hit:
+                        exit_price = sl
+                        exit_reason = "STOP_LOSS"
+                        hit_exit = True
+                    elif tp_hit:
                         exit_price = tp
                         exit_reason = "TAKE_PROFIT"
                         hit_exit = True
 
                 if hit_exit:
-                    # Calculate PnL
+                    # Calculate PnL with dynamic pip value
                     pip_diff = (exit_price - entry_p) / pip_size if side == "BUY" else (entry_p - exit_price) / pip_size
-                    pip_val = 10.0 # Approximate for standard FX
+                    pip_val = get_dynamic_pip_value(symbol)
                     gross_pnl = pip_diff * pip_val * lots
                     comm = self.commission_per_lot * lots * 2.0
                     net_pnl = gross_pnl - comm
+
 
                     balance += net_pnl
                     ret_pct = net_pnl / balance

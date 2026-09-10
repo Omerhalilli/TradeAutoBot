@@ -210,8 +210,8 @@ class StrategyManager:
 
             ohlcv = self.market_data.get_numpy_ohlcv(sym, tf, count=300)
             if not len(ohlcv.get("close", [])):
-                self.market_data.seed_synthetic_bars_if_empty(sym, tf, count=300)
-                ohlcv = self.market_data.get_numpy_ohlcv(sym, tf, count=300)
+                logger.warning(f"Optimization skipped for {name} on {sym} {tf}: No real market data available.")
+                continue
 
             def make_strategy_eval(params):
                 def eval_fn(idx, sliced):

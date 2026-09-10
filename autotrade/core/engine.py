@@ -175,6 +175,13 @@ class TradingEngine:
         self.security = SecurityGuardian()
         self.two_factor = TwoFactorAuth()
 
+        # Step 9: Link Autonomous Confluence Surveillance Engine
+        from autotrade.core.autonomous_trader import autonomous_trader
+        self.autonomous_trader = autonomous_trader
+        self.autonomous_trader._risk_manager = self.risk_manager
+        self.autonomous_trader._position_sizer = self.position_sizer
+        self.autonomous_trader._order_manager = self.order_manager
+
         # Register Scheduled Recurring Tasks
         self._register_scheduled_tasks()
 
@@ -221,6 +228,14 @@ class TradingEngine:
             interval_sec=21600.0,
             first_delay_sec=1800.0
         )
+        # 6. Autonomous Multi-Symbol Surveillance Cycle (every 10 seconds or candle boundary)
+        scheduler.add_interval_task(
+            "autonomous_surveillance",
+            "Multi-Symbol Confluence Surveillance",
+            self._run_surveillance_cycle,
+            interval_sec=10.0
+        )
+
 
     async def start(self) -> None:
         """Starts the Event Bus, Scheduler, Watchdog, and Main 24/7 Trading Loop."""
@@ -313,6 +328,8 @@ class TradingEngine:
         """Pauses autonomous trade generation without closing existing trades."""
         async with self._lock:
             self.state.is_paused = True
+            if hasattr(self, "autonomous_trader") and self.autonomous_trader:
+                self.autonomous_trader.set_enabled(False)
             logger.info("Auto-trading paused by operator.")
 
     async def resume(self) -> None:
@@ -322,7 +339,10 @@ class TradingEngine:
                 logger.warning("Cannot resume: Emergency halt is active. Reset risk safeguard first.")
                 return
             self.state.is_paused = False
+            if hasattr(self, "autonomous_trader") and self.autonomous_trader:
+                self.autonomous_trader.set_enabled(True)
             logger.info("Auto-trading resumed by operator.")
+
 
     async def _on_emergency_halt(self, event: Event) -> None:
         """Listener handling emergency halt broadcast."""
@@ -401,7 +421,17 @@ class TradingEngine:
         if hasattr(self, "strategy_manager") and self.strategy_manager:
             await self.strategy_manager.optimize_strategies()
 
+    async def _run_surveillance_cycle(self) -> None:
+        """Executes autonomous multi-symbol surveillance cycle if bot is unpaused."""
+        if self.state.is_paused or self.state.emergency_halt:
+            return
+        if hasattr(self, "autonomous_trader") and self.autonomous_trader:
+            executed = await self.autonomous_trader.execute_autonomous_cycle()
+            if executed:
+                self.state.total_orders_executed += len(executed)
+
     def get_status(self) -> Dict[str, Any]:
+
         """Returns comprehensive diagnostic status of the trading system."""
         now = time.time()
         uptime = now - self.state.start_time if self.state.is_running else 0.0

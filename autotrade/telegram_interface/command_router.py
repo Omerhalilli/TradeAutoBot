@@ -376,9 +376,8 @@ class CommandRouter:
             # Fetch bars from market data
             ohlcv = self.engine.market_data.get_numpy_ohlcv(symbol, tf, count=120) if self.engine.market_data else {}
             if not len(ohlcv.get("close", [])):
-                if self.engine.market_data:
-                    self.engine.market_data.seed_synthetic_bars_if_empty(symbol, tf, count=120)
-                    ohlcv = self.engine.market_data.get_numpy_ohlcv(symbol, tf, count=120)
+                await query.edit_message_text(f"⚠️ No market data bars available for {symbol} ({tf}). Standby mode.")
+                return
 
             chart_path = self.charts.generate_chart(
                 symbol=symbol,

@@ -89,9 +89,13 @@ class PositionTracker:
         is_buy = "BUY" in cmd
         pip_size = float(PrecisionMath.get_pip_size(symbol))
 
-        # 1. Break-Even Check
+        # 1. Dynamic Break-Even Check (Locks +1 pip at 1.0x ATR or configured trigger pips)
+        tracked_order = self._active_orders.get(ticket)
         if self.config.risk.enable_breakeven and ticket not in self._breakeven_activated_tickets:
             trigger_pips = self.config.risk.breakeven_trigger_pips
+            if tracked_order and tracked_order.atr > 0 and pip_size > 0:
+                atr_trigger = tracked_order.atr / pip_size
+                trigger_pips = min(trigger_pips, max(8.0, atr_trigger * 1.0))
             lock_pips = self.config.risk.breakeven_lock_pips
             
             pips_in_profit = (current_price - open_price) / pip_size if is_buy else (open_price - current_price) / pip_size

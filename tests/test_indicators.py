@@ -202,6 +202,10 @@ class TestTechnicalIndicators(unittest.TestCase):
         kpo = indicators.kase_peak_oscillator(self.highs, self.lows)
         self.assertEqual(len(kpo), len(self.highs))
 
+        h = indicators.hurst_exponent(self.closes)
+        self.assertTrue(0.0 <= h <= 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+

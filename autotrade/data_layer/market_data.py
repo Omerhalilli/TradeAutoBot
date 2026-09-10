@@ -263,38 +263,3 @@ class MarketDataManager:
         if sym in self._ticks and self._ticks[sym]:
             return self._ticks[sym][-1]
         return None
-
-    def seed_synthetic_bars_if_empty(self, symbol: str, timeframe: str, count: int = 150, base_price: float = 1.3000) -> None:
-        """Seeds synthetic realistic geometric brownian motion candles if empty, ensuring indicators function immediately."""
-        key = (symbol.upper(), timeframe.upper())
-        if self.get_bars(symbol, timeframe, count=10):
-            return  # Already has bars
-            
-        now = int(time.time())
-        period = TIMEFRAME_SECONDS.get(timeframe.upper(), 3600)
-        bars = []
-        price = base_price
-        
-        np.random.seed(42)
-        returns = np.random.normal(0.0001, 0.0015, count)
-        
-        for i in range(count):
-            t = now - (count - i) * period
-            o = price
-            ret = returns[i]
-            c = o * (1.0 + ret)
-            h = max(o, c) + abs(np.random.normal(0, 0.0008)) * price
-            l = min(o, c) - abs(np.random.normal(0, 0.0008)) * price
-            vol = float(np.random.randint(50, 500))
-            price = c
-            bars.append({
-                "timestamp": t,
-                "open": round(o, 5),
-                "high": round(h, 5),
-                "low": round(l, 5),
-                "close": round(c, 5),
-                "volume": vol
-            })
-            
-        self.db.save_bars_batch(symbol.upper(), timeframe.upper(), bars)
-        logger.info(f"Seeded {count} synthetic bars for {symbol} {timeframe}")

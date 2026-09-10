@@ -85,6 +85,48 @@ class TestOptimizer(unittest.TestCase):
         self.assertIn("best_parameters", res)
         self.assertGreater(res["best_fitness"], 0.0)
 
+    def test_conservative_worst_case_dual_breach_fill(self):
+        """Verifies institutional worst-case assumption: SL struck before TP on intra-bar dual breach."""
+        bt = Backtester(initial_balance=100000.0)
+        n = 45
+        closes = np.full(n, 1.2500)
+        highs = np.full(n, 1.2510)
+        lows = np.full(n, 1.2490)
+        opens = np.full(n, 1.2500)
+
+        # Bar 36 triggers BUY with entry 1.2500, SL=1.2450, TP=1.2550
+        # Bar 37 has Low 1.2400 (breaches SL) AND High 1.2600 (breaches TP)
+        highs[37] = 1.2600
+        lows[37] = 1.2400
+
+        data = {"open": opens, "high": highs, "low": lows, "close": closes}
+
+        def eval_fn(idx, d):
+            if idx == 36:
+                return {"action": "BUY", "sl": 1.2450, "tp": 1.2550, "lots": 0.10}
+            return None
+
+        res = bt.run("GBPUSD", data, eval_fn)
+        self.assertEqual(len(res.trades), 1)
+        trade = res.trades[0]
+        # Must be conservative STOP_LOSS rather than optimistic TAKE_PROFIT
+        self.assertEqual(trade.exit_reason, "STOP_LOSS")
+        self.assertEqual(trade.exit_price, 1.2450)
+
+    def test_walk_forward_optimizer_parallel(self):
+        """Verifies concurrent WalkForwardOptimizer grid search."""
+        wfo = WalkForwardOptimizer(n_folds=2, is_ratio=0.7)
+        param_grid = [{"period": p} for p in range(5, 12)]
+
+        def strat_factory(params):
+            def eval_fn(idx, d):
+                return None
+            return eval_fn
+
+        res = wfo.run_walk_forward("EURUSD", self.ohlcv, strat_factory, param_grid)
+        self.assertEqual(res["total_folds"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
+

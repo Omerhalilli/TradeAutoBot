@@ -6,13 +6,16 @@ and Out-of-Sample (OOS) verification windows to evaluate Walk-Forward Efficiency
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
 import numpy as np
 
 from autotrade.optimizer.backtester import Backtester, BacktestResult
 
 logger = logging.getLogger("autotrade.optimizer.walk_forward")
+
 
 
 @dataclass
@@ -88,18 +91,33 @@ class WalkForwardOptimizer:
             # Slice In-Sample data
             is_ohlcv = {k: v[fold.in_sample_start:fold.in_sample_end] for k, v in ohlcv.items()}
             
-            # Grid search best params on In-Sample
+            # Grid search best params on In-Sample with concurrent execution
             best_p = None
             best_is_sharpe = -999.0
             best_is_res = None
 
-            for p in param_grid:
+            def _eval_param(p):
                 eval_fn = strategy_factory_fn(p)
                 res = self.backtester.run(symbol, is_ohlcv, eval_fn)
-                if res.sharpe_ratio > best_is_sharpe and res.total_trades >= 3:
-                    best_is_sharpe = res.sharpe_ratio
-                    best_p = p
-                    best_is_res = res
+                return p, res
+
+            if len(param_grid) > 4:
+                with ThreadPoolExecutor() as executor:
+                    futures = [executor.submit(_eval_param, p) for p in param_grid]
+                    for fut in futures:
+                        p, res = fut.result()
+                        if res.sharpe_ratio > best_is_sharpe and res.total_trades >= 3:
+                            best_is_sharpe = res.sharpe_ratio
+                            best_p = p
+                            best_is_res = res
+            else:
+                for p in param_grid:
+                    p, res = _eval_param(p)
+                    if res.sharpe_ratio > best_is_sharpe and res.total_trades >= 3:
+                        best_is_sharpe = res.sharpe_ratio
+                        best_p = p
+                        best_is_res = res
+
 
             fold.best_params = best_p or (param_grid[0] if param_grid else {})
             fold.is_sharpe = best_is_sharpe if best_is_res else 0.0

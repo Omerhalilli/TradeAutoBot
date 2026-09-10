@@ -1397,10 +1397,85 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
                 scan_text = update.message.reply_text.call_args[0][0]
                 self.assertIn("AUTONOMOUS MULTI-SYMBOL SCANNER", scan_text)
 
+    def test_spread_to_atr_normalized_sorting(self):
+        """
+        Verifies that candidates are ranked by normalized spread-to-ATR rather than raw points.
+        Gold (30 pts spread / $15 ATR = 2% ATR cost) should outrank EURUSD (20 pts spread / 20 pip ATR = 10% ATR cost)
+        at equal scores.
+        """
+        async def run_test():
+            trader = AutonomousMultiSymbolTrader(symbols=["EURUSD", "XAUUSD"], min_score=6)
+            mock_scan = {
+                "status": "ok",
+                "results": [
+                    {
+                        "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "BULLISH",
+                        "spread": 20.0, "atr": 0.0020, "sl_pips": 30.0, "tp_pips": 60.0,
+                        "adx": 25.0, "rsi": 50.0, "htf_trend": "BULLISH"
+                    },
+                    {
+                        "symbol": "XAUUSD", "score": 8, "signal": "BUY", "trend": "BULLISH",
+                        "spread": 30.0, "atr": 15.0, "sl_pips": 150.0, "tp_pips": 300.0,
+                        "adx": 25.0, "rsi": 50.0, "htf_trend": "BULLISH"
+                    }
+                ]
+            }
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value={"status": "ok", "positions": []}), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order", return_value={"status": "ok", "ticket": 999123}) as mock_open:
+                trades = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 1)
+                # XAUUSD has lower spread-to-ATR (0.02 vs 0.10) so it must execute first!
+                self.assertEqual(trades[0]["symbol"], "XAUUSD")
+
+        asyncio.run(run_test())
+
+    def test_disk_state_persistence(self):
+        """Verifies state serialization to and restoration from disk."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = os.path.join(tmpdir, "test_trader_state.json")
+            trader1 = AutonomousMultiSymbolTrader(symbols=["EURUSD"], state_file_path=state_file)
+            trader1.total_trades_executed = 42
+            trader1.last_trade_times["EURUSD"] = 1788899999.0
+            trader1.seen_bar_times["EURUSD"] = 1788890000
+            trader1._save_state_to_disk()
+            self.assertTrue(os.path.exists(state_file))
+
+            # New instance loading from same path
+            trader2 = AutonomousMultiSymbolTrader(symbols=["EURUSD"], state_file_path=state_file)
+            self.assertEqual(trader2.total_trades_executed, 42)
+            self.assertEqual(trader2.last_trade_times.get("EURUSD"), 1788899999.0)
+            self.assertEqual(trader2.seen_bar_times.get("EURUSD"), 1788890000)
+
+    def test_quote_rejection_in_production(self):
+        """Verifies that missing market quote in production mode strictly halts trade dispatch."""
+        async def run_test():
+            trader = AutonomousMultiSymbolTrader(symbols=["EURUSD"], min_score=6)
+            mock_scan = {
+                "status": "ok",
+                "results": [
+                    {
+                        "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "BULLISH",
+                        "spread": 10.0, "sl_pips": 30.0, "tp_pips": 60.0,
+                        "adx": 25.0, "rsi": 50.0, "htf_trend": "BULLISH",
+                        "ask": 0.0, "bid": 0.0, "price": 0.0
+                    }
+                ]
+            }
+            with patch.object(trader, "scan_portfolio_async", return_value=mock_scan), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value={"status": "ok", "positions": []}), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.get_quote", return_value={"status": "error"}), \
+                 patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}), \
+                 patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                trades = await trader.execute_autonomous_cycle()
+                self.assertEqual(len(trades), 0)
+                mock_open.assert_not_called()
+
         asyncio.run(run_test())
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
