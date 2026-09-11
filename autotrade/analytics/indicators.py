@@ -6,7 +6,7 @@ Includes Market Regime Indicators: Kaufman Efficiency Ratio (KER) and Hurst Expo
 
 from __future__ import annotations
 import math
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, NamedTuple
 import numpy as np
 from numba import njit
 
@@ -491,6 +491,332 @@ def _cmf_kernel(
             sum_mfv += mfv[j]
         cmf_vals[i] = sum_mfv / sum_vol if sum_vol > 0.0 else 0.0
     return cmf_vals
+
+
+# ==============================================================================
+# SMART MONEY / INSTITUTIONAL MARKET STRUCTURE NUMBA KERNELS
+# ==============================================================================
+
+@njit(fastmath=True, nogil=True)
+def _compute_liquidity_pools_kernel(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    open_: np.ndarray,
+    lookback: int = 50,
+    tolerance_pct: float = 0.05
+):
+    n = len(close)
+    start = max(2, n - lookback)
+    
+    max_swings = lookback
+    swing_highs = np.empty(max_swings, dtype=np.float64)
+    swing_high_idx = np.empty(max_swings, dtype=np.int64)
+    sh_count = 0
+    
+    swing_lows = np.empty(max_swings, dtype=np.float64)
+    swing_low_idx = np.empty(max_swings, dtype=np.int64)
+    sl_count = 0
+    
+    for i in range(start, n - 2):
+        if high[i] >= high[i-1] and high[i] >= high[i-2] and high[i] >= high[i+1] and high[i] >= high[i+2]:
+            swing_highs[sh_count] = high[i]
+            swing_high_idx[sh_count] = i
+            sh_count += 1
+        if low[i] <= low[i-1] and low[i] <= low[i-2] and low[i] <= low[i+1] and low[i] <= low[i+2]:
+            swing_lows[sl_count] = low[i]
+            swing_low_idx[sl_count] = i
+            sl_count += 1
+
+    # Equal Highs (Buy-side liquidity pool)
+    eqh_levels = np.empty(max_swings, dtype=np.float64)
+    eqh_count = 0
+    for a in range(sh_count):
+        for b in range(a + 1, sh_count):
+            h_a = swing_highs[a]
+            h_b = swing_highs[b]
+            denom = min(h_a, h_b)
+            if denom > 0:
+                diff = abs(h_a - h_b) / denom * 100.0
+                if diff <= tolerance_pct:
+                    eqh_levels[eqh_count] = (h_a + h_b) / 2.0
+                    eqh_count += 1
+
+    # Equal Lows (Sell-side liquidity pool)
+    eql_levels = np.empty(max_swings, dtype=np.float64)
+    eql_count = 0
+    for a in range(sl_count):
+        for b in range(a + 1, sl_count):
+            l_a = swing_lows[a]
+            l_b = swing_lows[b]
+            denom = min(l_a, l_b)
+            if denom > 0:
+                diff = abs(l_a - l_b) / denom * 100.0
+                if diff <= tolerance_pct:
+                    eql_levels[eql_count] = (l_a + l_b) / 2.0
+                    eql_count += 1
+
+    # Check liquidity sweep on recent bars
+    sweep_type = 0  # +1 = Bullish sweep (swept lows), -1 = Bearish sweep (swept highs)
+    sweep_level = 0.0
+    sweep_idx = -1
+    
+    recent_start = max(start, n - 8)
+    for k in range(recent_start, n):
+        # Bullish sweep check (Sell-Side Liquidity grab)
+        for s in range(sl_count):
+            lvl = swing_lows[s]
+            if low[k] < lvl and close[k] > lvl:
+                body = abs(close[k] - open_[k])
+                lower_wick = min(close[k], open_[k]) - low[k]
+                if lower_wick >= 1.5 * max(body, 1e-6):
+                    sweep_type = 1
+                    sweep_level = lvl
+                    sweep_idx = k
+                    break
+        if sweep_type != 0:
+            break
+            
+        # Bearish sweep check (Buy-Side Liquidity grab)
+        for s in range(sh_count):
+            lvl = swing_highs[s]
+            if high[k] > lvl and close[k] < lvl:
+                body = abs(close[k] - open_[k])
+                upper_wick = high[k] - max(close[k], open_[k])
+                if upper_wick >= 1.5 * max(body, 1e-6):
+                    sweep_type = -1
+                    sweep_level = lvl
+                    sweep_idx = k
+                    break
+        if sweep_type != 0:
+            break
+
+    recent_sh = swing_highs[sh_count - 1] if sh_count > 0 else (high[-1] if n > 0 else 0.0)
+    recent_sl = swing_lows[sl_count - 1] if sl_count > 0 else (low[-1] if n > 0 else 0.0)
+
+    return (
+        eqh_levels[:eqh_count],
+        eql_levels[:eql_count],
+        sweep_type,
+        sweep_level,
+        sweep_idx,
+        recent_sh,
+        recent_sl
+    )
+
+
+@njit(fastmath=True, nogil=True)
+def _compute_fvg_zones_kernel(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    min_gap_pct: float = 0.0
+):
+    n = len(close)
+    max_fvg = max(1, n)
+    indices = np.empty(max_fvg, dtype=np.int64)
+    types = np.empty(max_fvg, dtype=np.int32)
+    tops = np.empty(max_fvg, dtype=np.float64)
+    bottoms = np.empty(max_fvg, dtype=np.float64)
+    mitigated = np.empty(max_fvg, dtype=np.bool_)
+    count = 0
+
+    for i in range(2, n):
+        c_ref = close[i]
+        min_gap = min_gap_pct * c_ref / 100.0 if min_gap_pct > 0 else 0.0
+
+        # Bullish FVG: Bar i-2 High < Bar i Low
+        if low[i] > high[i - 2]:
+            gap = low[i] - high[i - 2]
+            if gap > min_gap:
+                indices[count] = i
+                types[count] = 1
+                tops[count] = low[i]
+                bottoms[count] = high[i - 2]
+                
+                # Check mitigation in subsequent bars
+                is_mit = False
+                for k in range(i + 1, n):
+                    if low[k] <= high[i - 2]:
+                        is_mit = True
+                        break
+                mitigated[count] = is_mit
+                count += 1
+
+        # Bearish FVG: Bar i-2 Low > Bar i High
+        elif high[i] < low[i - 2]:
+            gap = low[i - 2] - high[i]
+            if gap > min_gap:
+                indices[count] = i
+                types[count] = -1
+                tops[count] = low[i - 2]
+                bottoms[count] = high[i]
+                
+                # Check mitigation in subsequent bars
+                is_mit = False
+                for k in range(i + 1, n):
+                    if high[k] >= low[i - 2]:
+                        is_mit = True
+                        break
+                mitigated[count] = is_mit
+                count += 1
+
+    return (
+        indices[:count],
+        types[:count],
+        tops[:count],
+        bottoms[:count],
+        mitigated[:count]
+    )
+
+
+@njit(fastmath=True, nogil=True)
+def _compute_ote_levels_kernel(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    lookback: int = 50
+):
+    n = len(close)
+    if n < 5:
+        return (0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+        
+    start = max(0, n - lookback)
+    
+    min_idx = start
+    max_idx = start
+    lowest_low = low[start]
+    highest_high = high[start]
+    
+    for i in range(start, n):
+        if low[i] < lowest_low:
+            lowest_low = low[i]
+            min_idx = i
+        if high[i] > highest_high:
+            highest_high = high[i]
+            max_idx = i
+
+    range_span = highest_high - lowest_low
+    if range_span <= 1e-9:
+        return (0, lowest_low, highest_high, lowest_low, lowest_low, lowest_low, lowest_low, lowest_low, lowest_low, False)
+
+    c_curr = close[-1]
+    
+    if min_idx < max_idx:
+        # Bullish displacement swing: Swing Low -> Swing High
+        direction = 1
+        eq_50 = highest_high - 0.50 * range_span
+        fib_618 = highest_high - 0.618 * range_span
+        fib_705 = highest_high - 0.705 * range_span
+        fib_786 = highest_high - 0.786 * range_span
+        ote_lower = fib_786
+        ote_upper = fib_618
+        in_ote = (c_curr >= ote_lower and c_curr <= ote_upper)
+    else:
+        # Bearish displacement swing: Swing High -> Swing Low
+        direction = -1
+        eq_50 = lowest_low + 0.50 * range_span
+        fib_618 = lowest_low + 0.618 * range_span
+        fib_705 = lowest_low + 0.705 * range_span
+        fib_786 = lowest_low + 0.786 * range_span
+        ote_lower = fib_618
+        ote_upper = fib_786
+        in_ote = (c_curr >= ote_lower and c_curr <= ote_upper)
+
+    return (
+        direction,
+        lowest_low,
+        highest_high,
+        eq_50,
+        fib_618,
+        fib_705,
+        fib_786,
+        ote_lower,
+        ote_upper,
+        in_ote
+    )
+
+
+@njit(fastmath=True, nogil=True)
+def _compute_dynamic_kaufman_periods_kernel(
+    close: np.ndarray,
+    base_rsi: int = 14,
+    base_fast_ema: int = 20,
+    base_slow_ema: int = 50,
+    ker_period: int = 14
+):
+    n = len(close)
+    if n <= ker_period or ker_period < 1:
+        return (base_rsi, base_fast_ema, base_slow_ema, 20, 0.30)
+
+    direction = abs(close[-1] - close[-1 - ker_period])
+    vol = 0.0
+    for j in range(n - ker_period, n):
+        vol += abs(close[j] - close[j - 1])
+
+    ker = direction / vol if vol > 0.0 else 0.30
+
+    if ker > 0.6:
+        # High-speed trend expansion -> shorten lookback to capture institutional momentum without lag
+        speed_factor = 1.0 - 0.5 * ((ker - 0.6) / 0.4)
+    elif ker < 0.3:
+        # Low-speed consolidation -> lengthen lookback to filter false breakout noise
+        speed_factor = 1.0 + 0.7 * ((0.3 - ker) / 0.3)
+    else:
+        speed_factor = 1.0
+
+    adaptive_rsi = int(max(7, min(28, round(base_rsi * speed_factor))))
+    adaptive_fast_ema = int(max(10, min(40, round(base_fast_ema * speed_factor))))
+    adaptive_slow_ema = int(max(25, min(90, round(base_slow_ema * speed_factor))))
+    adaptive_cci = int(max(10, min(40, round(20 * speed_factor))))
+
+    return (adaptive_rsi, adaptive_fast_ema, adaptive_slow_ema, adaptive_cci, ker)
+
+
+class DynamicKaufmanResult(NamedTuple):
+    rsi_period: int
+    fast_ema_period: int
+    slow_ema_period: int
+    cci_period: int
+    ker: float
+    is_high_speed: bool
+    is_low_speed: bool
+
+
+class OTEResult(NamedTuple):
+    direction: int
+    swing_low: float
+    swing_high: float
+    range_span: float
+    equilibrium_50: float
+    fib_618: float
+    fib_705: float
+    fib_786: float
+    ote_lower: float
+    ote_upper: float
+    in_ote: bool
+
+
+class LiquidityPoolsResult(NamedTuple):
+    equal_highs: np.ndarray
+    equal_lows: np.ndarray
+    has_bullish_sweep: bool
+    has_bearish_sweep: bool
+    sweep_type: int
+    sweep_level: float
+    sweep_idx: int
+    recent_swing_high: float
+    recent_swing_low: float
+
+
+class FVGZonesResult(NamedTuple):
+    indices: np.ndarray
+    types: np.ndarray
+    tops: np.ndarray
+    bottoms: np.ndarray
+    mitigated: np.ndarray
+    unmitigated_bullish: List[Dict[str, float]]
+    unmitigated_bearish: List[Dict[str, float]]
 
 
 # ==============================================================================
@@ -1290,6 +1616,137 @@ class TechnicalIndicators:
         arr = np.ascontiguousarray(close, dtype=np.float64)
         return _hurst_exponent_kernel(arr, int(max_lags))
 
+    @staticmethod
+    def compute_liquidity_pools(
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+        open_: np.ndarray,
+        lookback: int = 50,
+        tolerance_pct: float = 0.05
+    ) -> LiquidityPoolsResult:
+        """
+        56. Liquidity Pools & Sweep Detection. Numba JIT accelerated.
+        Detects Equal Highs (EQH / BSL), Equal Lows (EQL / SSL), and Institutional Liquidity Sweeps.
+        """
+        h_arr = np.ascontiguousarray(high, dtype=np.float64)
+        l_arr = np.ascontiguousarray(low, dtype=np.float64)
+        c_arr = np.ascontiguousarray(close, dtype=np.float64)
+        o_arr = np.ascontiguousarray(open_, dtype=np.float64)
+        eqh, eql, sw_type, sw_lvl, sw_idx, rec_sh, rec_sl = _compute_liquidity_pools_kernel(
+            h_arr, l_arr, c_arr, o_arr, int(lookback), float(tolerance_pct)
+        )
+        return LiquidityPoolsResult(
+            equal_highs=eqh,
+            equal_lows=eql,
+            has_bullish_sweep=(sw_type == 1),
+            has_bearish_sweep=(sw_type == -1),
+            sweep_type=int(sw_type),
+            sweep_level=float(sw_lvl),
+            sweep_idx=int(sw_idx),
+            recent_swing_high=float(rec_sh),
+            recent_swing_low=float(rec_sl)
+        )
+
+    @staticmethod
+    def compute_fvg_zones(
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+        min_gap_pct: float = 0.0
+    ) -> FVGZonesResult:
+        """
+        57. Vectorized 3-bar Fair Value Gap (FVG) Identification. Numba JIT accelerated.
+        Detects Bullish and Bearish institutional imbalance zones and tracks mitigation status.
+        """
+        h_arr = np.ascontiguousarray(high, dtype=np.float64)
+        l_arr = np.ascontiguousarray(low, dtype=np.float64)
+        c_arr = np.ascontiguousarray(close, dtype=np.float64)
+        indices, types, tops, bottoms, mitigated = _compute_fvg_zones_kernel(
+            h_arr, l_arr, c_arr, float(min_gap_pct)
+        )
+        unmit_bull = []
+        unmit_bear = []
+        for idx, t, tp, bt, m in zip(indices, types, tops, bottoms, mitigated):
+            if not m:
+                zone = {"index": int(idx), "top": float(tp), "bottom": float(bt)}
+                if t == 1:
+                    unmit_bull.append(zone)
+                elif t == -1:
+                    unmit_bear.append(zone)
+        return FVGZonesResult(
+            indices=indices,
+            types=types,
+            tops=tops,
+            bottoms=bottoms,
+            mitigated=mitigated,
+            unmitigated_bullish=unmit_bull,
+            unmitigated_bearish=unmit_bear
+        )
+
+    @staticmethod
+    def compute_ote_levels(
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+        lookback: int = 50
+    ) -> OTEResult:
+        """
+        58. Optimal Trade Entry (OTE) Fib Retracement Corridors. Numba JIT accelerated.
+        Calculates 50% Equilibrium, 61.8%, 70.5% sweet spot, and 78.6% Fib boundaries on recent displacement swing.
+        """
+        h_arr = np.ascontiguousarray(high, dtype=np.float64)
+        l_arr = np.ascontiguousarray(low, dtype=np.float64)
+        c_arr = np.ascontiguousarray(close, dtype=np.float64)
+        direction, sw_l, sw_h, eq50, f618, f705, f786, ote_l, ote_u, in_ote = _compute_ote_levels_kernel(
+            h_arr, l_arr, c_arr, int(lookback)
+        )
+        return OTEResult(
+            direction=int(direction),
+            swing_low=float(sw_l),
+            swing_high=float(sw_h),
+            range_span=float(sw_h - sw_l),
+            equilibrium_50=float(eq50),
+            fib_618=float(f618),
+            fib_705=float(f705),
+            fib_786=float(f786),
+            ote_lower=float(ote_l),
+            ote_upper=float(ote_u),
+            in_ote=bool(in_ote)
+        )
+
+    @staticmethod
+    def compute_dynamic_kaufman_periods(
+        close: np.ndarray,
+        base_rsi: int = 14,
+        base_fast_ema: int = 20,
+        base_slow_ema: int = 50,
+        ker_period: int = 14
+    ) -> DynamicKaufmanResult:
+        """
+        59. Dynamic Kaufman Efficiency Adaptive Periods. Numba JIT accelerated.
+        Automatically tunes indicator lookback periods based on market speed (KER > 0.6 shorten, KER < 0.3 lengthen).
+        """
+        c_arr = np.ascontiguousarray(close, dtype=np.float64)
+        r_p, f_p, s_p, cci_p, ker = _compute_dynamic_kaufman_periods_kernel(
+            c_arr, int(base_rsi), int(base_fast_ema), int(base_slow_ema), int(ker_period)
+        )
+        return DynamicKaufmanResult(
+            rsi_period=int(r_p),
+            fast_ema_period=int(f_p),
+            slow_ema_period=int(s_p),
+            cci_period=int(cci_p),
+            ker=float(ker),
+            is_high_speed=bool(ker > 0.6),
+            is_low_speed=bool(ker < 0.3)
+        )
+
 
 # Global singleton instance
 indicators = TechnicalIndicators()
+
+compute_liquidity_pools = indicators.compute_liquidity_pools
+compute_fvg_zones = indicators.compute_fvg_zones
+compute_ote_levels = indicators.compute_ote_levels
+compute_dynamic_kaufman_periods = indicators.compute_dynamic_kaufman_periods
+

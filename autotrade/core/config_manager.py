@@ -51,16 +51,17 @@ class RiskLimitsConfig:
     """Institutional Prop-Firm & Account Safeguard Parameters."""
     max_account_risk_pct: float = 0.5         # Max risk % per single trade (0.5%)
     max_global_risk_pct: float = 2.0          # Max portfolio exposure limit across open orders (2.0%)
-    max_daily_loss_pct: float = 2.0           # Halt threshold if daily drawdown >= 2%
+    max_daily_loss_pct: float = 1.5           # Hard Halt threshold if daily drawdown >= 1.5%
     max_total_drawdown_pct: float = 10.0      # Global peak equity kill-switch drawdown (10%)
-    max_open_positions: int = 1               # Maximum concurrent open orders (1)
+    max_open_positions: int = 5               # Maximum concurrent open orders (5)
     max_lots_per_symbol: float = 5.0          # Max cumulative volume per currency pair
     max_total_lots: float = 15.0              # Max portfolio volume exposure
     max_margin_usage_pct: float = 50.0        # Max margin utilization % (50%)
     max_correlated_positions: int = 1         # Max orders on correlated currency pairs
-    min_risk_reward_ratio: float = 1.5        # Minimum Reward-to-Risk ratio (1.5:1)
+    min_risk_reward_ratio: float = 2.0        # Minimum Reward-to-Risk ratio (2.0:1)
     max_consecutive_losses: int = 3           # Max consecutive losing trades before cooldown
     consecutive_loss_cooldown_sec: int = 1800 # Cooldown duration after max losses (30 min)
+    quarantine_duration_sec: int = 86400      # 24-hour quarantine on symbol hitting full SL
     daily_trade_limit: int = 50               # Maximum total orders executed per 24h
     news_volatility_reduction_pct: float = 50.0 # Reduce lot size by 50% around red news
     enable_trailing_stop: bool = True
@@ -83,10 +84,10 @@ class StrategyConfig:
         "GBPUSD", "EURUSD", "XAUUSD", "USOIL", "USDJPY"
     ])
     timeframes: List[str] = field(default_factory=lambda: ["M5", "M15", "H1", "H4"])
-    default_sizing_method: str = "volatility_atr" # fixed_lot, pct_risk, kelly, volatility_atr, auto
+    default_sizing_method: str = "auto"          # fixed_lot, pct_risk, kelly, volatility_atr, auto
     default_fixed_lot: float = 0.05
     kelly_fraction: float = 0.5                  # Half-Kelly for conservative capital preservation
-    min_risk_reward_ratio: float = 1.5           # Minimum TP / SL ratio
+    min_risk_reward_ratio: float = 2.0           # Minimum TP / SL ratio (2.0:1)
 
 
 @dataclass
@@ -240,11 +241,13 @@ class ConfigManager:
             # Risk Limits
             self.config.risk.max_account_risk_pct = float(get_val("MAX_ACCOUNT_RISK_PCT", "RISK", "max_account_risk_pct", 0.5))
             self.config.risk.max_global_risk_pct = float(get_val("MAX_GLOBAL_RISK_PCT", "RISK", "max_global_risk_pct", 2.0))
-            self.config.risk.max_daily_loss_pct = float(get_val("MAX_DAILY_LOSS_PCT", "RISK", "max_daily_loss_pct", 4.0))
+            self.config.risk.max_daily_loss_pct = float(get_val("MAX_DAILY_LOSS_PCT", "RISK", "max_daily_loss_pct", 1.5))
             self.config.risk.max_total_drawdown_pct = float(get_val("MAX_TOTAL_DRAWDOWN_PCT", "RISK", "max_total_drawdown_pct", 8.0))
-            self.config.risk.max_open_positions = int(get_val("MAX_OPEN_POSITIONS", "RISK", "max_open_positions", 10))
+            self.config.risk.max_open_positions = int(get_val("MAX_OPEN_POSITIONS", "RISK", "max_open_positions", 5))
             self.config.risk.max_lots_per_symbol = float(get_val("MAX_LOTS_PER_SYMBOL", "RISK", "max_lots_per_symbol", 5.0))
             self.config.risk.max_total_lots = float(get_val("MAX_TOTAL_LOTS", "RISK", "max_total_lots", 15.0))
+            self.config.risk.min_risk_reward_ratio = float(get_val("MIN_RISK_REWARD_RATIO", "RISK", "min_risk_reward_ratio", 2.0))
+            self.config.risk.quarantine_duration_sec = int(get_val("QUARANTINE_DURATION_SEC", "RISK", "quarantine_duration_sec", 86400))
             self.config.risk.enable_trailing_stop = str(get_val("ENABLE_TRAILING_STOP", "RISK", "enable_trailing_stop", "true")).lower() in ("true", "1", "yes")
             self.config.risk.default_trailing_pips = int(get_val("DEFAULT_TRAILING_PIPS", "RISK", "default_trailing_pips", 20))
             self.config.risk.enable_breakeven = str(get_val("ENABLE_BREAKEVEN", "RISK", "enable_breakeven", "true")).lower() in ("true", "1", "yes")
@@ -256,8 +259,9 @@ class ConfigManager:
             self.config.strategy.primary_symbols = [s.strip() for s in raw_syms.split(",") if s.strip()]
             raw_tfs = str(get_val("TRADING_TIMEFRAMES", "STRATEGY", "trading_timeframes", "M5,M15,H1,H4"))
             self.config.strategy.timeframes = [tf.strip() for tf in raw_tfs.split(",") if tf.strip()]
-            self.config.strategy.default_sizing_method = str(get_val("DEFAULT_SIZING_METHOD", "STRATEGY", "default_sizing_method", "volatility_atr")).strip()
+            self.config.strategy.default_sizing_method = str(get_val("DEFAULT_SIZING_METHOD", "STRATEGY", "default_sizing_method", "auto")).strip()
             self.config.strategy.default_fixed_lot = float(get_val("DEFAULT_FIXED_LOT", "STRATEGY", "default_fixed_lot", 0.05))
+            self.config.strategy.min_risk_reward_ratio = float(get_val("MIN_RISK_REWARD_RATIO", "STRATEGY", "min_risk_reward_ratio", 2.0))
 
             # System & Logging
             self.config.log_level = get_val("LOG_LEVEL", "SYSTEM", "log_level", "INFO").upper()

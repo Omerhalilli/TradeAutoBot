@@ -131,6 +131,7 @@ class OrderManager:
         if is_ok:
             tracked = self.position_tracker._active_orders.get(ticket)
             if lots is None or not tracked or lots >= tracked.lots:
+                self.position_tracker.notify_trade_closed(ticket, close_reason="MANUAL")
                 self.position_tracker.unregister_order(ticket)
         return res
 

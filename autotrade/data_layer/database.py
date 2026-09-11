@@ -172,6 +172,41 @@ class DatabaseEngine:
                 );
             """)
 
+            # 7. Experiential Trade Learning Memory Table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS trade_learning_memory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticket INTEGER,
+                    symbol TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    session TEXT NOT NULL,
+                    regime TEXT NOT NULL,
+                    entry_rsi REAL DEFAULT 50.0,
+                    entry_adx REAL DEFAULT 0.0,
+                    entry_cci REAL DEFAULT 0.0,
+                    distance_to_ema20_pips REAL DEFAULT 0.0,
+                    spread_at_entry REAL DEFAULT 0.0,
+                    confluence_score REAL DEFAULT 0.0,
+                    realized_pnl REAL DEFAULT 0.0,
+                    return_r REAL DEFAULT 0.0,
+                    max_favorable_excursion_pips REAL DEFAULT 0.0,
+                    max_adverse_excursion_pips REAL DEFAULT 0.0,
+                    close_reason TEXT NOT NULL,
+                    open_price REAL DEFAULT 0.0,
+                    close_price REAL DEFAULT 0.0,
+                    initial_sl REAL DEFAULT 0.0,
+                    initial_tp REAL DEFAULT 0.0,
+                    lots REAL DEFAULT 0.01,
+                    open_time REAL DEFAULT 0.0,
+                    close_time REAL NOT NULL,
+                    created_at REAL NOT NULL
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_sym ON trade_learning_memory(symbol);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_close_time ON trade_learning_memory(close_time DESC);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_session ON trade_learning_memory(session);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_ticket ON trade_learning_memory(ticket);")
+
     def execute(self, query: str, params: Union[tuple, dict] = ()) -> sqlite3.Cursor:
         """Synchronously executes a parameterized query."""
         conn = self.get_connection()
@@ -293,6 +328,71 @@ class DatabaseEngine:
         query = "INSERT INTO audit_logs (timestamp, category, level, message, details_json) VALUES (?, ?, ?, ?, ?);"
         det_str = json.dumps(details) if details else None
         self.execute(query, (time.time(), category, level, message, det_str))
+
+    def insert_trade_learning_record(self, r: Dict[str, Any]) -> int:
+        """Inserts an experiential trade learning snapshot into trade_learning_memory."""
+        query = """
+            INSERT INTO trade_learning_memory (
+                ticket, symbol, direction, session, regime,
+                entry_rsi, entry_adx, entry_cci, distance_to_ema20_pips,
+                spread_at_entry, confluence_score, realized_pnl, return_r,
+                max_favorable_excursion_pips, max_adverse_excursion_pips,
+                close_reason, open_price, close_price, initial_sl, initial_tp,
+                lots, open_time, close_time, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        now = time.time()
+        cursor = self.execute(query, (
+            r.get("ticket", 0),
+            str(r.get("symbol", "")).upper(),
+            str(r.get("direction", "BUY")).upper(),
+            str(r.get("session", "UNKNOWN")).upper(),
+            str(r.get("regime", "UNKNOWN")).upper(),
+            float(r.get("entry_rsi", 50.0)),
+            float(r.get("entry_adx", 0.0)),
+            float(r.get("entry_cci", 0.0)),
+            float(r.get("distance_to_ema20_pips", 0.0)),
+            float(r.get("spread_at_entry", 0.0)),
+            float(r.get("confluence_score", 0.0)),
+            float(r.get("realized_pnl", 0.0)),
+            float(r.get("return_r", 0.0)),
+            float(r.get("max_favorable_excursion_pips", 0.0)),
+            float(r.get("max_adverse_excursion_pips", 0.0)),
+            str(r.get("close_reason", "MANUAL")).upper(),
+            float(r.get("open_price", 0.0)),
+            float(r.get("close_price", 0.0)),
+            float(r.get("initial_sl", 0.0)),
+            float(r.get("initial_tp", 0.0)),
+            float(r.get("lots", 0.01)),
+            float(r.get("open_time", now)),
+            float(r.get("close_time", now)),
+            float(r.get("created_at", now))
+        ))
+        return cursor.lastrowid or 0
+
+    def fetch_recent_learning_trades(
+        self,
+        limit: int = 500,
+        symbol: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Retrieves recent learning trades ordered by close_time ascending."""
+        if symbol:
+            query = """
+                SELECT * FROM trade_learning_memory
+                WHERE symbol = ?
+                ORDER BY close_time DESC
+                LIMIT ?;
+            """
+            rows = self.fetch_all(query, (symbol.upper(), limit))
+        else:
+            query = """
+                SELECT * FROM trade_learning_memory
+                ORDER BY close_time DESC
+                LIMIT ?;
+            """
+            rows = self.fetch_all(query, (limit,))
+        rows.reverse()
+        return rows
 
     def close_sync(self) -> None:
         """Closes all open database connections across all threads."""

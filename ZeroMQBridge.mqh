@@ -2152,6 +2152,18 @@ string Zmq_HandleScanSymbols(const string reqJson)
       else if(isSessionActive && sig.valid && sig.cmd == OP_SELL && sig.score >= 6) signal = "SELL";
       else sig.score = 0;
       
+      double contractSize = MarketInfo(sym, MODE_LOTSIZE);
+      double minLot = MarketInfo(sym, MODE_MINLOT);
+      double lotStep = MarketInfo(sym, MODE_LOTSTEP);
+      double maxLot = MarketInfo(sym, MODE_MAXLOT);
+      double tickValue = MarketInfo(sym, MODE_TICKVALUE);
+      double tickSize = MarketInfo(sym, MODE_TICKSIZE);
+      if(tickSize <= 0.0) tickSize = pt;
+      if(contractSize <= 0.0) contractSize = 100000.0;
+      if(lotStep <= 0.0) lotStep = 0.01;
+      if(minLot <= 0.0) minLot = 0.01;
+      if(maxLot <= 0.0) maxLot = 100.0;
+
       if(validCount > 0) json += ",";
       json += "{";
       json += "\"symbol\":\"" + Zmq_JsonEscape(sym) + "\",";
@@ -2160,6 +2172,13 @@ string Zmq_HandleScanSymbols(const string reqJson)
       json += "\"ask\":" + DoubleToString(ask, dig) + ",";
       json += "\"spread\":" + DoubleToString(spread, 1) + ",";
       json += "\"digits\":" + IntegerToString(dig) + ",";
+      json += "\"point\":" + DoubleToString(pt, dig) + ",";
+      json += "\"min_lot\":" + DoubleToString(minLot, 2) + ",";
+      json += "\"lot_step\":" + DoubleToString(lotStep, 2) + ",";
+      json += "\"max_lot\":" + DoubleToString(maxLot, 2) + ",";
+      json += "\"contract_size\":" + DoubleToString(contractSize, 2) + ",";
+      json += "\"tick_value\":" + DoubleToString(tickValue, 5) + ",";
+      json += "\"tick_size\":" + DoubleToString(tickSize, dig) + ",";
       json += "\"trend\":\"" + sig.trend + "\",";
       json += "\"pattern\":\"" + sig.pattern + "\",";
       json += "\"htf_trend\":\"" + sig.htfTrend + "\",";
@@ -2184,6 +2203,55 @@ string Zmq_HandleScanSymbols(const string reqJson)
       validCount++;
    }
    json += "],\"count\":" + IntegerToString(validCount) + "}";
+   return json;
+}
+
+//+------------------------------------------------------------------+
+//| Handle GET_SYMBOL_INFO for Zero-Configuration Engine             |
+//+------------------------------------------------------------------+
+string Zmq_HandleGetSymbolInfo(const string reqStr)
+{
+   string sym = Zmq_ExtractJsonString(reqStr, "symbol");
+   if(sym == "") sym = Symbol();
+   string resolved = Zmq_ResolveSymbol(sym);
+   if(resolved != "") sym = resolved;
+   
+   SymbolSelect(sym, true);
+   double pt = MarketInfo(sym, MODE_POINT);
+   int dig = (int)MarketInfo(sym, MODE_DIGITS);
+   double bid = MarketInfo(sym, MODE_BID);
+   double ask = MarketInfo(sym, MODE_ASK);
+   double spread = Zmq_GetSpreadPoints(sym);
+   double minLot = MarketInfo(sym, MODE_MINLOT);
+   double lotStep = MarketInfo(sym, MODE_LOTSTEP);
+   double maxLot = MarketInfo(sym, MODE_MAXLOT);
+   double contractSize = MarketInfo(sym, MODE_LOTSIZE);
+   double tickValue = MarketInfo(sym, MODE_TICKVALUE);
+   double tickSize = MarketInfo(sym, MODE_TICKSIZE);
+   if(tickSize <= 0.0) tickSize = pt;
+   if(contractSize <= 0.0) contractSize = 100000.0;
+   if(lotStep <= 0.0) lotStep = 0.01;
+   if(minLot <= 0.0) minLot = 0.01;
+   if(maxLot <= 0.0) maxLot = 100.0;
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_SYMBOL_INFO\",";
+   json += "\"symbol\":\"" + Zmq_JsonEscape(sym) + "\",";
+   json += "\"bid\":" + DoubleToString(bid, dig) + ",";
+   json += "\"ask\":" + DoubleToString(ask, dig) + ",";
+   json += "\"spread\":" + DoubleToString(spread, 1) + ",";
+   json += "\"digits\":" + IntegerToString(dig) + ",";
+   json += "\"point\":" + DoubleToString(pt, dig) + ",";
+   json += "\"min_lot\":" + DoubleToString(minLot, 2) + ",";
+   json += "\"lot_step\":" + DoubleToString(lotStep, 2) + ",";
+   json += "\"max_lot\":" + DoubleToString(maxLot, 2) + ",";
+   json += "\"contract_size\":" + DoubleToString(contractSize, 2) + ",";
+   json += "\"tick_value\":" + DoubleToString(tickValue, 5) + ",";
+   json += "\"tick_size\":" + DoubleToString(tickSize, dig) + ",";
+   json += "\"margin_required\":" + DoubleToString(MarketInfo(sym, MODE_MARGINREQUIRED), 2) + ",";
+   json += "\"trade_allowed\":" + (IsSymbolTradeAllowed(sym) ? "true" : "false");
+   json += "}";
    return json;
 }
 
@@ -2239,6 +2307,8 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleScreenshot(reqStr);
    if(action == "GET_SYMBOLS" || action == "SYMBOLS")
       return Zmq_HandleGetSymbols();
+   if(action == "GET_SYMBOL_INFO" || action == "SYMBOL_INFO")
+      return Zmq_HandleGetSymbolInfo(reqStr);
    if(action == "SCAN_SYMBOLS" || action == "SCAN" || action == "MARKET_DATA")
       return Zmq_HandleScanSymbols(reqStr);
    if(action == "GET_BOOST" || action == "BOOST")

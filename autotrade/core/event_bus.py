@@ -50,6 +50,7 @@ class EventType(str, Enum):
     DAILY_LOSS_LIMIT_REACHED = "risk.daily_loss_limit_reached"
     EMERGENCY_HALT = "risk.emergency_halt"
     RISK_LIMITS_UPDATED = "risk.limits_updated"
+    SYMBOL_QUARANTINED = "risk.symbol_quarantined"
     
     # Order & Execution Events
     ORDER_REQUEST = "order.request"

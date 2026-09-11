@@ -325,6 +325,238 @@ class TestRiskAndOrders(unittest.TestCase):
         self.assertAlmostEqual(pv_eurjpy, 6.67, places=1)
 
 
+class TestSniperAutonomousEngine(unittest.TestCase):
+    """
+    Comprehensive verification for the 100% Autonomous Zero-Configuration Sniper Engine:
+    - Dynamic 0.5% max risk lot sizing
+    - 1.5% Hard Daily Loss Circuit Breaker
+    - 24-hour single-loss asset quarantine
+    - +1.0R Risk-Free Trade protocol (50% partial close + BE +1 pip lock)
+    - 5-Rule All-Or-Nothing Sniper Selection Matrix & Dynamic Spread Filter
+    """
+    def setUp(self):
+        from autotrade.risk.risk_manager import RiskManager
+        from autotrade.risk.position_sizer import PositionSizer
+        from autotrade.orders.order_manager import OrderManager
+        from autotrade.core.pipeline import (
+            QuantitativeConfluenceEngine,
+            BrokerInstrumentSpecs,
+            resolve_broker_specs
+        )
+        self.risk = RiskManager()
+        self.sizer = PositionSizer()
+        self.order_mgr = OrderManager()
+        self.engine = QuantitativeConfluenceEngine(min_confluence_score=6.0)
+
+    def test_autonomous_lot_sizing_strict_half_percent_cap(self):
+        """Validates autonomous mathematical lot sizing with strict 0.5% max equity risk cap."""
+        account = {"balance": 10000.0, "equity": 10000.0, "free_margin": 10000.0}
+        specs = {
+            "contract_size": 100000.0,
+            "min_lot": 0.01,
+            "lot_step": 0.01,
+            "max_lot": 50.0,
+            "tick_value": 1.0,
+            "tick_size": 0.00001
+        }
+        # Equity = $10,000 -> 0.5% Risk Cap = $50.00
+        # SL distance = 25 pips = 0.0025 = 250 ticks. Tick value = $1.00.
+        # Lots = 50 / (250 * 1.0) = 0.20 lots
+        lots, cash_risk = self.risk.calculate_autonomous_lots(
+            symbol="EURUSD",
+            equity=10000.0,
+            sl_distance_price=0.0025,
+            broker_specs=specs
+        )
+        self.assertEqual(lots, 0.20)
+        self.assertEqual(cash_risk, 50.0)
+
+        # Pre-flight risk check must pass for 0.20 lots (0.5% risk)
+        res_pass = self.risk.evaluate_order_risk(
+            symbol="EURUSD",
+            cmd="BUY",
+            lots=0.20,
+            price=1.0800,
+            sl=1.0775,
+            tp=1.0850,
+            account_info=account,
+            open_positions=[]
+        )
+        self.assertTrue(res_pass.passed)
+
+        # Risk check must strictly veto oversized lot (e.g. 1.0 lots = 2.5% risk > 0.5% cap)
+        res_veto = self.risk.evaluate_order_risk(
+            symbol="EURUSD",
+            cmd="BUY",
+            lots=1.0,
+            price=1.0800,
+            sl=1.0775,
+            tp=1.0850,
+            account_info=account,
+            open_positions=[]
+        )
+        self.assertFalse(res_veto.passed)
+        self.assertIn("exceeds maximum per-trade limit", res_veto.reason)
+
+    def test_hard_daily_loss_circuit_breaker(self):
+        """Validates that a 1.5% daily drawdown halts all trading operations."""
+        self.risk.reset_daily_stats(current_balance=10000.0, current_equity=10000.0)
+        # Current equity down to $9,840 = 1.6% loss (> 1.5% limit)
+        account_breached = {"balance": 9840.0, "equity": 9840.0, "free_margin": 9840.0}
+
+        res = self.risk.evaluate_order_risk(
+            symbol="EURUSD",
+            cmd="BUY",
+            lots=0.01,
+            price=1.0800,
+            sl=1.0775,
+            tp=1.0850,
+            account_info=account_breached,
+            open_positions=[]
+        )
+        self.assertFalse(res.passed)
+        self.assertIn("Hard Daily Loss Circuit Breaker", res.reason)
+        self.assertTrue(self.risk._is_daily_halted)
+
+    def test_autonomous_single_loss_asset_quarantine(self):
+        """Validates 24-hour quarantine freeze on any symbol hitting full SL."""
+        symbol = "GBPUSD"
+        self.assertFalse(self.risk.is_symbol_quarantined(symbol)[0])
+
+        # Record a full stop-loss loss trade (-$50.00)
+        self.risk.record_trade_result(
+            profit=-50.0,
+            symbol=symbol,
+            is_full_sl=True
+        )
+
+        is_quar, remaining = self.risk.is_symbol_quarantined(symbol)
+        self.assertTrue(is_quar)
+        self.assertGreater(remaining, 86000)
+
+        # Pre-flight check on quarantined symbol must be vetoed
+        res_quar = self.risk.evaluate_order_risk(
+            symbol=symbol,
+            cmd="BUY",
+            lots=0.01,
+            price=1.2500,
+            sl=1.2475,
+            tp=1.2550,
+            account_info={"balance": 10000.0, "equity": 10000.0, "free_margin": 10000.0},
+            open_positions=[]
+        )
+        self.assertFalse(res_quar.passed)
+        self.assertIn("quarantine freeze", res_quar.reason)
+
+        # Unquarantined symbol (EURUSD) must pass without restriction
+        res_other = self.risk.evaluate_order_risk(
+            symbol="EURUSD",
+            cmd="BUY",
+            lots=0.01,
+            price=1.0800,
+            sl=1.0775,
+            tp=1.0850,
+            account_info={"balance": 10000.0, "equity": 10000.0, "free_margin": 10000.0},
+            open_positions=[]
+        )
+        self.assertTrue(res_other.passed)
+
+    def test_risk_free_trade_protocol_execution(self):
+        """Validates Target 1 (+1.0R): 50% partial close + SL to BE +1 pip."""
+        async def run_test():
+            from unittest.mock import AsyncMock
+            from autotrade.orders.order_types import TradeOrder, OrderSide
+            tracker = self.order_mgr.position_tracker
+
+            order = TradeOrder(
+                ticket=77701,
+                symbol="EURUSD",
+                side=OrderSide.BUY,
+                lots=0.10,
+                price=1.0800,
+                sl=1.0760,
+                tp=1.0900
+            )
+            tracker.register_order(order)
+            tracker._initial_sl_levels[77701] = 1.0760
+
+            tracker.router.close_position = AsyncMock(return_value={"status": "ok"})
+            tracker.router.modify_sl_tp = AsyncMock(return_value={"status": "ok"})
+
+            # Price advances to 1.0845 (+1.125R > 1.0R)
+            await tracker._evaluate_single_position(
+                ticket=77701,
+                symbol="EURUSD",
+                cmd="BUY",
+                open_price=1.0800,
+                current_price=1.0845,
+                current_sl=1.0760,
+                lots=0.10
+            )
+
+            # Check that 1R risk-free protocol triggered:
+            self.assertIn(77701, tracker._risk_free_activated_tickets)
+            self.assertAlmostEqual(order.lots, 0.05, places=2)
+            tracker.router.close_position.assert_called_once_with(ticket=77701, lots=0.05)
+            tracker.router.modify_sl_tp.assert_any_call(ticket=77701, sl=1.0801)
+
+        asyncio.run(run_test())
+
+    def test_dynamic_spread_filter(self):
+        """Validates rolling median spread filter (veto if current > 1.8 * median)."""
+        import numpy as np
+        # Rolling 100-bar spreads with median = 10.0 points
+        spread_history = np.full(100, 10.0, dtype=np.float64)
+
+        # Spread = 12 points (1.2 * median <= 1.8) -> allowed
+        ok, median, ratio = self.engine.compute_dynamic_spread_filter("EURUSD", 12.0, spread_history)
+        self.assertTrue(ok)
+        self.assertEqual(median, 10.0)
+        self.assertEqual(ratio, 1.2)
+
+        # Spread = 20 points (> 1.8 * median = 18.0) -> vetoed
+        bad, median, ratio = self.engine.compute_dynamic_spread_filter("EURUSD", 20.0, spread_history)
+        self.assertFalse(bad)
+        self.assertEqual(ratio, 2.0)
+
+    def test_sniper_matrix_all_or_nothing_rules(self):
+        """Validates that evaluate_symbol strictly enforces All-Or-Nothing sniper gates."""
+        import numpy as np
+
+        # Case 1: Insufficient bars (< 50 bars) -> immediate veto
+        short_ohlcv = {
+            "open": np.full(30, 1.0800),
+            "high": np.full(30, 1.0820),
+            "low": np.full(30, 1.0780),
+            "close": np.full(30, 1.0810),
+            "volume": np.full(30, 100.0)
+        }
+        res_short = self.engine.evaluate_symbol("EURUSD", short_ohlcv)
+        self.assertEqual(res_short.signal, "HOLD")
+        self.assertFalse(res_short.is_qualified)
+        self.assertIn("Insufficient bars", res_short.disqualification_reason)
+
+        # Case 2: Excessive spread exceeding 1.8 * rolling median -> immediate veto
+        full_ohlcv = {
+            "open": np.linspace(1.0700, 1.0800, 100),
+            "high": np.linspace(1.0720, 1.0820, 100),
+            "low": np.linspace(1.0690, 1.0790, 100),
+            "close": np.linspace(1.0710, 1.0810, 100),
+            "volume": np.full(100, 500.0)
+        }
+        spread_hist = [10.0] * 100
+        res_wide_spread = self.engine.evaluate_symbol(
+            "EURUSD",
+            full_ohlcv,
+            spread_points=25.0,  # 2.5x median (> 1.8x limit)
+            spread_history=spread_hist
+        )
+        self.assertEqual(res_wide_spread.signal, "HOLD")
+        self.assertFalse(res_wide_spread.is_qualified)
+        self.assertIn("Dynamic Spread Veto", res_wide_spread.disqualification_reason)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

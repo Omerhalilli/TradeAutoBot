@@ -294,8 +294,11 @@ class MT4ZmqClient:
         return self.send_command("GET_RATES", symbol=symbol, timeframe=timeframe, count=count, timeout_ms=timeout_ms)
 
     def scan_symbols(self, symbols: str = "", timeframe: str = "H1", timeout_ms: int = 5000) -> Dict[str, Any]:
-
         return self.send_command("SCAN_SYMBOLS", symbols=symbols, timeframe=timeframe, timeout_ms=timeout_ms)
+
+    def get_symbol_info(self, symbol: str, timeout_ms: int = 5000) -> Dict[str, Any]:
+        """Queries MT4 bridge for autonomous broker specification metrics (lot sizing, tick value, contract size)."""
+        return self.send_command("GET_SYMBOL_INFO", symbol=symbol, timeout_ms=timeout_ms)
 
     def get_boost(self) -> Dict[str, Any]:
         return self.send_command("GET_BOOST")
@@ -377,6 +380,10 @@ class MT4ZmqClient:
     async def scan_symbols_async(self, symbols: str = "", timeframe: str = "H1") -> Dict[str, Any]:
         """Asynchronously triggers multi-symbol market surveillance."""
         return await self.send_command_async("SCAN_SYMBOLS", symbols=symbols, timeframe=timeframe)
+
+    async def get_symbol_info_async(self, symbol: str) -> Dict[str, Any]:
+        """Asynchronously queries MT4 broker specification metrics."""
+        return await self.send_command_async("GET_SYMBOL_INFO", symbol=symbol)
 
     def close(self):
         """Stops heartbeat thread and closes sockets cleanly."""

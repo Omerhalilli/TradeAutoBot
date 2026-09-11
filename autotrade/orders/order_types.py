@@ -78,6 +78,7 @@ class TradeOrder:
     pnl: float = 0.0
     oco_linked_id: Optional[str] = None
     comment: str = ""
+    features: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {

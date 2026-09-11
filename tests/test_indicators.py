@@ -205,7 +205,50 @@ class TestTechnicalIndicators(unittest.TestCase):
         h = indicators.hurst_exponent(self.closes)
         self.assertTrue(0.0 <= h <= 1.0)
 
+    def test_market_structure_and_dynamic_kaufman(self):
+        # 1. Dynamic Kaufman adaptive periods
+        dk_res = indicators.compute_dynamic_kaufman_periods(self.closes)
+        self.assertTrue(7 <= dk_res.rsi_period <= 28)
+        self.assertTrue(10 <= dk_res.fast_ema_period <= 40)
+        self.assertTrue(25 <= dk_res.slow_ema_period <= 90)
+        self.assertTrue(0.0 <= dk_res.ker <= 1.0)
+
+        # Test high-speed trend expansion
+        trend_prices = np.linspace(100.0, 200.0, 50)
+        dk_trend = indicators.compute_dynamic_kaufman_periods(trend_prices)
+        self.assertTrue(dk_trend.is_high_speed)
+        self.assertLessEqual(dk_trend.rsi_period, 9)
+        self.assertLessEqual(dk_trend.fast_ema_period, 14)
+
+        # Test low-speed consolidation
+        flat_prices = np.array([100.0, 100.5, 99.8, 100.2, 100.1] * 10)
+        dk_flat = indicators.compute_dynamic_kaufman_periods(flat_prices)
+        self.assertTrue(dk_flat.is_low_speed)
+        self.assertGreaterEqual(dk_flat.rsi_period, 18)
+        self.assertGreaterEqual(dk_flat.fast_ema_period, 30)
+
+        # 2. OTE levels
+        ote = indicators.compute_ote_levels(self.highs, self.lows, self.closes, lookback=50)
+        self.assertIn(ote.direction, (-1, 1))
+        self.assertGreater(ote.range_span, 0.0)
+        self.assertTrue(ote.swing_low <= ote.equilibrium_50 <= ote.swing_high)
+        self.assertTrue(ote.ote_lower <= ote.ote_upper)
+
+        # 3. Vectorized FVG Zones
+        fvg = indicators.compute_fvg_zones(self.highs, self.lows, self.closes)
+        self.assertEqual(len(fvg.indices), len(fvg.types))
+        self.assertEqual(len(fvg.indices), len(fvg.tops))
+        self.assertEqual(len(fvg.indices), len(fvg.bottoms))
+        self.assertEqual(len(fvg.indices), len(fvg.mitigated))
+
+        # 4. Liquidity Pools & Sweeps
+        lp = indicators.compute_liquidity_pools(self.highs, self.lows, self.closes, self.opens)
+        self.assertIsInstance(lp.has_bullish_sweep, bool)
+        self.assertIsInstance(lp.has_bearish_sweep, bool)
+        self.assertIn(lp.sweep_type, (-1, 0, 1))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

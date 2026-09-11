@@ -712,7 +712,10 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
                     "spread": 10.0,
                     "sl_pips": 25.0,
                     "tp_pips": 50.0,
-                    "bar_time": 1788893600
+                    "bar_time": 1788893600,
+                    "price": 1.08500,
+                    "ask": 1.08500,
+                    "bid": 1.08490
                 }
             ]
         }
@@ -720,6 +723,8 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
         mock_order = {"status": "ok", "ticket": 999123, "price": 1.08500}
         autonomous_trader.seen_bar_times["EURUSD"] = 1788890000
         autonomous_trader.last_traded_bar_times.pop("EURUSD", None)
+        autonomous_trader.last_trade_times.pop("EURUSD", None)
+        autonomous_trader.last_failure_times.pop("EURUSD", None)
         
         async def run_cycle():
             with patch.object(autonomous_trader, "is_autotrade_active", return_value=True), \

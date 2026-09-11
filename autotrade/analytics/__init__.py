@@ -14,6 +14,15 @@ from autotrade.analytics.math_models import (
     GARCHVolatility,
     FFTCycle
 )
+from autotrade.analytics.adaptive_learner import (
+    adaptive_learner,
+    AdaptiveLearner,
+    TradeMemory,
+    TradeLearningRecord,
+    ClusterPerformance,
+    SymbolQuarantineStatus,
+    MAEAdaptationStatus
+)
 
 __all__ = [
     "PrecisionMath",
@@ -28,4 +37,11 @@ __all__ = [
     "ARIMAForecast",
     "GARCHVolatility",
     "FFTCycle",
+    "adaptive_learner",
+    "AdaptiveLearner",
+    "TradeMemory",
+    "TradeLearningRecord",
+    "ClusterPerformance",
+    "SymbolQuarantineStatus",
+    "MAEAdaptationStatus",
 ]
