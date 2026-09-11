@@ -54,6 +54,9 @@ class DatabaseEngine:
             self._local.conn = conn
             with self._lock:
                 self._open_connections.add(conn)
+                if not self._is_initialized:
+                    self._create_tables_and_indices(conn)
+                    self._is_initialized = True
         return self._local.conn
 
     async def initialize(self) -> None:
@@ -63,9 +66,10 @@ class DatabaseEngine:
         self._is_initialized = True
         logger.info(f"Database initialized at {self.db_path} with WAL mode.")
 
-    def _create_tables_and_indices(self) -> None:
+    def _create_tables_and_indices(self, conn: Optional[sqlite3.Connection] = None) -> None:
         """Executes table creation DDL statements."""
-        conn = self.get_connection()
+        if conn is None:
+            conn = self.get_connection()
         with self._lock:
             # 1. Trades Table
             conn.execute("""
@@ -206,6 +210,46 @@ class DatabaseEngine:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_close_time ON trade_learning_memory(close_time DESC);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_session ON trade_learning_memory(session);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_learning_ticket ON trade_learning_memory(ticket);")
+
+            # 8. Asset Behavioral DNA Table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS asset_behavioral_dna (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    setup_type TEXT NOT NULL,
+                    session TEXT NOT NULL,
+                    sample_count INTEGER NOT NULL DEFAULT 0,
+                    win_rate_1r REAL DEFAULT 0.0,
+                    win_rate_2r REAL DEFAULT 0.0,
+                    win_rate_3r REAL DEFAULT 0.0,
+                    median_mfe_pips REAL DEFAULT 0.0,
+                    median_mae_pct REAL DEFAULT 0.0,
+                    optimal_sl_atr_mult REAL DEFAULT 2.0,
+                    optimal_tp_atr_mult REAL DEFAULT 3.0,
+                    expectancy_r REAL DEFAULT 0.0,
+                    profit_factor REAL DEFAULT 1.0,
+                    last_updated REAL NOT NULL,
+                    UNIQUE(symbol, setup_type, session)
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dna_sym_setup ON asset_behavioral_dna(symbol, setup_type, session);")
+
+            # 9. Historical Replay Market Bars Table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS historical_market_bars (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume REAL DEFAULT 1.0,
+                    UNIQUE(symbol, timeframe, timestamp)
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_bars_sym_tf ON historical_market_bars(symbol, timeframe, timestamp DESC);")
 
     def execute(self, query: str, params: Union[tuple, dict] = ()) -> sqlite3.Cursor:
         """Synchronously executes a parameterized query."""
@@ -394,6 +438,101 @@ class DatabaseEngine:
         rows.reverse()
         return rows
 
+    def upsert_asset_dna(self, dna_dict: Dict[str, Any]) -> None:
+        """Upserts a record into the asset_behavioral_dna table."""
+        query = """
+            INSERT INTO asset_behavioral_dna (
+                symbol, setup_type, session, sample_count,
+                win_rate_1r, win_rate_2r, win_rate_3r,
+                median_mfe_pips, median_mae_pct,
+                optimal_sl_atr_mult, optimal_tp_atr_mult,
+                expectancy_r, profit_factor, last_updated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, setup_type, session) DO UPDATE SET
+                sample_count = excluded.sample_count,
+                win_rate_1r = excluded.win_rate_1r,
+                win_rate_2r = excluded.win_rate_2r,
+                win_rate_3r = excluded.win_rate_3r,
+                median_mfe_pips = excluded.median_mfe_pips,
+                median_mae_pct = excluded.median_mae_pct,
+                optimal_sl_atr_mult = excluded.optimal_sl_atr_mult,
+                optimal_tp_atr_mult = excluded.optimal_tp_atr_mult,
+                expectancy_r = excluded.expectancy_r,
+                profit_factor = excluded.profit_factor,
+                last_updated = excluded.last_updated;
+        """
+        self.execute(query, (
+            dna_dict["symbol"].upper(),
+            dna_dict.get("setup_type", "SNIPER_ALL").upper(),
+            dna_dict.get("session", "ALL").upper(),
+            int(dna_dict.get("sample_count", 0)),
+            float(dna_dict.get("win_rate_1r", 0.0)),
+            float(dna_dict.get("win_rate_2r", 0.0)),
+            float(dna_dict.get("win_rate_3r", 0.0)),
+            float(dna_dict.get("median_mfe_pips", 0.0)),
+            float(dna_dict.get("median_mae_pct", 0.0)),
+            float(dna_dict.get("optimal_sl_atr_mult", 2.0)),
+            float(dna_dict.get("optimal_tp_atr_mult", 3.0)),
+            float(dna_dict.get("expectancy_r", 0.0)),
+            float(dna_dict.get("profit_factor", 1.0)),
+            float(dna_dict.get("last_updated", time.time()))
+        ))
+
+    def fetch_asset_dna(self, symbol: str, setup_type: str = "SNIPER_ALL", session: str = "ALL") -> Optional[Dict[str, Any]]:
+        """Retrieves Asset DNA behavioral record for a symbol, setup, and session."""
+        query = """
+            SELECT * FROM asset_behavioral_dna
+            WHERE symbol = ? AND setup_type = ? AND session = ?;
+        """
+        return self.fetch_one(query, (symbol.upper(), setup_type.upper(), session.upper()))
+
+    def fetch_all_asset_dna(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retrieves all Asset DNA records, optionally filtered by symbol."""
+        if symbol:
+            query = "SELECT * FROM asset_behavioral_dna WHERE symbol = ? ORDER BY sample_count DESC;"
+            return self.fetch_all(query, (symbol.upper(),))
+        else:
+            query = "SELECT * FROM asset_behavioral_dna ORDER BY symbol, setup_type, session;"
+            return self.fetch_all(query)
+
+    def insert_market_bars(self, symbol: str, timeframe: str, bars: Any) -> int:
+        """Batch inserts historical market bars for replay profiling."""
+        query = """
+            INSERT OR REPLACE INTO historical_market_bars (
+                symbol, timeframe, timestamp, open, high, low, close, volume
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        rows = []
+        for b in bars:
+            if isinstance(b, (list, tuple)):
+                ts = float(b[0])
+                o = float(b[1])
+                h = float(b[2])
+                l = float(b[3])
+                c = float(b[4])
+                v = float(b[5]) if len(b) > 5 else 1.0
+            else:
+                ts = float(b.get("timestamp", b.get("time", 0.0)))
+                o = float(b["open"])
+                h = float(b["high"])
+                l = float(b["low"])
+                c = float(b["close"])
+                v = float(b.get("volume", 1.0))
+            rows.append((symbol.upper(), timeframe.upper(), ts, o, h, l, c, v))
+        self.executemany(query, rows)
+        return len(rows)
+
+    def fetch_market_bars(self, symbol: str, timeframe: str, limit: int = 50000) -> List[Dict[str, Any]]:
+        """Retrieves chronological historical bars for deep replay simulation."""
+        query = """
+            SELECT timestamp, open, high, low, close, volume
+            FROM historical_market_bars
+            WHERE symbol = ? AND timeframe = ?
+            ORDER BY timestamp ASC
+            LIMIT ?;
+        """
+        return self.fetch_all(query, (symbol.upper(), timeframe.upper(), limit))
+
     def close_sync(self) -> None:
         """Closes all open database connections across all threads."""
         with self._lock:
@@ -420,3 +559,29 @@ class DatabaseEngine:
 
 # Global singleton instance
 db_engine = DatabaseEngine()
+
+
+def upsert_asset_dna(dna_dict: Dict[str, Any]) -> None:
+    """Convenience wrapper to upsert an Asset DNA profile into the database."""
+    db_engine.upsert_asset_dna(dna_dict)
+
+
+def fetch_asset_dna(symbol: str, setup_type: str, session: str) -> Optional[Dict[str, Any]]:
+    """Convenience wrapper to fetch an Asset DNA profile by symbol, setup, and session."""
+    return db_engine.fetch_asset_dna(symbol, setup_type, session)
+
+
+def fetch_all_asset_dna(symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Convenience wrapper to retrieve all Asset DNA profiles, optionally filtered by symbol."""
+    return db_engine.fetch_all_asset_dna(symbol)
+
+
+def insert_market_bars(symbol: str, timeframe: str, bars: Any) -> int:
+    """Convenience wrapper to insert historical market bars."""
+    return db_engine.insert_market_bars(symbol, timeframe, bars)
+
+
+def fetch_market_bars(symbol: str, timeframe: str, limit: int = 50000) -> List[Dict[str, Any]]:
+    """Convenience wrapper to fetch chronological market bars."""
+    return db_engine.fetch_market_bars(symbol, timeframe, limit)
+

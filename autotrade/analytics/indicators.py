@@ -819,6 +819,240 @@ class FVGZonesResult(NamedTuple):
     unmitigated_bearish: List[Dict[str, float]]
 
 
+@njit(fastmath=True, nogil=True)
+def _run_fast_historical_replay_kernel(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    open_: np.ndarray,
+    entry_indices: np.ndarray,
+    entry_directions: np.ndarray,
+    entry_prices: np.ndarray,
+    sl_prices: np.ndarray,
+    tp1_prices: np.ndarray,
+    tp2_prices: np.ndarray,
+    tp3_prices: np.ndarray,
+    pip_size: float = 0.0001,
+    max_holding_bars: int = 72
+):
+    n_trades = len(entry_indices)
+    n_bars = len(close)
+
+    outcomes = np.zeros(n_trades, dtype=np.int64)
+    r_multiples = np.zeros(n_trades, dtype=np.float64)
+    mfe_pips = np.zeros(n_trades, dtype=np.float64)
+    mae_pct = np.zeros(n_trades, dtype=np.float64)
+    hit_1r = np.zeros(n_trades, dtype=np.int64)
+    hit_2r = np.zeros(n_trades, dtype=np.int64)
+    hit_3r = np.zeros(n_trades, dtype=np.int64)
+
+    effective_pip = pip_size if pip_size > 0.0 else 0.0001
+
+    for k in range(n_trades):
+        idx = entry_indices[k]
+        if idx >= n_bars - 1 or idx < 0:
+            continue
+        direction = entry_directions[k]
+        p_entry = entry_prices[k]
+        sl = sl_prices[k]
+        tp1 = tp1_prices[k]
+        tp2 = tp2_prices[k]
+        tp3 = tp3_prices[k]
+
+        sl_dist = abs(p_entry - sl)
+        if sl_dist <= 1e-9:
+            sl_dist = 20.0 * effective_pip
+
+        max_fav = 0.0
+        max_adv = 0.0
+        resolved = False
+
+        limit_j = min(n_bars, idx + 1 + max_holding_bars)
+        for j in range(idx + 1, limit_j):
+            if direction == 1:
+                fav = high[j] - p_entry
+                adv = p_entry - low[j]
+                if fav > max_fav:
+                    max_fav = fav
+                if adv > max_adv:
+                    max_adv = adv
+
+                if hit_1r[k] == 0 and high[j] >= tp1:
+                    hit_1r[k] = 1
+                if hit_2r[k] == 0 and high[j] >= tp2:
+                    hit_2r[k] = 1
+                if hit_3r[k] == 0 and high[j] >= tp3:
+                    hit_3r[k] = 1
+
+                if low[j] <= sl:
+                    outcomes[k] = -1
+                    r_multiples[k] = -1.0
+                    resolved = True
+                    break
+                elif high[j] >= tp2:
+                    outcomes[k] = 1
+                    r_multiples[k] = abs(tp2 - p_entry) / sl_dist
+                    resolved = True
+                    break
+            else:
+                fav = p_entry - low[j]
+                adv = high[j] - p_entry
+                if fav > max_fav:
+                    max_fav = fav
+                if adv > max_adv:
+                    max_adv = adv
+
+                if hit_1r[k] == 0 and low[j] <= tp1:
+                    hit_1r[k] = 1
+                if hit_2r[k] == 0 and low[j] <= tp2:
+                    hit_2r[k] = 1
+                if hit_3r[k] == 0 and low[j] <= tp3:
+                    hit_3r[k] = 1
+
+                if high[j] >= sl:
+                    outcomes[k] = -1
+                    r_multiples[k] = -1.0
+                    resolved = True
+                    break
+                elif low[j] <= tp2:
+                    outcomes[k] = 1
+                    r_multiples[k] = abs(p_entry - tp2) / sl_dist
+                    resolved = True
+                    break
+
+        if not resolved:
+            outcomes[k] = 0
+            exit_bar = limit_j - 1
+            if exit_bar >= 0 and exit_bar < n_bars:
+                exit_p = close[exit_bar]
+                pnl = (exit_p - p_entry) if direction == 1 else (p_entry - exit_p)
+                r_multiples[k] = pnl / sl_dist
+            else:
+                r_multiples[k] = 0.0
+
+        mfe_pips[k] = max(0.0, max_fav) / effective_pip
+        mae_pct[k] = (max(0.0, max_adv) / sl_dist) * 100.0 if sl_dist > 0 else 0.0
+
+    return outcomes, r_multiples, mfe_pips, mae_pct, hit_1r, hit_2r, hit_3r
+
+
+@njit(fastmath=True, nogil=True)
+def _find_optimal_sl_tp_kernel(
+    high: np.ndarray,
+    low: np.ndarray,
+    close: np.ndarray,
+    open_: np.ndarray,
+    entry_indices: np.ndarray,
+    entry_directions: np.ndarray,
+    entry_prices: np.ndarray,
+    atr_values: np.ndarray,
+    sl_mults: np.ndarray,
+    tp_mults: np.ndarray,
+    max_holding_bars: int = 72
+):
+    n_trades = len(entry_indices)
+    n_bars = len(close)
+
+    best_sl = 2.0
+    best_tp = 3.0
+    best_pf = 0.0
+    best_exp = -999.0
+
+    if n_trades == 0:
+        return (best_sl, best_tp, 1.0, 0.0)
+
+    for s_idx in range(len(sl_mults)):
+        s_mult = sl_mults[s_idx]
+        for t_idx in range(len(tp_mults)):
+            t_mult = tp_mults[t_idx]
+
+            gross_profit = 0.0
+            gross_loss = 0.0
+            sum_r = 0.0
+
+            for k in range(n_trades):
+                idx = entry_indices[k]
+                if idx >= n_bars - 1 or idx < 0:
+                    continue
+                dir_ = entry_directions[k]
+                p_e = entry_prices[k]
+                atr = atr_values[k] if atr_values[k] > 0 else (close[idx] * 0.002)
+
+                sl_dist = s_mult * atr
+                tp_dist = t_mult * atr
+
+                sl_p = p_e - sl_dist if dir_ == 1 else p_e + sl_dist
+                tp_p = p_e + tp_dist if dir_ == 1 else p_e - tp_dist
+
+                resolved = False
+                lim = min(n_bars, idx + 1 + max_holding_bars)
+                for j in range(idx + 1, lim):
+                    if dir_ == 1:
+                        if low[j] <= sl_p:
+                            gross_loss += sl_dist
+                            sum_r -= 1.0
+                            resolved = True
+                            break
+                        elif high[j] >= tp_p:
+                            gross_profit += tp_dist
+                            sum_r += (tp_dist / sl_dist)
+                            resolved = True
+                            break
+                    else:
+                        if high[j] >= sl_p:
+                            gross_loss += sl_dist
+                            sum_r -= 1.0
+                            resolved = True
+                            break
+                        elif low[j] <= tp_p:
+                            gross_profit += tp_dist
+                            sum_r += (tp_dist / sl_dist)
+                            resolved = True
+                            break
+
+                if not resolved:
+                    exit_b = lim - 1
+                    pnl = (close[exit_b] - p_e) if dir_ == 1 else (p_e - close[exit_b])
+                    if pnl > 0:
+                        gross_profit += pnl
+                    else:
+                        gross_loss += abs(pnl)
+                    sum_r += (pnl / sl_dist)
+
+            pf = (gross_profit / gross_loss) if gross_loss > 0 else (5.0 if gross_profit > 0 else 1.0)
+            exp_r = sum_r / n_trades
+
+            if (pf > best_pf and exp_r >= best_exp - 0.2) or (exp_r > best_exp and pf >= 1.0):
+                best_pf = pf
+                best_exp = exp_r
+                best_sl = s_mult
+                best_tp = t_mult
+
+    return (best_sl, best_tp, best_pf, best_exp)
+
+
+class ReplayResult(NamedTuple):
+    total_trades: int
+    wins_1r: int
+    wins_2r: int
+    wins_3r: int
+    losses: int
+    timeouts: int
+    win_rate_1r: float
+    win_rate_2r: float
+    win_rate_3r: float
+    profit_factor: float
+    expectancy_r: float
+    median_mfe_pips: float
+    median_mae_pct: float
+    optimal_sl_atr_mult: float
+    optimal_tp_atr_mult: float
+    outcomes: np.ndarray
+    r_multiples: np.ndarray
+    mfe_pips: np.ndarray
+    mae_pct: np.ndarray
+
+
 # ==============================================================================
 # MASTER TECHNICAL INDICATORS SUITE (NUMBA ACCELERATED)
 # ==============================================================================
@@ -1741,6 +1975,143 @@ class TechnicalIndicators:
             is_low_speed=bool(ker < 0.3)
         )
 
+    @staticmethod
+    def run_fast_historical_replay(
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+        open_: np.ndarray,
+        entry_indices: np.ndarray,
+        entry_directions: np.ndarray,
+        entry_prices: np.ndarray,
+        sl_prices: Optional[np.ndarray] = None,
+        tp_prices: Optional[np.ndarray] = None,
+        pip_size: float = 0.0001,
+        max_holding_bars: int = 72,
+        atr_values: Optional[np.ndarray] = None,
+    ) -> ReplayResult:
+        """
+        60. High-Speed Causal Simulation Kernel (Numba JIT accelerated).
+        Executes zero-lookahead forward testing across chronological bars in <100 ms per asset.
+        """
+        h_arr = np.ascontiguousarray(high, dtype=np.float64)
+        l_arr = np.ascontiguousarray(low, dtype=np.float64)
+        c_arr = np.ascontiguousarray(close, dtype=np.float64)
+        o_arr = np.ascontiguousarray(open_, dtype=np.float64)
+
+        e_idx = np.ascontiguousarray(entry_indices, dtype=np.int64)
+        e_dir = np.ascontiguousarray(entry_directions, dtype=np.int64)
+        e_prc = np.ascontiguousarray(entry_prices, dtype=np.float64)
+
+        n_trades = len(e_idx)
+        if n_trades == 0:
+            return ReplayResult(
+                total_trades=0,
+                wins_1r=0, wins_2r=0, wins_3r=0, losses=0, timeouts=0,
+                win_rate_1r=0.0, win_rate_2r=0.0, win_rate_3r=0.0,
+                profit_factor=1.0, expectancy_r=0.0,
+                median_mfe_pips=0.0, median_mae_pct=0.0,
+                optimal_sl_atr_mult=2.0, optimal_tp_atr_mult=3.0,
+                outcomes=np.array([], dtype=np.int64),
+                r_multiples=np.array([], dtype=np.float64),
+                mfe_pips=np.array([], dtype=np.float64),
+                mae_pct=np.array([], dtype=np.float64)
+            )
+
+        if atr_values is None:
+            atr_arr = indicators.atr(h_arr, l_arr, c_arr, 14)
+            valid_atr = atr_arr[~np.isnan(atr_arr)]
+            mean_atr = float(np.mean(valid_atr)) if len(valid_atr) > 0 else (0.0020 if pip_size < 0.005 else 0.20)
+            trade_atrs = np.empty(n_trades, dtype=np.float64)
+            for k in range(n_trades):
+                i = e_idx[k]
+                val = atr_arr[i] if i < len(atr_arr) else np.nan
+                trade_atrs[k] = val if not np.isnan(val) and val > 0 else mean_atr
+        else:
+            trade_atrs = np.ascontiguousarray(atr_values, dtype=np.float64)
+
+        if sl_prices is None:
+            sl_arr = np.empty(n_trades, dtype=np.float64)
+            for k in range(n_trades):
+                dist = 2.0 * trade_atrs[k]
+                sl_arr[k] = e_prc[k] - dist if e_dir[k] == 1 else e_prc[k] + dist
+        else:
+            sl_arr = np.ascontiguousarray(sl_prices, dtype=np.float64)
+
+        tp1_arr = np.empty(n_trades, dtype=np.float64)
+        tp2_arr = np.empty(n_trades, dtype=np.float64)
+        tp3_arr = np.empty(n_trades, dtype=np.float64)
+
+        for k in range(n_trades):
+            r_dist = abs(e_prc[k] - sl_arr[k])
+            if r_dist <= 1e-9:
+                r_dist = 20.0 * pip_size
+            if e_dir[k] == 1:
+                tp1_arr[k] = e_prc[k] + (1.0 * r_dist)
+                tp2_arr[k] = tp_prices[k] if tp_prices is not None else e_prc[k] + (2.0 * r_dist)
+                tp3_arr[k] = e_prc[k] + (3.0 * r_dist)
+            else:
+                tp1_arr[k] = e_prc[k] - (1.0 * r_dist)
+                tp2_arr[k] = tp_prices[k] if tp_prices is not None else e_prc[k] - (2.0 * r_dist)
+                tp3_arr[k] = e_prc[k] - (3.0 * r_dist)
+
+        outcomes, r_multiples, mfe_pips, mae_pct, hit_1r, hit_2r, hit_3r = _run_fast_historical_replay_kernel(
+            h_arr, l_arr, c_arr, o_arr,
+            e_idx, e_dir, e_prc,
+            sl_arr, tp1_arr, tp2_arr, tp3_arr,
+            float(pip_size), int(max_holding_bars)
+        )
+
+        w1 = int(np.sum(hit_1r))
+        w2 = int(np.sum(hit_2r))
+        w3 = int(np.sum(hit_3r))
+        losses = int(np.sum(outcomes == -1))
+        timeouts = int(np.sum(outcomes == 0))
+
+        wr1 = round(w1 / n_trades, 4) if n_trades > 0 else 0.0
+        wr2 = round(w2 / n_trades, 4) if n_trades > 0 else 0.0
+        wr3 = round(w3 / n_trades, 4) if n_trades > 0 else 0.0
+
+        pos_r = r_multiples[r_multiples > 0]
+        neg_r = r_multiples[r_multiples < 0]
+        sum_pos = float(np.sum(pos_r))
+        sum_neg = float(np.sum(np.abs(neg_r)))
+        pf = round(sum_pos / sum_neg, 2) if sum_neg > 0 else (5.0 if sum_pos > 0 else 1.0)
+        exp_r = round(float(np.mean(r_multiples)), 3) if n_trades > 0 else 0.0
+
+        med_mfe = round(float(np.median(mfe_pips)), 1) if n_trades > 0 else 0.0
+        med_mae = round(float(np.median(mae_pct)), 1) if n_trades > 0 else 0.0
+
+        sl_grid = np.array([1.5, 2.0, 2.5, 3.0], dtype=np.float64)
+        tp_grid = np.array([2.0, 2.5, 3.0, 4.0], dtype=np.float64)
+        opt_sl, opt_tp, _, _ = _find_optimal_sl_tp_kernel(
+            h_arr, l_arr, c_arr, o_arr,
+            e_idx, e_dir, e_prc, trade_atrs,
+            sl_grid, tp_grid, int(max_holding_bars)
+        )
+
+        return ReplayResult(
+            total_trades=n_trades,
+            wins_1r=w1,
+            wins_2r=w2,
+            wins_3r=w3,
+            losses=losses,
+            timeouts=timeouts,
+            win_rate_1r=wr1,
+            win_rate_2r=wr2,
+            win_rate_3r=wr3,
+            profit_factor=pf,
+            expectancy_r=exp_r,
+            median_mfe_pips=med_mfe,
+            median_mae_pct=med_mae,
+            optimal_sl_atr_mult=round(opt_sl, 2),
+            optimal_tp_atr_mult=round(opt_tp, 2),
+            outcomes=outcomes,
+            r_multiples=r_multiples,
+            mfe_pips=mfe_pips,
+            mae_pct=mae_pct
+        )
+
 
 # Global singleton instance
 indicators = TechnicalIndicators()
@@ -1749,4 +2120,5 @@ compute_liquidity_pools = indicators.compute_liquidity_pools
 compute_fvg_zones = indicators.compute_fvg_zones
 compute_ote_levels = indicators.compute_ote_levels
 compute_dynamic_kaufman_periods = indicators.compute_dynamic_kaufman_periods
+run_fast_historical_replay = indicators.run_fast_historical_replay
 

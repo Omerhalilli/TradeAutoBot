@@ -23,6 +23,11 @@ from autotrade.analytics.adaptive_learner import (
     SymbolQuarantineStatus,
     MAEAdaptationStatus
 )
+from autotrade.analytics.historical_profiler import (
+    historical_profiler,
+    HistoricalProfiler,
+    AssetDNA
+)
 
 __all__ = [
     "PrecisionMath",
@@ -30,6 +35,7 @@ __all__ = [
     "round_to_lot",
     "TechnicalIndicators",
     "indicators",
+    "run_fast_historical_replay",
     "ChartGenerator",
     "ChartType",
     "PredictiveModels",
@@ -44,4 +50,7 @@ __all__ = [
     "ClusterPerformance",
     "SymbolQuarantineStatus",
     "MAEAdaptationStatus",
+    "historical_profiler",
+    "HistoricalProfiler",
+    "AssetDNA",
 ]

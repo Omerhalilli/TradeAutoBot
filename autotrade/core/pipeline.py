@@ -195,6 +195,11 @@ class CandidateEvaluation:
     cci_value: float = 0.0
     bollinger_pct_b: float = 0.50
     adaptive_score_modifier: float = 0.0
+    dna_win_rate_2r: float = 0.50
+    dna_expectancy_r: float = 0.0
+    optimal_sl_atr_mult: float = 2.0
+    optimal_tp_atr_mult: float = 3.0
+    dna_edge_boost: float = 0.0
     veto_reasons: List[str] = field(default_factory=list)
 
     def rank_sort_key(self) -> Tuple[float, float, float]:
@@ -674,20 +679,63 @@ class QuantitativeConfluenceEngine:
             return res
 
         # ----------------------------------------------------------------------
+        # RULE 6: LIVE PIPELINE EMPIRICAL ASSET DNA GATE
+        # ----------------------------------------------------------------------
+        cand_setup = "SNIPER_ALL"
+        if res.liquidity_swept:
+            cand_setup = "LIQUIDITY_SWEEP"
+        elif getattr(res, "in_ote_or_fvg", False):
+            cand_setup = "FVG_MITIGATION"
+        elif in_ote_corridor:
+            cand_setup = "OTE_PULLBACK"
+
+        from autotrade.analytics.adaptive_learner import resolve_trading_session
+        sess_now = resolve_trading_session(bar_time if bar_time > 0 else time.time())
+
+        # Check empirical edge via historical profiler
+        dna_passed = True
+        dna_gate_reason = ""
+        dna_edge_boost = 0.0
+        opt_sl_mult = 2.0
+        try:
+            from autotrade.analytics.historical_profiler import historical_profiler
+            dna_passed, dna_gate_reason, dna_edge_boost, opt_sl_mult = historical_profiler.check_empirical_gate(
+                symbol=symbol,
+                setup_type=cand_setup,
+                session=sess_now
+            )
+            dna_profile = historical_profiler.get_dna(symbol, cand_setup, sess_now)
+            if dna_profile:
+                res.dna_win_rate_2r = dna_profile.win_rate_2r
+                res.dna_expectancy_r = dna_profile.expectancy_r
+                res.optimal_sl_atr_mult = dna_profile.optimal_sl_atr_mult
+                res.optimal_tp_atr_mult = dna_profile.optimal_tp_atr_mult
+        except Exception as ex:
+            logger.debug(f"Historical profiler gate check bypass: {ex}")
+
+        if not dna_passed:
+            res.disqualification_reason = dna_gate_reason
+            res.veto_reasons.append(dna_gate_reason)
+            return res
+
+        res.dna_edge_boost = dna_edge_boost
+        res.optimal_sl_atr_mult = opt_sl_mult
+
+        # ----------------------------------------------------------------------
         # AUTONOMOUS DYNAMIC SL / TP DERIVATION (100% MARKET STRUCTURE)
         # ----------------------------------------------------------------------
         spread_price = spread_points * specs.point
         if spread_price <= 0.0:
             spread_price = 15.0 * specs.point
 
-        # Incorporate Volatility & Stop-Loss Self-Adaptation from AdaptiveLearner
+        # Incorporate Volatility & Stop-Loss Self-Adaptation from AdaptiveLearner + Asset DNA
         atr_adj = 0.0
         try:
             from autotrade.analytics.adaptive_learner import adaptive_learner
             atr_adj = adaptive_learner.get_sl_atr_multiplier_adjustment(symbol)
         except Exception:
             pass
-        effective_spread_mult = max(1.5, 2.0 + atr_adj)
+        effective_spread_mult = max(1.5, opt_sl_mult + atr_adj)
 
         lp_current = indicators.compute_liquidity_pools(highs, lows, closes, opens, lookback=50)
 
@@ -790,20 +838,23 @@ class QuantitativeConfluenceEngine:
         except Exception:
             pass
 
-        res.score_100 = max(0.0, min(100.0, base_score + score_mod))
-        res.adaptive_score_modifier = score_mod
+        total_score_mod = score_mod + res.dna_edge_boost
+        res.score_100 = max(0.0, min(100.0, base_score + total_score_mod))
+        res.adaptive_score_modifier = total_score_mod
 
         if res.score_100 < self.min_confluence_score:
             res.is_qualified = False
             res.disqualification_reason = (
-                f"Adaptive Learning Penalty: Confluence score ({res.score_100:.1f}) penalized by {score_mod:.1f} pts "
+                f"Adaptive Learning Penalty: Confluence score ({res.score_100:.1f}) penalized by {total_score_mod:.1f} pts "
                 f"below minimum threshold ({self.min_confluence_score})."
             )
             res.veto_reasons.append(res.disqualification_reason)
             return res
 
         res.is_qualified = True
-        res.disqualification_reason = f"100% Sniper Matrix Qualified (Zero Manual Input | Score Mod: {score_mod:+.1f})"
+        res.disqualification_reason = (
+            f"100% Sniper Matrix Qualified (Zero Manual Input | Score Mod: {score_mod:+.1f} | DNA Edge: {res.dna_edge_boost:+.1f})"
+        )
         return res
 
 
