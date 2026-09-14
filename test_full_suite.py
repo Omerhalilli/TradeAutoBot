@@ -706,7 +706,8 @@ class TestMT4BridgeFullSuite(unittest.TestCase):
             "results": [
                 {
                     "symbol": "EURUSD",
-                    "score": 8,
+                    "score": 9,
+                    "analysis_score": 90.0,
                     "signal": "BUY",
                     "trend": "STRONG_BULLISH",
                     "spread": 10.0,
