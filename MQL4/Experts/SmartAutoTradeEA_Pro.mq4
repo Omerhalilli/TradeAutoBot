@@ -6720,6 +6720,11 @@ void PerformManualPortfolioScan()
       totalScanned++;
 
       StrategySignal sig = EvaluateSymbolOpportunity(sym, scanTF, 6, 1.5, 10.0, 150.0);
+      if(sig.score <= 0 && sig.analysisScore > 0)
+      {
+         sig.score = (int)MathFloor(sig.analysisScore / 10.0);
+         if(sig.score > 10) sig.score = 10;
+      }
       bool isSessionActive = IsSessionActiveForSymbol(sym);
 
       int minReq = MathMax(8, AutonomousMinConfluenceScore);
@@ -6744,7 +6749,7 @@ void PerformManualPortfolioScan()
          bestSymbol = sym;
          bestScore = sig.score;
          bestAnalysisScore = sig.analysisScore;
-         bestCmd = sigCmd;
+         bestCmd = (sig.buyScore > sig.sellScore ? "BUY" : (sig.sellScore > sig.buyScore ? "SELL" : sigCmd));
       }
    }
 

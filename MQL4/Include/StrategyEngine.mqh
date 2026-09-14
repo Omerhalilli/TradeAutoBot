@@ -582,6 +582,11 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
 
    sig.analysisScore = NormalizeDouble(finalAnalysis, 1);
    sig.score         = finalScore;
+   if(sig.score <= 0 && sig.analysisScore > 0)
+   {
+      sig.score = (int)MathFloor(sig.analysisScore / 10.0);
+      if(sig.score > 10) sig.score = 10;
+   }
 
    // -----------------------------------------------------------------
    // Dynamic ATR-based Stop Loss & Take Profit Calculation
@@ -661,7 +666,6 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
-      sig.score = 0;
       return sig;
    }
 
@@ -670,21 +674,18 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
-      sig.score = 0;
       return sig;
    }
    if(sig.cmd == OP_BUY && adx_plus <= adx_minus)
    {
       sig.cmd = -1;
       sig.valid = false;
-      sig.score = 0;
       return sig;
    }
    if(sig.cmd == OP_SELL && adx_minus <= adx_plus)
    {
       sig.cmd = -1;
       sig.valid = false;
-      sig.score = 0;
       return sig;
    }
 
@@ -693,14 +694,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
-      sig.score = 0;
       return sig;
    }
    if(sig.cmd == OP_SELL && (rsi < 35.0 || rsi > 55.0))
    {
       sig.cmd = -1;
       sig.valid = false;
-      sig.score = 0;
       return sig;
    }
 
@@ -714,28 +713,24 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       {
          sig.cmd = -1;
          sig.valid = false;
-         sig.score = 0;
          return sig; // Veto: Selling directly into swing support
       }
       if(low1 <= bb_low && close1 > bb_low)
       {
          sig.cmd = -1;
          sig.valid = false;
-         sig.score = 0;
          return sig; // Veto: Lower band bounce contradicts short
       }
       if(sig.pattern == "BULLISH_ENGULFING" || sig.pattern == "HAMMER" || sig.pattern == "MORNING_STAR")
       {
          sig.cmd = -1;
          sig.valid = false;
-         sig.score = 0;
          return sig; // Veto: Bullish reversal candlestick pattern active
       }
       if(ema20 > 0.0 && (ema20 - close1) > (atr * 2.5))
       {
          sig.cmd = -1;
          sig.valid = false;
-         sig.score = 0;
          return sig; // Veto: Extended mean-reversion risk
       }
    }
@@ -746,28 +741,24 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       {
          sig.cmd = -1;
          sig.valid = false;
-         sig.score = 0;
          return sig; // Veto: Buying directly into swing resistance
       }
       if(high1 >= bb_up && close1 < bb_up)
       {
          sig.cmd = -1;
          sig.valid = false;
-         sig.score = 0;
          return sig; // Veto: Upper band rejection contradicts long
       }
       if(sig.pattern == "BEARISH_ENGULFING" || sig.pattern == "SHOOTING_STAR")
       {
          sig.cmd = -1;
          sig.valid = false;
-         sig.score = 0;
          return sig; // Veto: Bearish reversal candlestick pattern active
       }
       if(ema20 > 0.0 && (close1 - ema20) > (atr * 2.5))
       {
          sig.cmd = -1;
          sig.valid = false;
-         sig.score = 0;
          return sig; // Veto: Extended mean-reversion risk
       }
    }
@@ -786,14 +777,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          {
             sig.cmd = -1;
             sig.valid = false;
-            sig.score = 0;
             return sig; // H4 bearish stack contradicts BUY
          }
          if(sig.cmd == OP_SELL && ((h4_ema20 > h4_ema50 && h4_ema50 > h4_ema200) || (h4_ema50 > h4_ema200 && h4_close > h4_ema50) || h4_close > h4_ema200))
          {
             sig.cmd = -1;
             sig.valid = false;
-            sig.score = 0;
             return sig; // H4 bullish stack contradicts SELL
          }
       }
@@ -803,14 +792,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          {
             sig.cmd = -1;
             sig.valid = false;
-            sig.score = 0;
             return sig;
          }
          if(sig.cmd == OP_SELL && (h4_ema20 > h4_ema50 || h4_close > h4_ema50))
          {
             sig.cmd = -1;
             sig.valid = false;
-            sig.score = 0;
             return sig;
          }
       }
@@ -829,14 +816,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          {
             sig.cmd = -1;
             sig.valid = false;
-            sig.score = 0;
             return sig; // D1 bearish trend contradicts BUY
          }
          if(sig.cmd == OP_SELL && ((d1_ema20 > d1_ema50 && d1_ema50 > d1_ema200) || (d1_ema50 > d1_ema200 && d1_close > d1_ema50) || d1_close > d1_ema200))
          {
             sig.cmd = -1;
             sig.valid = false;
-            sig.score = 0;
             return sig; // D1 bullish trend contradicts SELL
          }
       }
@@ -846,14 +831,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          {
             sig.cmd = -1;
             sig.valid = false;
-            sig.score = 0;
             return sig;
          }
          if(sig.cmd == OP_SELL && (d1_ema20 > d1_ema50 || d1_close > d1_ema50))
          {
             sig.cmd = -1;
             sig.valid = false;
-            sig.score = 0;
             return sig;
          }
       }
@@ -864,14 +847,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
-      sig.score = 0;
       return sig; // Insufficient ATR volatility for trade entry
    }
    if(maxATRPips > 0.0 && atrPips > maxATRPips)
    {
       sig.cmd = -1;
       sig.valid = false;
-      sig.score = 0;
       return sig; // Excessive volatility spike
    }
 
@@ -880,7 +861,6 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
-      sig.score = 0;
       return sig;
    }
 

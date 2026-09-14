@@ -2267,12 +2267,16 @@ string Zmq_HandleScanSymbols(const string reqJson)
       
       // Comprehensive 0-100 Multi-Indicator Analysis (Strict 10.0 pip ATR volatility gate)
       StrategySignal sig = EvaluateSymbolOpportunity(sym, tf, 6, 1.5, 10.0, 150.0);
+      if(sig.score <= 0 && sig.analysisScore > 0)
+      {
+         sig.score = (int)MathFloor(sig.analysisScore / 10.0);
+         if(sig.score > 10) sig.score = 10;
+      }
       bool isSessionActive = IsSessionActiveForSymbol(sym);
       
       string signal = "HOLD";
       if(isSessionActive && sig.valid && sig.cmd == OP_BUY && sig.score >= 6) signal = "BUY";
       else if(isSessionActive && sig.valid && sig.cmd == OP_SELL && sig.score >= 6) signal = "SELL";
-      else sig.score = 0;
       
       PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Signal: %-4s | Score: %2d/10 (%5.1f%%) | Trend: %-15s | Spread: %4.1f pts%s",
                   i + 1, totalSymbolsInList, sym, signal, sig.score, sig.analysisScore, sig.trend, spread,
