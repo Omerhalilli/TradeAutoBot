@@ -3,12 +3,13 @@ Telegram Command Handlers for MT4 ZeroMQ Bridge Bot.
 Institutional Trading Terminal styling, robust validation, pagination,
 inline quick navigation, and full remote MT4 control.
 """
+from __future__ import annotations
 import asyncio
 import functools
 import logging
 import os
 import time
-from typing import Callable, List, Dict, Any, Tuple
+from typing import Callable, List, Dict, Any, Tuple, Optional, Union, Set
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes

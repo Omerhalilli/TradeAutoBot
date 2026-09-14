@@ -1,4 +1,4 @@
-﻿import zmq
+import zmq
 import json
 
 ctx = zmq.Context()
