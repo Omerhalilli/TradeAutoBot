@@ -116,11 +116,25 @@ class AutonomousMultiSymbolTrader:
         require_bar_transition: bool = False,
         timeframe: str = AUTOTRADE_TIMEFRAME,
         scan_on_bar_close_only: bool = AUTOTRADE_SCAN_ON_BAR_CLOSE_ONLY,
-        state_file_path: Optional[str] = None
+        state_file_path: Optional[str] = None,
+        dynamic_market_watch: Optional[bool] = None
     ):
-        self.symbols: List[str] = symbols or list(TRADING_SYMBOLS) or list(DEFAULT_PORTFOLIO_SYMBOLS)
-        # Clean symbol strings
-        self.symbols = [s.strip().upper() for s in self.symbols if s.strip()]
+        self.dynamic_market_watch: bool = (
+            dynamic_market_watch if dynamic_market_watch is not None else (symbols is None)
+        )
+        if symbols:
+            self.symbols: List[str] = [s.strip().upper() for s in symbols if s.strip()]
+        else:
+            self.symbols = []
+            # Dynamic Market Watch Discovery: query MT4 ZeroMQ bridge directly
+            discovered = self.sync_market_watch_symbols()
+            if discovered:
+                self.symbols = discovered
+            elif list(TRADING_SYMBOLS):
+                self.symbols = list(TRADING_SYMBOLS)
+            else:
+                self.symbols = list(DEFAULT_PORTFOLIO_SYMBOLS)
+
         if not self.symbols:
             self.symbols = list(DEFAULT_PORTFOLIO_SYMBOLS)
 
@@ -334,6 +348,74 @@ class AutonomousMultiSymbolTrader:
             return True
         return False
 
+    def sync_market_watch_symbols(self, force: bool = False) -> List[str]:
+        """
+        Queries MT4 ZeroMQ bridge to dynamically discover, filter, and synchronize all
+        active, tradable instruments directly from MT4's Market Watch window.
+        Filters out illiquid pairs and exotic currencies (AZN, TRY, RUB, ZAR).
+        """
+        try:
+            res = zmq_client.get_market_watch_symbols(timeout_ms=3000)
+            if res.get("status") == "ok" and "symbols" in res:
+                raw_syms = res.get("symbols", [])
+                clean_syms = []
+                for s in raw_syms:
+                    sym_str = str(s).strip().upper()
+                    if not sym_str:
+                        continue
+                    # Exotic blacklist filter
+                    if any(ex in sym_str for ex in ("AZN", "TRY", "RUB", "ZAR")):
+                        continue
+                    clean_syms.append(sym_str)
+
+                if clean_syms:
+                    prev_set = set(self.symbols)
+                    curr_set = set(clean_syms)
+                    if prev_set != curr_set:
+                        logger.info(
+                            f"AutonomousTrader: 📡 Dynamically discovered & synchronized {len(clean_syms)} active Market Watch "
+                            f"instruments from MT4: {', '.join(clean_syms)}"
+                        )
+                    self.symbols = clean_syms
+                    return self.symbols
+        except Exception as ex:
+            logger.debug(f"AutonomousTrader: Dynamic Market Watch discovery error: {ex}")
+
+        return self.symbols
+
+    async def sync_market_watch_symbols_async(self, force: bool = False) -> List[str]:
+        """
+        Asynchronously queries MT4 ZeroMQ bridge to dynamically discover, filter, and synchronize all
+        active, tradable instruments directly from MT4's Market Watch window.
+        """
+        try:
+            res = await zmq_client.get_market_watch_symbols_async(timeout_ms=3000)
+            if res.get("status") == "ok" and "symbols" in res:
+                raw_syms = res.get("symbols", [])
+                clean_syms = []
+                for s in raw_syms:
+                    sym_str = str(s).strip().upper()
+                    if not sym_str:
+                        continue
+                    if any(ex in sym_str for ex in ("AZN", "TRY", "RUB", "ZAR")):
+                        continue
+                    clean_syms.append(sym_str)
+
+                if clean_syms:
+                    prev_set = set(self.symbols)
+                    curr_set = set(clean_syms)
+                    if prev_set != curr_set:
+                        logger.info(
+                            f"AutonomousTrader: 📡 Dynamically discovered & synchronized {len(clean_syms)} active Market Watch "
+                            f"instruments from MT4: {', '.join(clean_syms)}"
+                        )
+                    self.symbols = clean_syms
+                    return self.symbols
+        except Exception as ex:
+            logger.debug(f"AutonomousTrader: Async Dynamic Market Watch discovery error: {ex}")
+
+        return self.symbols
+
     def scan_portfolio(
         self, timeframe: Optional[str] = None, symbols: Optional[List[str]] = None
     ) -> Dict[str, Any]:
@@ -342,6 +424,8 @@ class AutonomousMultiSymbolTrader:
         """
         tf = timeframe or self.timeframe
         tf_sec = self.get_timeframe_seconds(tf)
+        if symbols is None and self.dynamic_market_watch and not self.last_scan_data:
+            self.sync_market_watch_symbols()
         sym_list = symbols or self.symbols
         sym_str = ",".join(sym_list)
         res = zmq_client.scan_symbols(symbols=sym_str, timeframe=tf, timeout_ms=6000)
@@ -562,6 +646,10 @@ class AutonomousMultiSymbolTrader:
         async with self._lock:
             if not self.is_autotrade_active():
                 return []
+
+            # Dynamic Market Watch Discovery: synchronize active instruments on candle boundary / cycle
+            if self.dynamic_market_watch:
+                await self.sync_market_watch_symbols_async()
 
             # 1. Scan market portfolio
             scan_data = await self.scan_portfolio_async()
@@ -962,6 +1050,8 @@ class AutonomousMultiSymbolTrader:
         if not force and self.scan_on_bar_close_only and not self.is_new_bar_boundary():
             return
         try:
+            if self.dynamic_market_watch:
+                await self.sync_market_watch_symbols_async()
             await self.execute_autonomous_cycle(bot=bot)
         except Exception as ex:
             logger.debug(f"Error running autonomous trading cycle: {ex}")
@@ -1272,10 +1362,13 @@ class AutonomousMultiSymbolTrader:
 
     def format_symbols_panel(self) -> str:
         """Formats the list of active monitored symbols for /symbols command."""
+        if self.dynamic_market_watch:
+            self.sync_market_watch_symbols()
+        badge = "Market Watch Dynamic" if self.dynamic_market_watch else "Manual Watchlist"
         msg = (
             "🌐 <b>AUTONOMOUS PORTFOLIO WATCHLIST</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"• <b>Total Monitored Symbols:</b> <b>{len(self.symbols)}</b>\n"
+            f"• <b>Total Monitored Symbols:</b> <b>{len(self.symbols)}</b> ({badge})\n"
             f"• <b>Current Symbols:</b>\n"
         )
         for s in self.symbols:

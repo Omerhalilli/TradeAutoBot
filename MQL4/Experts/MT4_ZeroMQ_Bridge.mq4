@@ -848,6 +848,31 @@ string HandleScreenshot(const string reqJson)
    return json;
 }
 
+//+------------------------------------------------------------------+
+//| Handler for GET_MARKET_WATCH_SYMBOLS / DISCOVER_SYMBOLS          |
+//+------------------------------------------------------------------+
+string HandleGetMarketWatchSymbols()
+{
+   string symbols[];
+   int count = GetMarketWatchTradableSymbols(symbols, 150.0);
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_MARKET_WATCH_SYMBOLS\",";
+   json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"broker\":\"" + JsonEscape(AccountCompany()) + "\",";
+   json += "\"server\":\"" + JsonEscape(AccountServer()) + "\",";
+   json += "\"count\":" + IntegerToString(count) + ",";
+   json += "\"symbols\":[";
+   for(int s = 0; s < count; s++)
+   {
+      if(s > 0) json += ",";
+      json += "\"" + JsonEscape(symbols[s]) + "\"";
+   }
+   json += "]}";
+   return json;
+}
+
 string HandleGetSymbols()
 {
    string symbols[];
@@ -1187,8 +1212,10 @@ string ProcessRequest(const string reqStr)
       return HandlePing();
    if(action == "SCREENSHOT" || action == "GET_SCREENSHOT")
       return HandleScreenshot(reqStr);
+   if(action == "GET_MARKET_WATCH_SYMBOLS" || action == "DISCOVER_SYMBOLS")
+      return HandleGetMarketWatchSymbols();
    if(action == "GET_SYMBOLS" || action == "SYMBOLS")
-      return HandleGetSymbols();
+      return HandleGetMarketWatchSymbols();
    if(action == "SCAN_SYMBOLS" || action == "SCAN" || action == "MARKET_DATA")
       return HandleScanSymbols(reqStr);
       

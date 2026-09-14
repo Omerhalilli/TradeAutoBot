@@ -642,4 +642,61 @@ double GetSymbolPipValue(string sym)
    return pipVal;
 }
 
+//+------------------------------------------------------------------+
+//| Dynamic Market Watch Discovery: Discover, filter, and synchronize|
+//| all active, tradable instruments directly from MT4 Market Watch  |
+//+------------------------------------------------------------------+
+int GetMarketWatchTradableSymbols(string &outSymbols[], double maxSpreadPoints = 150.0)
+{
+   ArrayResize(outSymbols, 0);
+   int total = SymbolsTotal(true); // Market Watch selected symbols
+   
+   for(int i = 0; i < total; i++)
+   {
+      string sym = SymbolName(i, true);
+      if(StringLen(sym) == 0) continue;
+      
+      // Filter 1: Must have trading allowed (excludes greyed-out pairs like EURAZN, USDAZN)
+      if(!MarketInfo(sym, MODE_TRADEALLOWED)) continue;
+      
+      long tradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
+      if(tradeMode == SYMBOL_TRADE_MODE_DISABLED || tradeMode == SYMBOL_TRADE_MODE_CLOSEONLY) continue;
+
+      // Price sanity check
+      double bid = MarketInfo(sym, MODE_BID);
+      double ask = MarketInfo(sym, MODE_ASK);
+      if(bid <= 0.0 || ask <= 0.0 || ask < bid) continue;
+      
+      // Filter 2: Spread sanity check (exclude illiquid pairs with spread > 150 points / 15 pips)
+      double sp = MarketInfo(sym, MODE_SPREAD);
+      double pt = MarketInfo(sym, MODE_POINT);
+      if(sp <= 0.0 && pt > 0.0) sp = (ask - bid) / pt;
+      if(sp <= 0.0 || (maxSpreadPoints > 0.0 && sp > maxSpreadPoints)) continue;
+      
+      // Filter 3: Exotic blacklist filter
+      string upperSym = sym;
+      StringToUpper(upperSym);
+      if(StringFind(upperSym, "AZN") >= 0 || StringFind(upperSym, "TRY") >= 0 || 
+         StringFind(upperSym, "RUB") >= 0 || StringFind(upperSym, "ZAR") >= 0) continue;
+      
+      // Add valid tradable symbol with its native broker suffix (e.g., CADJPY_min)
+      int sz = ArraySize(outSymbols);
+      ArrayResize(outSymbols, sz + 1);
+      outSymbols[sz] = sym;
+   }
+
+   // Safety fallback: if Market Watch yielded 0 symbols, add active chart symbol if tradable
+   if(ArraySize(outSymbols) == 0)
+   {
+      string curSym = Symbol();
+      if(MarketInfo(curSym, MODE_TRADEALLOWED) > 0.0)
+      {
+         ArrayResize(outSymbols, 1);
+         outSymbols[0] = curSym;
+      }
+   }
+
+   return ArraySize(outSymbols);
+}
+
 #endif // __SYMBOL_MANAGER_MQH__

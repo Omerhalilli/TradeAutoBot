@@ -282,6 +282,16 @@ class MT4ZmqClient:
                     logger.warning(f"Error composing screenshot in zmq_client: {ex}")
         return res
 
+    def get_market_watch_symbols(self, timeout_ms: int = 5000) -> Dict[str, Any]:
+        """
+        Queries MT4 bridge for dynamically discovered active, tradable instruments
+        directly from the Market Watch window.
+        """
+        res = self.send_command("GET_MARKET_WATCH_SYMBOLS", timeout_ms=timeout_ms)
+        if res.get("status") == "ok" and "symbols" in res:
+            return res
+        return self.send_command("GET_SYMBOLS", timeout_ms=timeout_ms)
+
     def get_symbols(self, timeout_ms: int = 5000) -> Dict[str, Any]:
         return self.send_command("GET_SYMBOLS", timeout_ms=timeout_ms)
 
@@ -384,6 +394,20 @@ class MT4ZmqClient:
     async def get_symbol_info_async(self, symbol: str) -> Dict[str, Any]:
         """Asynchronously queries MT4 broker specification metrics."""
         return await self.send_command_async("GET_SYMBOL_INFO", symbol=symbol)
+
+    async def get_market_watch_symbols_async(self, timeout_ms: int = 5000) -> Dict[str, Any]:
+        """
+        Asynchronously queries MT4 bridge for dynamically discovered active, tradable instruments
+        directly from the Market Watch window.
+        """
+        res = await self.send_command_async("GET_MARKET_WATCH_SYMBOLS", timeout_ms=timeout_ms)
+        if res.get("status") == "ok" and "symbols" in res:
+            return res
+        return await self.send_command_async("GET_SYMBOLS", timeout_ms=timeout_ms)
+
+    async def get_symbols_async(self, timeout_ms: int = 5000) -> Dict[str, Any]:
+        """Asynchronously queries MT4 active symbols."""
+        return await self.send_command_async("GET_SYMBOLS", timeout_ms=timeout_ms)
 
     def close(self):
         """Stops heartbeat thread and closes sockets cleanly."""

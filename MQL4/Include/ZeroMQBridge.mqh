@@ -1894,6 +1894,31 @@ string Zmq_HandleScreenshot(const string reqJson)
    return json;
 }
 
+//+------------------------------------------------------------------+
+//| Handler for GET_MARKET_WATCH_SYMBOLS / DISCOVER_SYMBOLS          |
+//+------------------------------------------------------------------+
+string Zmq_HandleGetMarketWatchSymbols()
+{
+   string symbols[];
+   int count = GetMarketWatchTradableSymbols(symbols, 150.0);
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_MARKET_WATCH_SYMBOLS\",";
+   json += "\"account_number\":\"" + IntegerToString(AccountNumber()) + "\",";
+   json += "\"broker\":\"" + Zmq_JsonEscape(AccountCompany()) + "\",";
+   json += "\"server\":\"" + Zmq_JsonEscape(AccountServer()) + "\",";
+   json += "\"count\":" + IntegerToString(count) + ",";
+   json += "\"symbols\":[";
+   for(int s = 0; s < count; s++)
+   {
+      if(s > 0) json += ",";
+      json += "\"" + Zmq_JsonEscape(symbols[s]) + "\"";
+   }
+   json += "]}";
+   return json;
+}
+
 string Zmq_HandleGetSymbols()
 {
    string symbols[];
@@ -2319,8 +2344,10 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleApplyColors();
    if(action == "SCREENSHOT" || action == "GET_SCREENSHOT")
       return Zmq_HandleScreenshot(reqStr);
+   if(action == "GET_MARKET_WATCH_SYMBOLS" || action == "DISCOVER_SYMBOLS")
+      return Zmq_HandleGetMarketWatchSymbols();
    if(action == "GET_SYMBOLS" || action == "SYMBOLS")
-      return Zmq_HandleGetSymbols();
+      return Zmq_HandleGetMarketWatchSymbols();
    if(action == "GET_SYMBOL_INFO" || action == "SYMBOL_INFO")
       return Zmq_HandleGetSymbolInfo(reqStr);
    if(action == "SCAN_SYMBOLS" || action == "SCAN" || action == "MARKET_DATA")

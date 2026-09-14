@@ -1478,6 +1478,80 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_dynamic_market_watch_discovery_startup(self):
+        """Verifies trader dynamically discovers symbols from Market Watch on startup when symbols is None."""
+        mock_mw_symbols = {
+            "status": "ok",
+            "action": "GET_MARKET_WATCH_SYMBOLS",
+            "count": 4,
+            "symbols": ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"]
+        }
+        with patch("autotrade.core.autonomous_trader.zmq_client.get_market_watch_symbols", return_value=mock_mw_symbols):
+            trader = AutonomousMultiSymbolTrader(symbols=None)
+            self.assertTrue(trader.dynamic_market_watch)
+            self.assertEqual(trader.symbols, ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"])
+
+    def test_dynamic_market_watch_exotic_filtering(self):
+        """Verifies exotic symbols (AZN, TRY, RUB, ZAR) are filtered out during dynamic discovery."""
+        mock_mw_symbols = {
+            "status": "ok",
+            "action": "GET_MARKET_WATCH_SYMBOLS",
+            "count": 6,
+            "symbols": ["EURUSD_min", "EURAZN_min", "USDTRY", "USDRUB", "USDZAR", "CADJPY_min"]
+        }
+        with patch("autotrade.core.autonomous_trader.zmq_client.get_market_watch_symbols", return_value=mock_mw_symbols):
+            trader = AutonomousMultiSymbolTrader(symbols=None)
+            self.assertIn("EURUSD_MIN", trader.symbols)
+            self.assertIn("CADJPY_MIN", trader.symbols)
+            self.assertNotIn("EURAZN_MIN", trader.symbols)
+            self.assertNotIn("USDTRY", trader.symbols)
+            self.assertNotIn("USDRUB", trader.symbols)
+            self.assertNotIn("USDZAR", trader.symbols)
+
+    def test_dynamic_market_watch_sync_async(self):
+        """Verifies async dynamic Market Watch synchronization updates trader symbols."""
+        trader = AutonomousMultiSymbolTrader(symbols=["EURUSD"], dynamic_market_watch=True)
+        self.assertEqual(trader.symbols, ["EURUSD"])
+
+        mock_update = {
+            "status": "ok",
+            "symbols": ["GBPUSD", "USDCHF", "AUDUSD"]
+        }
+        async def run_test():
+            with patch("autotrade.core.autonomous_trader.zmq_client.get_market_watch_symbols_async", return_value=mock_update):
+                updated = await trader.sync_market_watch_symbols_async()
+                self.assertEqual(updated, ["GBPUSD", "USDCHF", "AUDUSD"])
+                self.assertEqual(trader.symbols, ["GBPUSD", "USDCHF", "AUDUSD"])
+
+        asyncio.run(run_test())
+
+    def test_zmq_client_get_market_watch_symbols_fallback(self):
+        """Verifies zmq_client queries GET_MARKET_WATCH_SYMBOLS and falls back to GET_SYMBOLS if needed."""
+        from zmq_client import zmq_client
+
+        # 1. Successful GET_MARKET_WATCH_SYMBOLS
+        with patch.object(zmq_client, "send_command", return_value={"status": "ok", "symbols": ["EURUSD"]}) as mock_send:
+            res = zmq_client.get_market_watch_symbols()
+            self.assertEqual(res["status"], "ok")
+            mock_send.assert_called_once_with("GET_MARKET_WATCH_SYMBOLS", timeout_ms=5000)
+
+        # 2. Fallback when GET_MARKET_WATCH_SYMBOLS returns error/unsupported
+        with patch.object(zmq_client, "send_command", side_effect=[
+            {"status": "error", "message": "Unknown action"},
+            {"status": "ok", "symbols": ["EURUSD", "GBPUSD"]}
+        ]) as mock_send_fallback:
+            res = zmq_client.get_market_watch_symbols()
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(mock_send_fallback.call_count, 2)
+
+    def test_format_symbols_panel_dynamic_badge(self):
+        """Verifies format_symbols_panel reflects Market Watch Dynamic badge."""
+        trader = AutonomousMultiSymbolTrader(symbols=["EURUSD", "GBPUSD"], dynamic_market_watch=True)
+        with patch.object(trader, "sync_market_watch_symbols", return_value=["EURUSD", "GBPUSD"]):
+            panel = trader.format_symbols_panel()
+            self.assertIn("Market Watch Dynamic", panel)
+            self.assertIn("EURUSD", panel)
+
 
 if __name__ == "__main__":
     unittest.main()
