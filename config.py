@@ -190,7 +190,7 @@ AUTOTRADE_FLAG_FILE: str = str(BASE_DIR / "autotrade_state.flag")
 # Autonomous Multi-Symbol Trading Safeguards & Parameters
 AUTOTRADE_MAX_OPEN_POSITIONS: int = int(_get_setting("AUTOTRADE_MAX_OPEN_POSITIONS", "AUTOTRADE", "max_open_positions", 1))
 AUTOTRADE_COOLDOWN_MINUTES: int = int(_get_setting("AUTOTRADE_COOLDOWN_MINUTES", "AUTOTRADE", "cooldown_minutes", 60))
-AUTOTRADE_MIN_SCORE: int = int(_get_setting("AUTOTRADE_MIN_SCORE", "AUTOTRADE", "min_score", 6))
+AUTOTRADE_MIN_SCORE: float = float(_get_setting("AUTOTRADE_MIN_SCORE", "AUTOTRADE", "min_score", 8.5))
 AUTOTRADE_TIMEFRAME: str = str(_get_setting("AUTOTRADE_TIMEFRAME", "AUTOTRADE", "timeframe", "H1")).strip().upper()
 AUTOTRADE_SCAN_ON_BAR_CLOSE_ONLY: bool = str(_get_setting("AUTOTRADE_SCAN_ON_BAR_CLOSE_ONLY", "AUTOTRADE", "scan_on_bar_close_only", "true")).lower() in ("true", "1", "yes")
 

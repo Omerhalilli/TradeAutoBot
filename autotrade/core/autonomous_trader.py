@@ -124,7 +124,7 @@ class AutonomousMultiSymbolTrader:
         if not self.symbols:
             self.symbols = list(DEFAULT_PORTFOLIO_SYMBOLS)
 
-        self.min_score: int = max(6, int(min_score))
+        self.min_score: float = max(8.5, float(min_score))
         self.cooldown_sec: int = cooldown_sec
         self.max_spread: float = max_spread
         self.max_positions: int = max_positions
@@ -420,23 +420,29 @@ class AutonomousMultiSymbolTrader:
     def is_qualified_candidate(self, item: Dict[str, Any]) -> bool:
         """
         Validates whether a market scan result satisfies deep institutional analysis gates:
-        1. Signal must be BUY or SELL with Confluence Score >= 6 and score >= min_score.
+        1. Signal must be BUY or SELL with Institutional Grade A+ Score >= 8.5/10 (85/100) and score >= min_score.
         2. Directional Trend Confirmation: strictly rejects counter-trend ("COUNTER"), opposite, or flat trends.
         3. Higher Timeframe Confluence: H4/D1 must not contradict entry.
         4. ADX Trend Strength: must be > 20.0 to reject flat choppy ranges.
-        5. RSI Momentum Corridor: [45.0, 65.0] for BUY, [35.0, 55.0] for SELL to reject exhaustion.
+        5. Strict RSI Momentum Corridor: [40.0, 55.0] for BUY (veto if > 55), [45.0, 60.0] for SELL (veto if < 45).
+        6. Volatility Gate: ATR >= 10.0 pips to reject illiquid chop.
+        7. Session & Rollover Liquidity Gates.
+        8. Candlestick Pattern Confirmation.
+        9. Empirical Asset DNA & Adaptive Quarantine Pre-Flight Veto (Win Rate >= 65%, Expectancy >= 1.2R).
         """
         sig = str(item.get("signal", "HOLD")).strip().upper()
-        sc = int(item.get("score", 0))
+        raw_sc = float(item.get("score", 0))
+        analysis_sc = float(item.get("analysis_score", 0))
+        effective_score = (analysis_sc / 10.0) if analysis_sc > 10.0 else raw_sc
         trend_str = str(item.get("trend", "")).strip().upper()
         htf_str = str(item.get("htf_trend", "")).strip().upper()
 
-        # Rule 1: Signal must be BUY or SELL with score >= 6 and score >= min_score
-        # Score < 6 (e.g. 5) is strictly prohibited from opening a trade
-        if sig not in ("BUY", "SELL") or sc < self.min_score or sc < 6:
+        # Rule 1: Signal must be BUY or SELL with Hard Minimum Score >= 8.5/10 (85/100)
+        # Any candidate scoring < 8.5 is strictly prohibited from opening a trade
+        if sig not in ("BUY", "SELL") or effective_score < self.min_score or effective_score < 8.5:
             return False
 
-        # Rule 2: Directional Trend Confirmation (reject opposite, counter-trend, or flat trends)
+        # Rule 2: Directional Trend Confirmation (strictly reject opposite, counter-trend, or flat trends)
         if sig == "BUY" and ("BEAR" in trend_str or "COUNTER" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
             return False
         if sig == "SELL" and ("BULL" in trend_str or "COUNTER" in trend_str or trend_str in ("FLAT", "SIDEWAYS", "NEUTRAL")):
@@ -456,13 +462,13 @@ class AutonomousMultiSymbolTrader:
             except (ValueError, TypeError):
                 return False
 
-        # Rule 5: RSI Momentum Corridor (45-65 for BUY, 35-55 for SELL; reject exhaustion)
+        # Rule 5: Strict RSI Momentum Corridor (Veto BUY if RSI > 55, Veto SELL if RSI < 45)
         if "rsi" in item and item["rsi"] is not None:
             try:
                 rsi_val = float(item["rsi"])
-                if sig == "BUY" and (rsi_val < 45.0 or rsi_val > 65.0):
+                if sig == "BUY" and (rsi_val < 40.0 or rsi_val > 55.0):
                     return False
-                if sig == "SELL" and (rsi_val < 35.0 or rsi_val > 55.0):
+                if sig == "SELL" and (rsi_val < 45.0 or rsi_val > 60.0):
                     return False
             except (ValueError, TypeError):
                 return False
@@ -483,7 +489,7 @@ class AutonomousMultiSymbolTrader:
 
         # Rule 7: Session Liquidity Gate (European Currencies EUR, GBP, CHF)
         # Avoid low-liquidity whipsaws during Asian session (00:00 - 06:00 UTC)
-        # unless confluence score is exceptionally high (>= 8)
+        # unless confluence score is exceptionally high (>= 9)
         if item.get("session_active") is False:
             logger.debug(f"AutonomousTrader: Rejecting {item.get('symbol')} - Outside active liquid session hours.")
             return False
@@ -491,7 +497,7 @@ class AutonomousMultiSymbolTrader:
         raw_sym = str(item.get("symbol", "")).strip().upper()
         canon_sym = canonical_symbol(raw_sym)
         cand_base, cand_quote = split_currency_pair(canon_sym)
-        if (cand_base in ("EUR", "GBP", "CHF") or cand_quote in ("EUR", "GBP", "CHF")) and sc < 8:
+        if (cand_base in ("EUR", "GBP", "CHF") or cand_quote in ("EUR", "GBP", "CHF")) and effective_score < 9.0:
             server_time_str = item.get("server_time") or ""
             current_hour = None
             if server_time_str:
@@ -502,11 +508,11 @@ class AutonomousMultiSymbolTrader:
                 except Exception:
                     pass
             if current_hour is not None and (0 <= current_hour < 7):
-                logger.debug(f"AutonomousTrader: Rejecting {raw_sym} during Asian off-hours (Hour {current_hour}:00) - score {sc} < 8 required.")
+                logger.debug(f"AutonomousTrader: Rejecting {raw_sym} during Asian off-hours (Hour {current_hour}:00) - score {effective_score:.1f} < 9.0 required.")
                 return False
 
         # Rule 8: JPY Rollover Liquidity Gate (Avoid illiquid spread spikes/rollover 21:00-23:45)
-        if ("JPY" in canon_sym) and sc < 8:
+        if ("JPY" in canon_sym) and effective_score < 9.0:
             server_time_str = item.get("server_time") or ""
             current_hour = None
             if server_time_str:
@@ -517,7 +523,7 @@ class AutonomousMultiSymbolTrader:
                 except Exception:
                     pass
             if current_hour is not None and (21 <= current_hour <= 23):
-                logger.debug(f"AutonomousTrader: Rejecting {raw_sym} during JPY rollover off-hours (Hour {current_hour}:00) - score {sc} < 8 required.")
+                logger.debug(f"AutonomousTrader: Rejecting {raw_sym} during JPY rollover off-hours (Hour {current_hour}:00) - score {effective_score:.1f} < 9.0 required.")
                 return False
 
         # Rule 9: Reversal Candlestick Pattern Gate
@@ -528,6 +534,23 @@ class AutonomousMultiSymbolTrader:
         if sig == "BUY" and pat in ("BEARISH_ENGULFING", "SHOOTING_STAR", "EVENING_STAR"):
             logger.debug(f"AutonomousTrader: Rejecting {raw_sym} BUY into bearish candlestick pattern {pat}.")
             return False
+
+        # Rule 10: Empirical Asset DNA & Adaptive Quarantine Pre-Flight Veto
+        try:
+            from autotrade.analytics.historical_profiler import historical_profiler
+            passed_dna, gate_reason, _, _ = historical_profiler.check_empirical_gate(canon_sym)
+            if not passed_dna:
+                logger.debug(f"AutonomousTrader: Rejecting {canon_sym} via Empirical DNA Gate: {gate_reason}")
+                return False
+        except Exception:
+            pass
+        try:
+            from autotrade.analytics.adaptive_learner import adaptive_learner
+            if adaptive_learner.is_symbol_quarantined(canon_sym):
+                logger.debug(f"AutonomousTrader: Rejecting {canon_sym} in Adaptive Learning Quarantine.")
+                return False
+        except Exception:
+            pass
 
         return True
 
@@ -648,9 +671,17 @@ class AutonomousMultiSymbolTrader:
 
 
             if not candidates:
+                top_cand_score = 0.0
+                for r in results:
+                    raw_sc = float(r.get("score", 0.0))
+                    analysis_sc = float(r.get("analysis_score", raw_sc * 10.0))
+                    eff_sc = (analysis_sc / 10.0) if analysis_sc > 10.0 else raw_sc
+                    if eff_sc > top_cand_score:
+                        top_cand_score = eff_sc
+
                 logger.info(
-                    f"AutonomousTrader: Scanned {len(results)} symbols. "
-                    f"No actionable setup meeting confluence threshold (Score >= {self.min_score}/10). BYPASSED ALL SYMBOLS. Capital safely preserved. Waiting for next candle boundary."
+                    f"HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} < {self.min_score:.1f} Required). "
+                    f"Capital safely preserved. Waiting for next candle boundary."
                 )
                 return []
 
@@ -983,7 +1014,7 @@ class AutonomousMultiSymbolTrader:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕒 <b>Scan Time:</b> <code>{server_time}</code> | <b>TF:</b> <code>{self.timeframe}</code> ({sync_desc})\n"
             f"⏳ <b>Next Scheduled Scan:</b> <code>in {countdown_str}</code>\n"
-            f"🌐 <b>Portfolio:</b> <b>{len(results)} Assets</b> | <b>Threshold:</b> <b>Score ≥ {self.min_score}/10 (60%)</b>\n"
+            f"🌐 <b>Portfolio:</b> <b>{len(results)} Assets</b> | <b>Threshold:</b> <b>Score ≥ {self.min_score:.1f}/10 (85%) Institutional Grade A+ Sniper</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
         if data.get("bridge_unsupported"):
@@ -1073,9 +1104,17 @@ class AutonomousMultiSymbolTrader:
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
         else:
+            top_cand_score = 0.0
+            for r in results:
+                raw_sc = float(r.get("score", 0.0))
+                analysis_sc = float(r.get("analysis_score", raw_sc * 10.0))
+                eff_sc = (analysis_sc / 10.0) if analysis_sc > 10.0 else raw_sc
+                if eff_sc > top_cand_score:
+                    top_cand_score = eff_sc
+
             msg += (
-                "⚪ <b>Autonomous Status:</b> <code>ALL SYMBOLS BYPASSED (CAPITAL SAFE)</code>\n"
-                f"<i>Scanned {len(results)} symbols. No instrument meets the strict confluence threshold (Score ≥ {self.min_score}/10 [60%]). Capital 100% preserved. Patiently awaiting next candle boundary scan.</i>\n"
+                f"⚪ <b>Autonomous Status:</b> <code>HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} < {self.min_score:.1f} Required)</code>\n"
+                f"<i>Scanned {len(results)} symbols. No instrument meets the strict confluence threshold (Score ≥ {self.min_score:.1f}/10 [85%]). Capital 100% preserved. Patiently awaiting next candle boundary scan.</i>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
 
@@ -1221,12 +1260,12 @@ class AutonomousMultiSymbolTrader:
                 f"• Order: <b>{sig} {sym}</b>\n"
                 f"• Protective Stop Loss: <code>-{sl_pips:.1f} pips</code>\n"
                 f"• Target Take Profit: <code>+{tp_pips:.1f} pips</code> (Reward-to-Risk: <code>{rr:.2f}:1</code>)\n"
-                "<i>⚡ This setup satisfies autonomous trade entry criteria (Score ≥ 6).</i>\n"
+                f"<i>⚡ This setup satisfies autonomous trade entry criteria (Score ≥ {self.min_score:.1f}/10 [85%]).</i>\n"
             )
         else:
             msg += (
                 "⏳ <b>EXECUTION RECOMMENDATION:</b>\n"
-                f"• <b>HOLD & WAIT:</b> Confluence score ({score}/10) is below the minimum execution threshold (Score ≥ 6).\n"
+                f"• <b>HOLD & WAIT:</b> Confluence score ({score}/10) is below the minimum execution threshold (Score ≥ {self.min_score:.1f}).\n"
                 "<i>Capital safely protected until institutional alignment occurs.</i>\n"
             )
         return msg

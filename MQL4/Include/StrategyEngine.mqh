@@ -216,7 +216,7 @@ void DistributeHUDPoints(double trendPts, double momPts, double srPts, double cn
 //+------------------------------------------------------------------+
 StrategySignal EvaluateSymbolOpportunity(string sym, 
                                           ENUM_TIMEFRAMES tf = PERIOD_H1, 
-                                          int minConfluenceScore = 6,
+                                          int minConfluenceScore = 8,
                                           double minRewardToRisk = 1.5,
                                           double minATRPips = 10.0,
                                           double maxATRPips = 150.0)
@@ -608,12 +608,13 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
 
    sig.rrRatio = (sig.slPips > 0.0) ? NormalizeDouble(sig.tpPips / sig.slPips, 2) : 2.0;
 
-   // Enforce strict minimum score threshold: must be >= 6 (strictly prohibits trades on score < 6)
-   int effectiveMinScore = MathMax(6, minConfluenceScore);
+   // Enforce strict minimum score threshold: must be >= 8 and analysisScore >= 85.0 (sub-85% is strictly prohibited)
+   int effectiveMinScore = MathMax(8, minConfluenceScore);
+   double effectiveMinPoints = 85.0;
 
    // Directional assignment with strict Directional Trend Confirmation
    long symTradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
-   if(buyScore10 > sellScore10 && buyScore10 >= effectiveMinScore)
+   if(buyScore10 > sellScore10 && buyScore10 >= effectiveMinScore && buyPoints >= effectiveMinPoints)
    {
       sig.entryPrice = ask;
       sig.slPrice = NormalizeDouble(ask - slDist, dig);
@@ -630,7 +631,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          sig.cmd = -1;
       }
    }
-   else if(sellScore10 > buyScore10 && sellScore10 >= effectiveMinScore)
+   else if(sellScore10 > buyScore10 && sellScore10 >= effectiveMinScore && sellPoints >= effectiveMinPoints)
    {
       sig.entryPrice = bid;
       sig.slPrice = NormalizeDouble(bid + slDist, dig);
@@ -655,8 +656,8 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       sig.cmd = -1; // Below threshold or tied direction
    }
 
-   // 1. Minimum Confluence Score Gate: strictly enforce score >= 6 (score 5 is strictly prohibited)
-   if(finalScore < effectiveMinScore || finalScore < 6 || sig.cmd < 0)
+   // 1. Minimum Confluence Score Gate: strictly enforce score >= 8 and analysisScore >= 85.0 (sub-85% is strictly prohibited)
+   if(finalScore < effectiveMinScore || finalScore < 8 || finalAnalysis < effectiveMinPoints || sig.cmd < 0)
    {
       sig.cmd = -1;
       sig.valid = false;

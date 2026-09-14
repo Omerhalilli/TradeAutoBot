@@ -11,7 +11,7 @@
 #property description "S/R Pivots | Candlestick Patterns | Hybrid SL/TP | Full Risk Management HUD"
 #property strict
 
-#include "TelegramShared.mqh"
+#include <TelegramShared.mqh>
 #include <AutoTradeFlagCheck.mqh>
 #include <SymbolManager.mqh>
 #include <RiskController.mqh>
@@ -452,7 +452,7 @@ input string             AutonomousExcludeSymbols      = "*RUB*,*TRY*,*ZAR*"; //
 input bool               AutonomousTradeDirectly       = true;              // 100% Autonomous Execution (Direct Trade, Zero Advisory Prompting)
 input int                AutonomousScanBatchSize       = 3;                 // Round-Robin Time-Sliced Batch Size (3-5)
 input int                AutonomousScanIntervalSec     = 20;                // Background Multi-Symbol Scan Interval (Seconds)
-input int                AutonomousMinConfluenceScore  = 6;                 // Minimum Score to Execute Autonomous Trade (0-10)
+input int                AutonomousMinConfluenceScore  = 8;                 // Minimum Score to Execute Autonomous Trade (0-10)
 input int                AutonomousCooldownMinutes     = 60;                // Per-Symbol Cooldown Guard (Minutes After Trade)
 input int                AutonomousMaxConcurrentTrades = 1;                 // Maximum Autonomous Concurrent Open Positions (1 default)
 
@@ -6991,9 +6991,9 @@ int OnInit()
       Print("[INIT ERROR] MinRequiredScore must be between 6 and 10 (score < 6 is strictly prohibited). Current: ", MinRequiredScore);
       return(INIT_FAILED);
    }
-   if(AutonomousMinConfluenceScore < 6 || AutonomousMinConfluenceScore > 10)
+   if(AutonomousMinConfluenceScore < 8 || AutonomousMinConfluenceScore > 10)
    {
-      Print("[INIT ERROR] AutonomousMinConfluenceScore must be between 6 and 10 (score < 6 is strictly prohibited). Current: ", AutonomousMinConfluenceScore);
+      Print("[INIT ERROR] AutonomousMinConfluenceScore must be between 8 and 10 (score < 8 is strictly prohibited). Current: ", AutonomousMinConfluenceScore);
       return(INIT_FAILED);
    }
    if(MagicNumber <= 0)
@@ -7247,7 +7247,7 @@ void Autonomous_MultiSymbolScan()
    
    if(numSymbols <= 0) return;
 
-   int effectiveMinScore = MathMax(6, AutonomousMinConfluenceScore);
+   int effectiveMinScore = MathMax(8, AutonomousMinConfluenceScore);
 
    // 4. Scan all configured symbols one by one and rank best opportunity
    StrategySignal bestSig;
@@ -7295,9 +7295,9 @@ void Autonomous_MultiSymbolScan()
       if(!CanOpenCurrencyExposure(sym, MaxExposurePerCurrency, MagicNumber)) continue;
 
       // 9. Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
-      // Score < 6 (e.g. 5) is strictly prohibited from opening a trade
+      // Score < 8 or analysisScore < 85.0 is strictly prohibited from opening a trade
       StrategySignal sig = EvaluateSymbolOpportunity(sym, activeTF, effectiveMinScore, 1.5, 10.0, 150.0);
-      if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.score < 6) continue;
+      if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.score < 8 || sig.analysisScore < 85.0) continue;
 
       double entryPrice = (sig.cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
       double orderLots = CalculateDynamicLotSize(entryPrice, sig.slPrice, sym);
@@ -7321,8 +7321,8 @@ void Autonomous_MultiSymbolScan()
    g_AutoScanQualifiedCount = qualifiedCount;
 
    // 10. Post-scan decision: If one or more qualified setups found, select and execute the best one!
-   // Must strictly satisfy score >= 6 and score >= effectiveMinScore
-   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= 6 && bestSig.score >= effectiveMinScore && bestSymbol != "")
+   // Must strictly satisfy score >= 8 and analysisScore >= 85.0
+   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= 8 && bestSig.score >= effectiveMinScore && bestSig.analysisScore >= 85.0 && bestSymbol != "")
    {
       g_AutoScanBestSymbol   = bestSymbol;
       g_AutoScanBestCmd      = (bestSig.cmd == OP_BUY ? "BUY" : "SELL");
@@ -7357,10 +7357,10 @@ void Autonomous_MultiSymbolScan()
    else
    {
       g_AutoScanBestSymbol = "";
-      g_AutoScanStatusDesc = StringFormat("BYPASSED ALL %d: No setup >= %d/10. Capital 100%% safe.", numSymbols, effectiveMinScore);
-      // No symbol reached confluence threshold >= 6; bypass all symbols and wait cleanly for next cycle
-      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). BYPASSED ALL %d SYMBOLS. Capital safely preserved on %s and portfolio. Waiting for next candle boundary.",
-                  numSymbols, effectiveMinScore, numSymbols, Symbol());
+      g_AutoScanStatusDesc = StringFormat("HOLD: ALL SYMBOLS BYPASSED (Score < %d/10 [85%%]). Capital 100%% safe.", effectiveMinScore);
+      // No symbol reached confluence threshold >= 8 (85%); bypass all symbols and wait cleanly for next cycle
+      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. HOLD: ALL SYMBOLS BYPASSED (No actionable setup >= %d/10 [85.0 Required]). Capital safely preserved on %s and portfolio. Waiting for next candle boundary.",
+                  numSymbols, effectiveMinScore, Symbol());
    }
 }
 

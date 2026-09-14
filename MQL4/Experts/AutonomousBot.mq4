@@ -32,7 +32,7 @@ input bool               EmergencyKillSwitch           = false;             // E
 
 //--- [02] PER-TRADE & SCANNER SAFETY FILTERS
 input string             Sec_PerTradeSafety            = "=== 2. PER-TRADE & SCANNER SAFETY FILTERS ===";
-input int                MinConfluenceScore            = 6;                 // Minimum Confluence Score to Execute (stands on 6 or past 6)
+input int                MinConfluenceScore            = 8;                 // Minimum Confluence Score to Execute (stands on 8 or past 8)
 input double             MinRewardToRisk               = 1.5;               // Minimum Reward-to-Risk Ratio (TP >= 1.5 * SL)
 input double             MaxSpreadPoints               = 40.0;              // Maximum Allowed Spread (Points)
 input double             MinATRPips                    = 10.0;              // Minimum ATR in Pips (Filter dead / choppy market)
@@ -128,9 +128,9 @@ int OnInit()
 {
    Print("[AUTONOMOUS BOT] Initializing Ultra-Safe Multi-Symbol Autonomous Bot v2.00...");
 
-   if(MinConfluenceScore < 6 || MinConfluenceScore > 10)
+   if(MinConfluenceScore < 8 || MinConfluenceScore > 10)
    {
-      Print("[INIT ERROR] MinConfluenceScore must be between 6 and 10 (score < 6 is strictly prohibited). Current: ", MinConfluenceScore);
+      Print("[INIT ERROR] MinConfluenceScore must be between 8 and 10 (score < 8 is strictly prohibited). Current: ", MinConfluenceScore);
       return(INIT_FAILED);
    }
 
@@ -297,13 +297,13 @@ void ScanNextSymbolBatch(int batchSize = 0)
       }
 
       // Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
-      int effectiveMinScore = MathMax(6, MinConfluenceScore);
+      int effectiveMinScore = MathMax(8, MinConfluenceScore);
       StrategySignal sig = EvaluateSymbolOpportunity(sym, activeTF, effectiveMinScore, MinRewardToRisk, MinATRPips, MaxATRPips);
       g_LastScannedScore  = sig.score;
       g_LastScannedSignal = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
 
-      // Confluence threshold: must stand on 6 or past 6 (Score >= 6; score < 6 strictly prohibited)
-      if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.score < 6)
+      // Confluence threshold: must stand on 8 or past 8 and analysisScore >= 85.0 (sub-85% strictly prohibited)
+      if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.score < 8 || sig.analysisScore < 85.0)
       {
          continue;
       }
@@ -338,8 +338,8 @@ void ScanNextSymbolBatch(int batchSize = 0)
    }
 
    // 3. Post-scan decision: If one or more qualified opportunities found, execute the best one!
-   int finalEffectiveMinScore = MathMax(6, MinConfluenceScore);
-   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= 6 && bestSig.score >= finalEffectiveMinScore && bestSymbol != "")
+   int finalEffectiveMinScore = MathMax(8, MinConfluenceScore);
+   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= 8 && bestSig.score >= finalEffectiveMinScore && bestSig.analysisScore >= 85.0 && bestSymbol != "")
    {
       PrintFormat("[AUTONOMOUS PORTFOLIO SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
                   scanCount, qualifiedCount, MinConfluenceScore, bestSymbol,
@@ -360,9 +360,9 @@ void ScanNextSymbolBatch(int batchSize = 0)
    }
    else
    {
-      // No symbol reached confluence score >= 6 or passed filters; bypass all symbols and wait cleanly for next cycle
-      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. No actionable setup meeting confluence threshold (Score >= %d/10). BYPASSED ALL %d SYMBOLS. Capital safely preserved. Waiting for next candle close.",
-                  scanCount, MinConfluenceScore, scanCount);
+      // No symbol reached confluence score >= 8 (85%) or passed filters; bypass all symbols and wait cleanly for next cycle
+      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. HOLD: ALL SYMBOLS BYPASSED (No actionable setup >= %d/10 [85.0 Required]). Capital safely preserved. Waiting for next candle close.",
+                  scanCount, MinConfluenceScore);
    }
 }
 

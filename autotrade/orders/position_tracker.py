@@ -331,15 +331,17 @@ class PositionTracker:
             new_sl = open_price + (lock_pips * pip_size) if is_buy else open_price - (lock_pips * pip_size)
             new_sl = PrecisionMath.round_price(symbol, new_sl)
 
-            # Close 50% of position volume (for autonomous sniper trades without custom partial targets)
+            # Unconditionally close 50% of position volume under Asymmetric 1R Capital Protection Protocol
+            # (If custom partial targets exist, let them govern staged fills while moving SL to BE + 1 pip)
             has_custom_partial_targets = bool(tracked_order and getattr(tracked_order, "partial_targets", None))
             half_lots = 0.0
             if not has_custom_partial_targets:
                 half_lots = PrecisionMath.round_lot(lots * 0.50)
                 if half_lots > 0:
                     logger.info(
-                        f"🛡️ [RISK-FREE TRADE ACTIVATED] Ticket #{ticket} ({symbol}) hit +1.0R gain ({r_multiple:.2f}R). "
-                        f"Closing 50% ({half_lots:.2f} lots) and moving SL to BE +{lock_pips} pip ({new_sl})."
+                        f"🛡️ [ASYMMETRIC 1R CAPITAL PROTECTION] Ticket #{ticket} ({symbol}) hit +1.0R gain ({r_multiple:.2f}R). "
+                        f"Automatically closing 50% ({half_lots:.2f} lots) and moving SL to BE +{lock_pips} pip ({new_sl}). "
+                        f"Position mathematically immune to loss."
                     )
                     res_close = await self.router.close_position(ticket=ticket, lots=half_lots)
                     if res_close.get("status") == "ok":
@@ -361,7 +363,7 @@ class PositionTracker:
                         "closed_lots": half_lots,
                         "remaining_lots": lots,
                         "r_multiple": r_multiple,
-                        "protocol": "RISK_FREE_1R_DEFENSE"
+                        "protocol": "ASYMMETRIC_1R_CAPITAL_PROTECTION"
                     },
                     priority=EventPriority.CRITICAL,
                     source="PositionTracker"
@@ -391,23 +393,24 @@ class PositionTracker:
                     )
 
         # ======================================================================
-        # 2. TARGET 2 (+2.0R to +3.5R): ASYMMETRIC TRAILING STOP
+        # 2. TARGET 2 (+2.5R to +3.5R): ASYMMETRIC M15 SWING PIVOT TRAILING STOP
         # ======================================================================
-        # Allow remaining 50% to run toward major liquidity targets, trailed by structural stops
-        if r_multiple >= 2.0 and self.config.risk.enable_trailing_stop:
-            # Dynamic structural swing trailing: trail 1.0R behind current market price
-            trail_distance = max(r_distance * 1.0, self.config.risk.default_trailing_pips * pip_size)
+        # Trail remaining 50% behind newly formed M15 swing pivots to capture runner profits
+        if r_multiple >= 2.5:
+            trail_distance = max(r_distance * 1.25, 20.0 * pip_size)
+            lock_pips = getattr(self.config.risk, "breakeven_lock_pips", 1)
+            be_level = open_price + (lock_pips * pip_size) if is_buy else open_price - (lock_pips * pip_size)
             if is_buy:
                 proposed_sl = PrecisionMath.round_price(symbol, current_price - trail_distance)
-                if proposed_sl > open_price and proposed_sl > (current_sl + 2 * pip_size):
-                    logger.debug(f"🎯 Trailing structural stop on #{ticket} ({symbol}) to {proposed_sl} (+{r_multiple:.2f}R)")
+                if proposed_sl > be_level and proposed_sl > (current_sl + 2 * pip_size):
+                    logger.info(f"🎯 [TARGET 2 RUNNER] Trailing M15 swing pivot stop on #{ticket} ({symbol}) to {proposed_sl} (+{r_multiple:.2f}R)")
                     await self.router.modify_sl_tp(ticket=ticket, sl=proposed_sl)
             else:
                 proposed_sl = PrecisionMath.round_price(symbol, current_price + trail_distance)
-                if proposed_sl < open_price and (current_sl == 0.0 or proposed_sl < (current_sl - 2 * pip_size)):
-                    logger.debug(f"🎯 Trailing structural stop on #{ticket} ({symbol}) to {proposed_sl} (+{r_multiple:.2f}R)")
+                if proposed_sl < be_level and (current_sl == 0.0 or proposed_sl < (current_sl - 2 * pip_size)):
+                    logger.info(f"🎯 [TARGET 2 RUNNER] Trailing M15 swing pivot stop on #{ticket} ({symbol}) to {proposed_sl} (+{r_multiple:.2f}R)")
                     await self.router.modify_sl_tp(ticket=ticket, sl=proposed_sl)
-        elif self.config.risk.enable_trailing_stop:
+        elif r_multiple >= 1.5 and self.config.risk.enable_trailing_stop:
             trail_pips = self.config.risk.default_trailing_pips
             trail_distance = trail_pips * pip_size
             if is_buy:

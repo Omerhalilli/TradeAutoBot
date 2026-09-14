@@ -329,12 +329,12 @@ class HistoricalProfiler:
             # Insufficient historical samples to statistically disqualify
             return True, "Empirical Gate: Neutral (Insufficient historical samples)", 0.0, 2.0
 
-        # Empirical Veto: negative historical expectancy or sub-50% win rate
-        if dna.win_rate_2r < 0.50 or dna.expectancy_r < 0.0:
+        # Empirical Veto: fails 65% win rate or 1.2R positive expectancy threshold
+        if dna.win_rate_2r < 0.65 or dna.expectancy_r < 1.20:
             reason = (
                 f"Empirical Asset DNA Veto: {canon} {dna.setup_type} ({dna.session}) "
-                f"historically unprofitable (WinRate={dna.win_rate_2r*100:.1f}% < 50%, "
-                f"Expectancy={dna.expectancy_r:.2f}R < 0.0R over {dna.sample_count} occurrences)."
+                f"fails 65% win rate / 1.2R expectancy gate (WinRate={dna.win_rate_2r*100:.1f}% < 65%, "
+                f"Expectancy={dna.expectancy_r:.2f}R < 1.20R over {dna.sample_count} occurrences)."
             )
             return False, reason, 0.0, dna.optimal_sl_atr_mult
 

@@ -127,7 +127,8 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
             "results": [
                 {
                     "symbol": "GBPUSD",
-                    "score": 8,
+                    "score": 9,
+                    "analysis_score": 90.0,
                     "signal": "BUY",
                     "trend": "BULLISH_BREAKOUT",
                     "spread": 14.0,
@@ -359,7 +360,8 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
                 "results": [
                     {
                         "symbol": "GBPUSD",
-                        "score": 7,
+                        "score": 9,
+                        "analysis_score": 90.0,
                         "signal": "BUY",
                         "spread": 10.0,
                         "sl_pips": 30.0,
@@ -618,7 +620,8 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
             "results": [
                 {
                     "symbol": "EURUSD",
-                    "score": 8,
+                    "score": 9,
+                    "analysis_score": 90.0,
                     "signal": "BUY",
                     "trend": "STRONG_BULLISH",
                     "spread": 10.0,
@@ -745,7 +748,7 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
             "status": "ok",
             "results": [
                 {
-                    "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "STRONG_BULLISH",
+                    "symbol": "EURUSD", "score": 9, "analysis_score": 90.0, "signal": "BUY", "trend": "STRONG_BULLISH",
                     "adx": 28.0, "rsi": 52.0, "htf_trend": "BULLISH", "spread": 10.0,
                     "sl_pips": 30.0, "tp_pips": 60.0, "bar_time": 1788890000
                 }
@@ -755,7 +758,7 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
             "status": "ok",
             "results": [
                 {
-                    "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "STRONG_BULLISH",
+                    "symbol": "EURUSD", "score": 9, "analysis_score": 90.0, "signal": "BUY", "trend": "STRONG_BULLISH",
                     "adx": 28.0, "rsi": 52.0, "htf_trend": "BULLISH", "spread": 10.0,
                     "sl_pips": 30.0, "tp_pips": 60.0, "bar_time": 1788893600  # New Bar!
                 }
@@ -882,13 +885,15 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
     def test_is_qualified_candidate_filters(self):
         """Verifies is_qualified_candidate comprehensively enforces all institutional gates."""
         valid_buy = {
-            "symbol": "EURUSD", "signal": "BUY", "score": 7, "trend": "STRONG BULLISH",
-            "htf_trend": "BULLISH", "adx": 25.0, "rsi": 55.0
+            "symbol": "EURUSD", "signal": "BUY", "score": 9, "analysis_score": 90.0, "trend": "STRONG BULLISH",
+            "htf_trend": "BULLISH", "adx": 25.0, "rsi": 50.0
         }
         self.assertTrue(self.trader.is_qualified_candidate(valid_buy))
 
-        # 1. Score < 6 rejected
-        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 5}))
+        # 1. Score < 8.5 rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 8, "analysis_score": 80.0}))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 6, "analysis_score": 60.0}))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 5, "analysis_score": 50.0}))
 
         # 2. Counter-trend rejected
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "trend": "COUNTER-TREND BULLISH"}))
@@ -905,9 +910,9 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         # 6. ADX <= 20 rejected
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "adx": 19.5}))
 
-        # 7. RSI outside corridor rejected
+        # 7. RSI outside corridor rejected (corridor for BUY is [40.0, 55.0])
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "rsi": 68.0}))
-        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "rsi": 42.0}))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "rsi": 38.0}))
 
         # 8. Unparseable ADX/RSI rejected
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "adx": "invalid"}))
@@ -920,14 +925,14 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         # 10. session_active = False rejected
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "session_active": False}))
 
-        # 11. Asian session off-hours for EURUSD with score < 8 rejected
-        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 7, "server_time": "2026.09.08 02:00:00"}))
-        self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "score": 8, "server_time": "2026.09.08 02:00:00"}))
+        # 11. Asian session off-hours for EURUSD with score < 8.5 rejected
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 7, "analysis_score": 70.0, "server_time": "2026.09.08 02:00:00"}))
+        self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "score": 9, "analysis_score": 90.0, "server_time": "2026.09.08 02:00:00"}))
 
         # 12. Valid SELL setup accepted and edge cases verified
         valid_sell = {
-            "symbol": "GBPUSD", "signal": "SELL", "score": 7, "trend": "STRONG BEARISH",
-            "htf_trend": "BEARISH", "adx": 28.0, "rsi": 45.0, "atr": 0.0025, "server_time": "2026.09.08 14:00:00",
+            "symbol": "GBPUSD", "signal": "SELL", "score": 9, "analysis_score": 90.0, "trend": "STRONG BEARISH",
+            "htf_trend": "BEARISH", "adx": 28.0, "rsi": 50.0, "atr": 0.0025, "server_time": "2026.09.08 14:00:00",
             "session_active": True
         }
         self.assertTrue(self.trader.is_qualified_candidate(valid_sell))
@@ -935,7 +940,7 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "trend": "COUNTER-TREND BEARISH"}))
         self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "htf_trend": "BULLISH"}))
         self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "rsi": 25.0}))  # oversold exhaustion
-        self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "rsi": 60.0}))  # outside corridor
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_sell, "rsi": 65.0}))  # outside corridor [45, 60]
 
     def test_format_scan_matrix_excludes_unqualified_from_spotlight(self):
         """Verifies format_scan_matrix will NOT highlight unqualified setups as top opportunity."""
@@ -1409,12 +1414,12 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
                 "status": "ok",
                 "results": [
                     {
-                        "symbol": "EURUSD", "score": 8, "signal": "BUY", "trend": "BULLISH",
+                        "symbol": "EURUSD", "score": 9, "analysis_score": 90.0, "signal": "BUY", "trend": "BULLISH",
                         "spread": 20.0, "atr": 0.0020, "sl_pips": 30.0, "tp_pips": 60.0,
                         "adx": 25.0, "rsi": 50.0, "htf_trend": "BULLISH"
                     },
                     {
-                        "symbol": "XAUUSD", "score": 8, "signal": "BUY", "trend": "BULLISH",
+                        "symbol": "XAUUSD", "score": 9, "analysis_score": 90.0, "signal": "BUY", "trend": "BULLISH",
                         "spread": 30.0, "atr": 15.0, "sl_pips": 150.0, "tp_pips": 300.0,
                         "adx": 25.0, "rsi": 50.0, "htf_trend": "BULLISH"
                     }

@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 class TestRiskAndOrders(unittest.TestCase):
     def setUp(self):
+        from autotrade.analytics.adaptive_learner import adaptive_learner
+        adaptive_learner.clear_all_quarantines()
         self.sizer = PositionSizer()
         self.risk = RiskManager(position_sizer=self.sizer)
         self.router = ExecutionRouter(simulation_mode=True)

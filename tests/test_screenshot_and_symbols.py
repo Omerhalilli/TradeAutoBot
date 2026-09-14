@@ -150,11 +150,8 @@ class TestScreenshotAndAccessibleSymbols(unittest.TestCase):
     def test_07_mql4_source_integrity_checks(self):
         """Verify MQL4 source files do NOT modify chart 0, check targetChartId <= 0, and implement background capture."""
         mql4_files = [
-            os.path.join(os.path.dirname(__file__), "..", "ZeroMQBridge.mqh"),
             os.path.join(os.path.dirname(__file__), "..", "MQL4", "Include", "ZeroMQBridge.mqh"),
-            os.path.join(os.path.dirname(__file__), "..", "MT4_ZeroMQ_Bridge.mq4"),
             os.path.join(os.path.dirname(__file__), "..", "MQL4", "Experts", "MT4_ZeroMQ_Bridge.mq4"),
-            os.path.join(os.path.dirname(__file__), "..", "SmartAutoTradeEA_Pro.mq4"),
             os.path.join(os.path.dirname(__file__), "..", "MQL4", "Experts", "SmartAutoTradeEA_Pro.mq4"),
         ]
 

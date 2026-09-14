@@ -212,9 +212,9 @@ class SourceCompiler:
             return {"attempted": False, "reason": "MetaEditor not installed at default path"}
 
         mq4_files = [
-            os.path.join(self.root_dir, "SmartAutoTradeEA_Pro.mq4"),
-            os.path.join(self.root_dir, "MT4_ZeroMQ_Bridge.mq4"),
-            os.path.join(self.root_dir, "AutonomousBot.mq4")
+            os.path.join(self.root_dir, "MQL4", "Experts", "SmartAutoTradeEA_Pro.mq4"),
+            os.path.join(self.root_dir, "MQL4", "Experts", "MT4_ZeroMQ_Bridge.mq4"),
+            os.path.join(self.root_dir, "MQL4", "Experts", "AutonomousBot.mq4"),
         ]
         
         results = {}

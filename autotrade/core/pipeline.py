@@ -224,8 +224,12 @@ class QuantitativeConfluenceEngine:
     - Rule 4: Oscillator Exhaustion Veto (Anti-Chasing Shield)
     - Rule 5: Lower-Timeframe Execution Confirmation (M15 / M5 Rejection Wick >= 2x Body or Engulfing)
     """
-    def __init__(self, min_confluence_score: float = 65.0):
-        self.min_confluence_score = min_confluence_score
+    def __init__(self, min_confluence_score: float = 85.0):
+        # Scale-invariant normalization: convert 0-10 scale (e.g. 8.5) to 0-100 scale (85.0)
+        score_val = float(min_confluence_score)
+        if score_val <= 10.0:
+            score_val = score_val * 10.0
+        self.min_confluence_score = max(85.0, score_val)
         # Rolling spread tracking: keeps up to 100 historical spread observations per symbol
         self._rolling_spreads: Dict[str, deque[float]] = {}
         # Dynamic broker specs cache
@@ -460,8 +464,17 @@ class QuantitativeConfluenceEngine:
         res.spread_to_atr = round((spread_pips / max(atr_pips, 1.0)), 4)
 
         # ----------------------------------------------------------------------
-        # RULE 1: MACRO STRUCTURE & LIQUIDITY DISPLACEMENT (H4 / H1)
+        # TIER 1: HTF DIRECTIONAL DOMINANCE (D1 & H4 ALIGNMENT)
         # ----------------------------------------------------------------------
+        # Triple EMA alignment on H1: EMA 20 > EMA 50 > EMA 200 (BUY) / 20 < 50 < 200 (SELL)
+        ema20_h1 = indicators.ema(closes, min(20, len(closes) - 1))
+        ema50_h1 = indicators.ema(closes, min(50, len(closes) - 1))
+        ema200_h1 = indicators.ema(closes, min(200, len(closes) - 1))
+
+        h1_bull = (ema20_h1[-1] > ema50_h1[-1] > ema200_h1[-1]) and (closes[-1] > ema200_h1[-1])
+        h1_bear = (ema20_h1[-1] < ema50_h1[-1] < ema200_h1[-1]) and (closes[-1] < ema200_h1[-1])
+
+        # Higher Timeframe H4 / D1 Macro Alignment:
         macro_c = closes
         macro_h = highs
         macro_l = lows
@@ -472,54 +485,78 @@ class QuantitativeConfluenceEngine:
             macro_l = np.asarray(htf_ohlcv["low"], dtype=np.float64)
             macro_o = np.asarray(htf_ohlcv["open"], dtype=np.float64)
 
+        macro_ema20 = indicators.ema(macro_c, min(20, len(macro_c) - 1))
+        macro_ema50 = indicators.ema(macro_c, min(50, len(macro_c) - 1))
         macro_ema200 = indicators.ema(macro_c, min(200, len(macro_c) - 1))
         macro_st = indicators.supertrend(macro_h, macro_l, macro_c, 10, 3.0)
         st_dir = macro_st["direction"][-1]
         e_last = macro_ema200[-1] if not np.isnan(macro_ema200[-1]) else macro_c[-1]
-        htf_bull = (macro_c[-1] >= e_last) and (st_dir == 1)
-        htf_bear = (macro_c[-1] <= e_last) and (st_dir == -1)
 
-        # Market Structure Shift (MSS): Displacement candle breaking prior swing structure
-        lp_macro = indicators.compute_liquidity_pools(macro_h, macro_l, macro_c, macro_o, lookback=50)
-        recent_sh = lp_macro.recent_swing_high
-        recent_sl = lp_macro.recent_swing_low
+        h4_bull = (macro_ema20[-1] > macro_ema50[-1] > macro_ema200[-1]) and (macro_c[-1] >= e_last) and (st_dir == 1)
+        h4_bear = (macro_ema20[-1] < macro_ema50[-1] < macro_ema200[-1]) and (macro_c[-1] <= e_last) and (st_dir == -1)
 
-        macro_atr = indicators.atr(macro_h, macro_l, macro_c, 14)[-1]
-        if np.isnan(macro_atr) or macro_atr <= 0:
-            macro_atr = atr_val
+        cand_buy = h1_bull and h4_bull
+        cand_sell = h1_bear and h4_bear
 
-        bullish_mss = False
-        bearish_mss = False
-        for k in range(max(0, len(macro_c) - 8), len(macro_c)):
-            b_rng = macro_h[k] - macro_l[k]
-            b_body = abs(macro_c[k] - macro_o[k])
-            is_displacement = (b_rng >= 1.25 * macro_atr) and (b_body >= 0.55 * b_rng)
-            if is_displacement:
-                if macro_c[k] > macro_o[k] and macro_c[k] > recent_sh:
-                    bullish_mss = True
-                if macro_c[k] < macro_o[k] and macro_c[k] < recent_sl:
-                    bearish_mss = True
-
-        has_bull_sweep = lp_macro.has_bullish_sweep
-        has_bear_sweep = lp_macro.has_bearish_sweep
-
-        cand_buy = (htf_bull or bullish_mss or has_bull_sweep) and (bullish_mss or has_bull_sweep)
-        cand_sell = (htf_bear or bearish_mss or has_bear_sweep) and (bearish_mss or has_bear_sweep)
-
+        # Counter-trend trades are 100% prohibited
         if not cand_buy and not cand_sell:
             res.disqualification_reason = (
-                "Rule 1 Veto: No Macro MSS displacement or Liquidity Sweep confirmed."
+                "Tier 1 Veto: HTF Directional Dominance (D1 & H4 Alignment) failed. "
+                "Triple EMA (20>50>200 for BUY, 20<50<200 for SELL) and H4 SuperTrend must strictly align. "
+                "Counter-trend trades are 100% prohibited."
             )
             res.veto_reasons.append(res.disqualification_reason)
             return res
 
-        chosen_direction = "BUY" if (cand_buy and not cand_sell) else ("SELL" if (cand_sell and not cand_buy) else ("BUY" if htf_bull else "SELL"))
-        res.mss_detected = bullish_mss if chosen_direction == "BUY" else bearish_mss
-        res.liquidity_swept = has_bull_sweep if chosen_direction == "BUY" else has_bear_sweep
-        res.htf_aligned = htf_bull if chosen_direction == "BUY" else htf_bear
+        chosen_direction = "BUY" if cand_buy else "SELL"
+        res.htf_aligned = True
 
         # ----------------------------------------------------------------------
-        # RULE 2: STRICT PREMIUM VS. DISCOUNT EQUILIBRIUM GATE
+        # TIER 2: LIQUIDITY SWEEP & TRAP CONFIRMATION
+        # ----------------------------------------------------------------------
+        lp_macro = indicators.compute_liquidity_pools(macro_h, macro_l, macro_c, macro_o, lookback=50)
+        lp_h1 = indicators.compute_liquidity_pools(highs, lows, closes, opens, lookback=50)
+
+        recent_sh = max(lp_macro.recent_swing_high, lp_h1.recent_swing_high)
+        recent_sl = min(lp_macro.recent_swing_low, lp_h1.recent_swing_low)
+
+        bullish_trap = lp_macro.has_bullish_sweep or lp_h1.has_bullish_sweep
+        bearish_trap = lp_macro.has_bearish_sweep or lp_h1.has_bearish_sweep
+
+        # Verify liquidity sweep within the last 1-3 bars with clear rejection wick and close inside range
+        for k in range(max(0, len(closes) - 3), len(closes)):
+            b_body = abs(closes[k] - opens[k])
+            lower_wick = min(closes[k], opens[k]) - lows[k]
+            upper_wick = highs[k] - max(closes[k], opens[k])
+            if lows[k] < recent_sl and closes[k] > recent_sl:
+                if lower_wick >= 1.5 * max(b_body, 1e-6):
+                    bullish_trap = True
+            if highs[k] > recent_sh and closes[k] < recent_sh:
+                if upper_wick >= 1.5 * max(b_body, 1e-6):
+                    bearish_trap = True
+
+        if chosen_direction == "BUY" and not bullish_trap:
+            res.disqualification_reason = (
+                "Tier 2 Veto: Liquidity Sweep & Trap Confirmation failed for BUY. "
+                "Price must have swept sell-side liquidity with a clear rejection wick "
+                "and closed back inside the dealing range within the last 1-3 bars."
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        if chosen_direction == "SELL" and not bearish_trap:
+            res.disqualification_reason = (
+                "Tier 2 Veto: Liquidity Sweep & Trap Confirmation failed for SELL. "
+                "Price must have swept buy-side liquidity with a clear rejection wick "
+                "and closed back inside the dealing range within the last 1-3 bars."
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        res.liquidity_swept = True
+
+        # ----------------------------------------------------------------------
+        # TIER 3: STRICT EQUILIBRIUM GATE (DEEP DISCOUNT / DEEP PREMIUM)
         # ----------------------------------------------------------------------
         dealing_50_high = float(np.max(highs[-50:]))
         dealing_50_low = float(np.min(lows[-50:]))
@@ -527,24 +564,26 @@ class QuantitativeConfluenceEngine:
         price_percentile = (curr_price - dealing_50_low) / dealing_range if dealing_range > 0 else 0.50
         res.dealing_range_pct = round(price_percentile, 3)
 
-        if chosen_direction == "BUY" and price_percentile >= 0.40:
+        if chosen_direction == "BUY" and price_percentile > 0.382:
             res.disqualification_reason = (
-                f"Rule 2 Veto: BUY rejected. Price at {price_percentile*100:.1f}% of dealing range (must be < 40% Discount Zone)."
+                f"Tier 3 Veto: BUY rejected. Price at {price_percentile*100:.1f}% of dealing range "
+                f"(must be in Deep Discount Zone <= 38.2%). Never buy above 50%!"
             )
             res.veto_reasons.append(res.disqualification_reason)
             return res
 
-        if chosen_direction == "SELL" and price_percentile <= 0.60:
+        if chosen_direction == "SELL" and price_percentile < 0.618:
             res.disqualification_reason = (
-                f"Rule 2 Veto: SELL rejected. Price at {price_percentile*100:.1f}% of dealing range (must be > 60% Premium Zone)."
+                f"Tier 3 Veto: SELL rejected. Price at {price_percentile*100:.1f}% of dealing range "
+                f"(must be in Deep Premium Zone >= 61.8%). Never sell below 50%!"
             )
             res.veto_reasons.append(res.disqualification_reason)
             return res
 
         # ----------------------------------------------------------------------
-        # RULE 3: OPTIMAL TRADE ENTRY (OTE) PULLBACK VALIDATION
+        # TIER 4: OPTIMAL TRADE ENTRY (OTE) PULLBACK & OSCILLATOR VETO
         # ----------------------------------------------------------------------
-        # Check 3a: Never enter on extended breakout bars
+        # Check 4a: Anti-chasing shield (never enter extended breakout bars)
         curr_bar_range = highs[-1] - lows[-1]
         is_extended_breakout = False
         if chosen_direction == "BUY":
@@ -555,14 +594,13 @@ class QuantitativeConfluenceEngine:
                 is_extended_breakout = True
 
         if is_extended_breakout:
-            res.disqualification_reason = "Rule 3 Veto: Extended breakout bar detected. Anti-chasing shield active."
+            res.disqualification_reason = "Tier 4 Veto: Extended breakout bar detected. Anti-chasing shield active."
             res.veto_reasons.append(res.disqualification_reason)
             return res
 
-        # Check 3b: OTE Corridor or FVG between 20 and 50 EMA
+        # Check 4b: OTE Corridor (61.8% - 78.6%) or unmitigated FVG between 20 & 50 EMA
         ote_data = indicators.compute_ote_levels(highs, lows, closes, lookback=50)
         res.ote_corridor = (round(ote_data.ote_lower, 5), round(ote_data.ote_upper, 5))
-
         in_ote_corridor = (curr_price >= ote_data.ote_lower and curr_price <= ote_data.ote_upper)
 
         ema20 = indicators.ema(closes, adaptive_p.fast_ema_period)
@@ -588,15 +626,14 @@ class QuantitativeConfluenceEngine:
         res.in_ote_or_fvg = (in_ote_corridor or in_validated_fvg)
         if not res.in_ote_or_fvg:
             res.disqualification_reason = (
-                f"Rule 3 Veto: Price not in OTE corridor [{ote_data.ote_lower:.5f}, {ote_data.ote_upper:.5f}] "
+                f"Tier 4 Veto: Price not in OTE corridor [{ote_data.ote_lower:.5f}, {ote_data.ote_upper:.5f}] "
                 f"or validated FVG between {adaptive_p.fast_ema_period} and {adaptive_p.slow_ema_period} EMA."
             )
             res.veto_reasons.append(res.disqualification_reason)
             return res
 
-        # ----------------------------------------------------------------------
-        # RULE 4: OSCILLATOR EXHAUSTION VETO (ANTI-CHASING SHIELD)
-        # ----------------------------------------------------------------------
+        # Check 4c: Immediate VETO if oscillators show exhaustion
+        # Veto BUY if RSI(14) > 55 or CCI > 80; Veto SELL if RSI(14) < 45 or CCI < -80
         rsi_series = indicators.rsi(closes, adaptive_p.rsi_period)
         rsi_val = float(rsi_series[-1]) if not np.isnan(rsi_series[-1]) else 50.0
         res.rsi_value = round(rsi_val, 1)
@@ -612,22 +649,22 @@ class QuantitativeConfluenceEngine:
         res.bollinger_pct_b = round(pct_b, 3)
 
         if chosen_direction == "BUY":
-            if rsi_val > 60.0 or cci_val > 100.0 or pct_b > 0.80:
+            if rsi_val > 55.0 or cci_val > 80.0 or pct_b > 0.80:
                 res.disqualification_reason = (
-                    f"Rule 4 Veto: BUY exhausted (RSI={rsi_val:.1f}>60, CCI={cci_val:.1f}>100, %B={pct_b:.2f}>0.80)."
+                    f"Tier 4 Veto: BUY exhausted (RSI={rsi_val:.1f}>55, CCI={cci_val:.1f}>80, %B={pct_b:.2f}>0.80). Anti-chasing shield active."
                 )
                 res.veto_reasons.append(res.disqualification_reason)
                 return res
         else:
-            if rsi_val < 40.0 or cci_val < -100.0 or pct_b < 0.20:
+            if rsi_val < 45.0 or cci_val < -80.0 or pct_b < 0.20:
                 res.disqualification_reason = (
-                    f"Rule 4 Veto: SELL exhausted (RSI={rsi_val:.1f}<40, CCI={cci_val:.1f}<-100, %B={pct_b:.2f}<0.20)."
+                    f"Tier 4 Veto: SELL exhausted (RSI={rsi_val:.1f}<45, CCI={cci_val:.1f}<-80, %B={pct_b:.2f}<0.20). Anti-chasing shield active."
                 )
                 res.veto_reasons.append(res.disqualification_reason)
                 return res
 
         # ----------------------------------------------------------------------
-        # RULE 5: LOWER-TIMEFRAME EXECUTION CONFIRMATION (M15 / M5)
+        # TIER 5: M15 CLOSED REVERSAL CONFIRMATION
         # ----------------------------------------------------------------------
         trig_c = ltf_ohlcv["close"] if (ltf_ohlcv and len(ltf_ohlcv.get("close", [])) >= 5) else closes
         trig_h = ltf_ohlcv["high"] if (ltf_ohlcv and len(ltf_ohlcv.get("high", [])) >= 5) else highs
@@ -650,8 +687,8 @@ class QuantitativeConfluenceEngine:
         pat_name = "NONE"
 
         if chosen_direction == "BUY":
-            is_wick = (lower_wick >= 2.0 * max(last_body, 1e-6)) and (upper_wick <= 0.35 * last_tot_rng)
-            is_engulf = (c_last > o_last and c_prev < o_prev and c_last >= o_prev and o_last <= c_prev)
+            is_wick = (lower_wick >= 2.5 * max(last_body, 1e-6)) and (upper_wick <= 0.30 * last_tot_rng)
+            is_engulf = (c_last > o_last and c_prev < o_prev and c_last >= o_prev and o_last <= c_prev and (last_body >= 1.2 * abs(c_prev - o_prev)))
             if is_wick:
                 reversal_confirmed = True
                 pat_name = "REJECTION_WICK"
@@ -659,8 +696,8 @@ class QuantitativeConfluenceEngine:
                 reversal_confirmed = True
                 pat_name = "BULLISH_ENGULFING"
         else:
-            is_wick = (upper_wick >= 2.0 * max(last_body, 1e-6)) and (lower_wick <= 0.35 * last_tot_rng)
-            is_engulf = (c_last < o_last and c_prev > o_prev and c_last <= o_prev and o_last >= c_prev)
+            is_wick = (upper_wick >= 2.5 * max(last_body, 1e-6)) and (lower_wick <= 0.30 * last_tot_rng)
+            is_engulf = (c_last < o_last and c_prev > o_prev and c_last <= o_prev and o_last >= c_prev and (last_body >= 1.2 * abs(c_prev - o_prev)))
             if is_wick:
                 reversal_confirmed = True
                 pat_name = "REJECTION_WICK"
@@ -673,7 +710,8 @@ class QuantitativeConfluenceEngine:
 
         if not reversal_confirmed:
             res.disqualification_reason = (
-                f"Rule 5 Veto: Institutional reversal not confirmed on trigger candle (wick < 2x body and no engulfing)."
+                f"Tier 5 Veto: Institutional reversal not confirmed on trigger candle "
+                f"(Pinbar rejection wick < 2.5x body and no decisive engulfing candle)."
             )
             res.veto_reasons.append(res.disqualification_reason)
             return res
@@ -842,11 +880,11 @@ class QuantitativeConfluenceEngine:
         res.score_100 = max(0.0, min(100.0, base_score + total_score_mod))
         res.adaptive_score_modifier = total_score_mod
 
-        if res.score_100 < self.min_confluence_score:
+        if res.score_100 < self.min_confluence_score or res.score_100 < 85.0:
             res.is_qualified = False
             res.disqualification_reason = (
-                f"Adaptive Learning Penalty: Confluence score ({res.score_100:.1f}) penalized by {total_score_mod:.1f} pts "
-                f"below minimum threshold ({self.min_confluence_score})."
+                f"Sniper Score Veto: Confluence score ({res.score_100:.1f}) is below "
+                f"the mandatory Institutional Grade A+ threshold ({max(85.0, self.min_confluence_score):.1f}/100 [8.5/10])."
             )
             res.veto_reasons.append(res.disqualification_reason)
             return res

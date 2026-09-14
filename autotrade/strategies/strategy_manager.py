@@ -17,12 +17,7 @@ from autotrade.orders.order_manager import OrderManager
 from autotrade.orders.order_types import TradeOrder, OrderSide, OrderType
 from autotrade.risk.risk_manager import RiskManager
 from autotrade.strategies.base_strategy import BaseStrategy, StrategySignal
-from autotrade.strategies.trend_following import TrendFollowingStrategy
-from autotrade.strategies.mean_reversion import MeanReversionStrategy
-from autotrade.strategies.breakout import BreakoutStrategy
-from autotrade.strategies.ml_strategy import MLPredictorStrategy
-from autotrade.strategies.news_straddle import NewsStraddleStrategy
-from autotrade.strategies.grid_averaging import SmartGridStrategy
+from autotrade.strategies.sniper_strategy import SniperConfluenceStrategy, TrendFollowingStrategy
 
 logger = logging.getLogger("autotrade.strategies.strategy_manager")
 
@@ -54,12 +49,13 @@ class StrategyManager:
         self._strategies.clear()
         
         strat_classes = {
+            "SniperConfluenceStrategy": SniperConfluenceStrategy,
             "TrendFollowingStrategy": TrendFollowingStrategy,
-            "MeanReversionStrategy": MeanReversionStrategy,
-            "BreakoutStrategy": BreakoutStrategy,
-            "MLPredictorStrategy": MLPredictorStrategy,
-            "NewsStraddleStrategy": NewsStraddleStrategy,
-            "SmartGridStrategy": SmartGridStrategy,
+            "MeanReversionStrategy": SniperConfluenceStrategy,
+            "BreakoutStrategy": SniperConfluenceStrategy,
+            "MLPredictorStrategy": SniperConfluenceStrategy,
+            "NewsStraddleStrategy": SniperConfluenceStrategy,
+            "SmartGridStrategy": SniperConfluenceStrategy,
         }
 
         active_names = self.config.strategy.active_strategies
