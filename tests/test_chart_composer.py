@@ -167,6 +167,23 @@ class TestChartComposer(unittest.TestCase):
         with Image.open(self.mock_chart_path) as img:
             self.assertEqual(img.size, (1280, 968))
 
+    def test_portfolio_scanner_and_four_buttons_composition(self):
+        """Verify dynamic portfolio scanner status and 4 interactive buttons render cleanly."""
+        data = {
+            "symbol": "EURUSD",
+            "timeframe": "H1",
+            "telemetry": {
+                "auto_scan_status": "TRADE NAH: ALL 29 BYPASSED (Best: GBPUSD 6/10)",
+                "total_symbols": 29,
+                "bot_status": "ACTIVE [RUNNING]"
+            }
+        }
+        res_path = compose_chart_screenshot(self.mock_chart_path, data)
+        self.assertEqual(res_path, self.mock_chart_path)
+        with Image.open(self.mock_chart_path) as img:
+            self.assertEqual(img.size, (1280, 968))
+            self.assertEqual(img.info.get("composed"), "true")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -217,7 +217,21 @@ def compose_chart_screenshot(chart_image_path: str, data: Dict[str, Any]) -> str
     quant = telem.get("quant", "KER: 0.35 | Squeeze: None")
     ext = telem.get("ext_ind", "CCI: 100.0 | %B: 0.50 | VSA: Normal")
     footer_line = f"{quant}  |  Pattern: {pattern}  |  {ext}"
-    draw.text((c1_x1 + 14, c1_y1 + 178), footer_line, font=f_small, fill=COLOR_GOLD)
+    draw.text((c1_x1 + 14, c1_y1 + 174), footer_line, font=f_small, fill=COLOR_GOLD)
+
+    # Row 8: Dynamic Portfolio Surveillance & On-Demand Scan Status (N Assets)
+    scan_status = telem.get("auto_scan_status", "")
+    if not scan_status:
+        tot_syms = telem.get("total_symbols", "")
+        if tot_syms:
+            scan_status = f"Portfolio: {tot_syms} Assets Monitored (Click [SCAN] Anytime)"
+        else:
+            scan_status = "Portfolio: Dynamic Assets Monitored (Click [SCAN] Anytime)"
+    elif not scan_status.startswith("Portfolio") and not scan_status.startswith("CAN TRADE") and not scan_status.startswith("TRADE NAH"):
+        scan_status = f"Portfolio: {scan_status}"
+
+    scan_col = COLOR_GREEN if "CAN TRADE" in scan_status.upper() else COLOR_CYAN
+    draw.text((c1_x1 + 14, c1_y1 + 196), scan_status, font=f_small, fill=scan_col)
 
     # -------------------------------------------------------------
     # CARD 2: MULTI-TIMEFRAME CONFLUENCE MATRIX & QUICK CONTROLS
@@ -284,27 +298,35 @@ def compose_chart_screenshot(chart_image_path: str, data: Dict[str, Any]) -> str
     advice = telem.get("mtf_advice", "Action: Evaluating Alignment")
     draw.text((c2_x1 + 14, c2_y1 + 126), advice, font=f_txt, fill=COLOR_VALUE_WHITE)
 
-    # Interactive Chart Controls Display
+    # Interactive Chart Controls Display (4 Buttons: CLOSE ALL, BE ALL, PAUSE EA, SCAN)
     btn_y = c2_y1 + 160
-    btn_w = (card_w - 28 - 20) // 3
+    btn_gap = 8
+    btn_w = (card_w - 28 - (3 * btn_gap)) // 4
     btn_h = 32
 
-    # CLOSE ALL button
-    draw.rounded_rectangle([c2_x1 + 14, btn_y, c2_x1 + 14 + btn_w, btn_y + btn_h], radius=4, fill=(140, 35, 35))
+    # 1. CLOSE ALL button
+    bx1 = c2_x1 + 14
+    draw.rounded_rectangle([bx1, btn_y, bx1 + btn_w, btn_y + btn_h], radius=4, fill=(140, 35, 35))
     bbox = draw.textbbox((0, 0), "CLOSE ALL", font=f_bold)
-    draw.text((c2_x1 + 14 + (btn_w - (bbox[2] - bbox[0])) // 2, btn_y + 7), "CLOSE ALL", font=f_bold, fill=(255, 255, 255))
+    draw.text((bx1 + (btn_w - (bbox[2] - bbox[0])) // 2, btn_y + 7), "CLOSE ALL", font=f_bold, fill=(255, 255, 255))
 
-    # BE ALL button
-    bx2 = c2_x1 + 14 + btn_w + 10
+    # 2. BE ALL button
+    bx2 = bx1 + btn_w + btn_gap
     draw.rounded_rectangle([bx2, btn_y, bx2 + btn_w, btn_y + btn_h], radius=4, fill=(35, 95, 140))
     bbox = draw.textbbox((0, 0), "BE ALL", font=f_bold)
     draw.text((bx2 + (btn_w - (bbox[2] - bbox[0])) // 2, btn_y + 7), "BE ALL", font=f_bold, fill=(255, 255, 255))
 
-    # PAUSE EA button
-    bx3 = bx2 + btn_w + 10
+    # 3. PAUSE EA button
+    bx3 = bx2 + btn_w + btn_gap
     draw.rounded_rectangle([bx3, btn_y, bx3 + btn_w, btn_y + btn_h], radius=4, fill=(35, 125, 55))
     bbox = draw.textbbox((0, 0), "PAUSE EA", font=f_bold)
     draw.text((bx3 + (btn_w - (bbox[2] - bbox[0])) // 2, btn_y + 7), "PAUSE EA", font=f_bold, fill=(255, 255, 255))
+
+    # 4. SCAN button
+    bx4 = bx3 + btn_w + btn_gap
+    draw.rounded_rectangle([bx4, btn_y, bx4 + btn_w, btn_y + btn_h], radius=4, fill=(25, 115, 160))
+    bbox = draw.textbbox((0, 0), "SCAN", font=f_bold)
+    draw.text((bx4 + (btn_w - (bbox[2] - bbox[0])) // 2, btn_y + 7), "SCAN", font=f_bold, fill=(255, 255, 255))
 
     # -------------------------------------------------------------
     # BOTTOM SECTION: 100% CLEAN MT4 PRICE CHART

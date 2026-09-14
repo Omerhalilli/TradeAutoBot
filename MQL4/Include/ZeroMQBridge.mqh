@@ -1928,9 +1928,18 @@ string Zmq_HandleScreenshot(const string reqJson)
    json += "\"pattern\":\"" + Zmq_JsonEscape(telemPattern) + "\",";
    json += "\"ext_ind\":\"" + Zmq_JsonEscape(telemExtInd) + "\",";
    json += "\"mtf\":" + mtfJson + ",";
+   string telemScanStatus = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_13_AutoStatus", OBJPROP_TEXT) : "";
+   int mwTotal = SymbolsTotal(true);
+   if(telemScanStatus == "")
+   {
+      telemScanStatus = StringFormat("Portfolio: %d Assets Monitored (Click [SCAN])", (mwTotal > 0 ? mwTotal : 28));
+   }
+
    json += "\"bull_power\":\"" + Zmq_JsonEscape(telemGaugeVal) + "\",";
    json += "\"power_pct\":" + DoubleToString(powerPct, 1) + ",";
-   json += "\"mtf_advice\":\"" + Zmq_JsonEscape(telemAdvice) + "\"";
+   json += "\"mtf_advice\":\"" + Zmq_JsonEscape(telemAdvice) + "\",";
+   json += "\"auto_scan_status\":\"" + Zmq_JsonEscape(telemScanStatus) + "\",";
+   json += "\"total_symbols\":" + IntegerToString(mwTotal);
    json += "}";
    json += "}";
    return json;
@@ -2152,7 +2161,7 @@ string Zmq_HandleScanSymbols(const string reqJson)
    string symbols[];
    ArrayResize(symbols, 0);
 
-   if(symListStr == "MARKET_WATCH" || symListStr == "ALL")
+   if(symListStr == "MARKET_WATCH" || symListStr == "ALL" || symListStr == "" || symListStr == "WATCHLIST" || symListStr == "DEFAULT")
    {
       int totalMW = SymbolsTotal(true);
       if(totalMW > 0)
@@ -2167,10 +2176,6 @@ string Zmq_HandleScanSymbols(const string reqJson)
       {
          symListStr = "USDCHF,GBPUSD,EURUSD,USDJPY,USDCAD,AUDUSD,EURGBP,EURAUD,EURCHF,EURJPY,GBPCHF,CADJPY,GBPJPY,AUDNZD,AUDCAD,AUDCHF,AUDJPY,CHFJPY,EURNZD,EURCAD,CADCHF,NZDJPY,NZDUSD,XAUUSD";
       }
-   }
-   else if(symListStr == "" || symListStr == "WATCHLIST" || symListStr == "DEFAULT")
-   {
-      symListStr = "USDCHF,GBPUSD,EURUSD,USDJPY,USDCAD,AUDUSD,EURGBP,EURAUD,EURCHF,EURJPY,GBPCHF,CADJPY,GBPJPY,AUDNZD,AUDCAD,AUDCHF,AUDJPY,CHFJPY,EURNZD,EURCAD,CADCHF,NZDJPY,NZDUSD,XAUUSD";
    }
    
    if(ArraySize(symbols) == 0)
@@ -2194,7 +2199,13 @@ string Zmq_HandleScanSymbols(const string reqJson)
          start = comma + 1;
       }
    }
-   
+
+   int totalSymbolsInList = ArraySize(symbols);
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+   PrintFormat("[PORTFOLIO SCAN START] Scanning %d portfolio assets on %s @ %s",
+               totalSymbolsInList, EnumToString(tf), TimeToStr(TimeCurrent(), TIME_SECONDS));
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
    string json = "{";
    json += "\"status\":\"ok\",";
    json += "\"action\":\"SCAN_SYMBOLS\",";
@@ -2202,7 +2213,7 @@ string Zmq_HandleScanSymbols(const string reqJson)
    json += "\"results\":[";
    
    int validCount = 0;
-   for(int i = 0; i < ArraySize(symbols); i++)
+   for(int i = 0; i < totalSymbolsInList; i++)
    {
       string rawSym = symbols[i];
       string sym = Zmq_ResolveSymbol(rawSym);
@@ -2210,16 +2221,46 @@ string Zmq_HandleScanSymbols(const string reqJson)
       SymbolSelect(sym, true);
       
       double pt = MarketInfo(sym, MODE_POINT);
-      if(pt <= 0.0) continue;
+      if(pt <= 0.0)
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: Symbol unavailable or invalid point",
+                     i + 1, totalSymbolsInList, sym);
+         continue;
+      }
       
-      if(!IsSymbolTradeAllowed(sym)) continue;
-      if(!IsSymbolTradeableForBalance(sym, 50.0)) continue;
-      if(!IsQuoteFresh(sym, 5)) continue;
+      if(!IsSymbolTradeAllowed(sym))
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: Trading disabled by broker",
+                     i + 1, totalSymbolsInList, sym);
+         continue;
+      }
+      if(!IsSymbolTradeableForBalance(sym, 50.0))
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: Margin check failed",
+                     i + 1, totalSymbolsInList, sym);
+         continue;
+      }
+      if(!IsQuoteFresh(sym, 5))
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: Stale quotes (> 5s)",
+                     i + 1, totalSymbolsInList, sym);
+         continue;
+      }
       
       double bid = MarketInfo(sym, MODE_BID);
       double ask = MarketInfo(sym, MODE_ASK);
-      if(bid <= 0.0 || ask <= 0.0) continue;
-      if(iBars(sym, tf) < 205) continue;
+      if(bid <= 0.0 || ask <= 0.0)
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: No live quotes",
+                     i + 1, totalSymbolsInList, sym);
+         continue;
+      }
+      if(iBars(sym, tf) < 205)
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: Insufficient history (%d bars < 205)",
+                     i + 1, totalSymbolsInList, sym, iBars(sym, tf));
+         continue;
+      }
       
       double spread = Zmq_GetSpreadPoints(sym);
       int dig = (int)MarketInfo(sym, MODE_DIGITS);
@@ -2233,6 +2274,10 @@ string Zmq_HandleScanSymbols(const string reqJson)
       else if(isSessionActive && sig.valid && sig.cmd == OP_SELL && sig.score >= 6) signal = "SELL";
       else sig.score = 0;
       
+      PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Signal: %-4s | Score: %2d/10 (%5.1f%%) | Trend: %-15s | Spread: %4.1f pts%s",
+                  i + 1, totalSymbolsInList, sym, signal, sig.score, sig.analysisScore, sig.trend, spread,
+                  (sig.score >= 8 && sig.analysisScore >= 85.0 ? " [QUALIFIED SETUP]" : ""));
+
       double contractSize = MarketInfo(sym, MODE_LOTSIZE);
       double minLot = MarketInfo(sym, MODE_MINLOT);
       double lotStep = MarketInfo(sym, MODE_LOTSTEP);
@@ -2284,6 +2329,9 @@ string Zmq_HandleScanSymbols(const string reqJson)
       validCount++;
    }
    json += "],\"count\":" + IntegerToString(validCount) + "}";
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+   PrintFormat("[PORTFOLIO SCAN COMPLETE] Processed %d/%d valid symbols on %s", validCount, totalSymbolsInList, EnumToString(tf));
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
    return json;
 }
 

@@ -590,7 +590,7 @@ string   g_AutoScanBestCmd             = "";
 int      g_AutoScanBestScore           = 0;
 double   g_AutoScanBestAnalysis        = 0.0;
 double   g_AutoScanBestLots            = 0.0;
-string   g_AutoScanStatusDesc          = "Surveillance Active (24 Symbols)";
+string   g_AutoScanStatusDesc          = "Surveillance Active (All Monitored Assets)";
 
 
 // Stealth mode virtual stop registry
@@ -3540,7 +3540,10 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    if(EnableAutonomousMultiSymbol)
    {
       y += 2;
-      RenderHUDLabel("12_AutoHeader", "=== 24-PAIR PORTFOLIO SCANNER ===", textX, y, clrCyan, fontNormal, true);
+      int mwCount = SymbolsTotal(true);
+      int dispAssetCount = (g_AutoScanTotalSymbols > 0) ? g_AutoScanTotalSymbols : (mwCount > 0 ? mwCount : 28);
+      string portHeader = StringFormat("=== %d-ASSET PORTFOLIO SCANNER ===", dispAssetCount);
+      RenderHUDLabel("12_AutoHeader", portHeader, textX, y, clrCyan, fontNormal, true);
       y += rowHeight;
 
       string autoLine1 = "";
@@ -3551,12 +3554,12 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
       }
       else if(g_AutoScanLastTime > 0)
       {
-         autoLine1 = StringFormat("TRADE NAH: All %d Pairs Bypassed (Best: %s %d/10)",
+         autoLine1 = StringFormat("TRADE NAH: All %d Assets Bypassed (Best: %s %d/10)",
                                   g_AutoScanTotalSymbols, (g_AutoScanBestSymbol != "" ? g_AutoScanBestSymbol : "NONE"), g_AutoScanBestScore);
       }
       else
       {
-         autoLine1 = (g_AutoScanStatusDesc != "" ? g_AutoScanStatusDesc : "Portfolio Status: 24 Pairs Monitored (Click [SCAN] Anytime)");
+         autoLine1 = (g_AutoScanStatusDesc != "" ? g_AutoScanStatusDesc : StringFormat("Portfolio Status: %d Assets Monitored (Click [SCAN] Anytime)", dispAssetCount));
       }
       color autoCol = (g_AutoScanQualifiedCount > 0) ? clrLime : clrGold;
       RenderHUDLabel("13_AutoStatus", HUD_FitString(autoLine1, 75), textX, y, autoCol, fontSmall, false);
@@ -6582,9 +6585,21 @@ void PerformManualPortfolioScan()
    string symList[];
    ArrayResize(symList, 0);
 
-   if(AutonomousWatchlist == "MARKET_WATCH" || AutonomousWatchlist == "ALL")
+   if(AutonomousWatchlist == "MARKET_WATCH" || AutonomousWatchlist == "ALL" || AutonomousWatchlist == "")
    {
-      DiscoverMarketWatchSymbols(symList, "", AutonomousExcludeSymbols, 50.0);
+      int totalMW = SymbolsTotal(true);
+      if(totalMW > 0)
+      {
+         ArrayResize(symList, totalMW);
+         for(int s = 0; s < totalMW; s++)
+         {
+            symList[s] = SymbolName(s, true);
+         }
+      }
+      else
+      {
+         DiscoverMarketWatchSymbols(symList, "", AutonomousExcludeSymbols, 50.0);
+      }
    }
    else if(StringLen(AutonomousWatchlist) > 0)
    {
@@ -6610,7 +6625,7 @@ void PerformManualPortfolioScan()
       }
    }
 
-   // Fallback to default 24 institutional basket if empty
+   // Fallback to default institutional basket if empty
    if(ArraySize(symList) == 0)
    {
       string defSyms[] = {
@@ -6641,6 +6656,7 @@ void PerformManualPortfolioScan()
       symList[cSz] = Symbol();
    }
 
+   int totalInList = ArraySize(symList);
    int totalScanned = 0;
    int qualifiedCount = 0;
    string bestSymbol = "";
@@ -6650,20 +6666,56 @@ void PerformManualPortfolioScan()
    double bestRankScore = -999999.0;
    StrategySignal bestSig;
 
-   for(int i = 0; i < ArraySize(symList); i++)
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+   PrintFormat("[PORTFOLIO SCAN START] Scanning %d portfolio assets on %s @ %s",
+               totalInList, EnumToString(scanTF), TimeToStr(TimeCurrent(), TIME_SECONDS));
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+   for(int i = 0; i < totalInList; i++)
    {
-      string sym = symList[i];
-      if(StringLen(sym) == 0) continue;
+      string rawSym = symList[i];
+      if(StringLen(rawSym) == 0) continue;
+
+      string sym = ResolveBrokerSymbol(rawSym);
+      if(sym == "") sym = rawSym;
+
+      // Exclude blacklist check
+      if(!IsSymbolAllowed(sym, "", AutonomousExcludeSymbols))
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: Matched exclude filter (%s)",
+                     i + 1, totalInList, sym, AutonomousExcludeSymbols);
+         continue;
+      }
 
       SymbolSelect(sym, true);
       double pt = MarketInfo(sym, MODE_POINT);
-      if(pt <= 0.0) continue;
-      if(!IsSymbolTradeAllowed(sym)) continue;
-      if(iBars(sym, scanTF) < 205) continue;
+      if(pt <= 0.0)
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: Symbol unavailable or invalid point",
+                     i + 1, totalInList, sym);
+         continue;
+      }
+      if(!IsSymbolTradeAllowed(sym))
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: Trading disabled by broker",
+                     i + 1, totalInList, sym);
+         continue;
+      }
+      if(iBars(sym, scanTF) < 205)
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: Insufficient history (%d bars < 205)",
+                     i + 1, totalInList, sym, iBars(sym, scanTF));
+         continue;
+      }
 
       double bid = MarketInfo(sym, MODE_BID);
       double ask = MarketInfo(sym, MODE_ASK);
-      if(bid <= 0.0 || ask <= 0.0) continue;
+      if(bid <= 0.0 || ask <= 0.0)
+      {
+         PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Skipped: No live quotes",
+                     i + 1, totalInList, sym);
+         continue;
+      }
 
       totalScanned++;
 
@@ -6672,6 +6724,12 @@ void PerformManualPortfolioScan()
 
       int minReq = MathMax(8, AutonomousMinConfluenceScore);
       bool isQualified = (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= minReq && sig.analysisScore >= 85.0);
+      string sigCmd = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
+      double spreadPts = (ask - bid) / pt;
+
+      PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Signal: %-4s | Score: %2d/10 (%5.1f%%) | Trend: %-15s | Spread: %4.1f pts%s",
+                  i + 1, totalInList, sym, sigCmd, sig.score, sig.analysisScore, sig.trend, spreadPts,
+                  (isQualified ? " [QUALIFIED SETUP]" : ""));
 
       if(isQualified)
       {
@@ -6686,7 +6744,7 @@ void PerformManualPortfolioScan()
          bestSymbol = sym;
          bestScore = sig.score;
          bestAnalysisScore = sig.analysisScore;
-         bestCmd = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
+         bestCmd = sigCmd;
       }
    }
 
@@ -6710,19 +6768,19 @@ void PerformManualPortfolioScan()
 
    // Print full diagnostic report to Experts log
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-   PrintFormat("[MANUAL SCAN @ %s] TF: %s | Scanned: %d symbols | Qualified: %d",
-               TimeToStr(TimeCurrent(), TIME_SECONDS), EnumToString(scanTF), totalScanned, qualifiedCount);
+   PrintFormat("[PORTFOLIO SCAN COMPLETE] Processed %d/%d valid symbols on %s | Qualified setups: %d",
+               totalScanned, totalInList, EnumToString(scanTF), qualifiedCount);
    if(qualifiedCount > 0)
    {
-      PrintFormat("[MANUAL SCAN RESULT] CAN TRADE: YES! Top Candidate: %s %s | Score: %d/10 (%.1f%%) | SL: %.1f | TP: %.1f | RR: %.2f",
+      PrintFormat("[PORTFOLIO SCAN VERDICT] CAN TRADE: YES! Top Candidate: %s %s | Score: %d/10 (%.1f%%) | SL: %.1f | TP: %.1f | RR: %.2f",
                   bestSymbol, bestCmd, bestScore, bestAnalysisScore, bestSig.slPips, bestSig.tpPips, bestSig.rrRatio);
    }
    else
    {
-      PrintFormat("[MANUAL SCAN RESULT] CAN TRADE: NAH. No setups meet strict Grade A+ (>=8/10, >=85%%). Best: %s (%d/10). Capital 100%% safe.",
-                  (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
+      PrintFormat("[PORTFOLIO SCAN VERDICT] TRADE NAH: All %d symbols bypassed. No setups meet strict Grade A+ (>=8/10, >=85%%). Best: %s (%d/10). Capital 100%% safe.",
+                  totalScanned, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
    }
-   PrintFormat("[MANUAL SCAN SAFETY] Strict Advisory Mode: ZERO TRADES EXECUTED (Safety guarantee).");
+   PrintFormat("[PORTFOLIO SCAN SAFETY] Advisory Mode: ZERO TRADES EXECUTED (Safety guarantee).");
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
    // Queue Telegram notification outbox message for Python dispatcher
