@@ -106,6 +106,33 @@ class AutonomousMultiSymbolTrader:
     evaluates quantitative scoring confluence, and autonomously dispatches market
     orders directly to MetaTrader.
     """
+    @staticmethod
+    def _is_test_environment() -> bool:
+        """
+        Detects if the code is running inside a test or CI environment.
+        Covers:
+          - pytest: sets PYTEST_CURRENT_TEST before any module import
+          - python -m unittest: loads 'unittest.__main__' into sys.modules
+          - GitHub Actions / generic CI: GITHUB_ACTIONS or CI env var
+        Used to suppress persistent state file loading during tests so that stale
+        on-disk bar timestamps never contaminate in-memory test assertions.
+        """
+        import sys
+        # pytest sets this before any test module is imported
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return True
+        # GitHub Actions and generic CI runners
+        if os.environ.get("GITHUB_ACTIONS") or os.environ.get("CI"):
+            return True
+        # python -m unittest (discover or otherwise) loads unittest.__main__
+        if "unittest.__main__" in sys.modules:
+            return True
+        # sys.argv[0] heuristic for direct pytest/unittest invocation
+        argv0 = sys.argv[0] if sys.argv else ""
+        if "pytest" in argv0 or "unittest" in argv0:
+            return True
+        return False
+
     def __init__(
         self,
         symbols: Optional[List[str]] = None,
@@ -165,7 +192,9 @@ class AutonomousMultiSymbolTrader:
             self.state_file_path = state_file_path
         elif os.environ.get("AUTOTRADE_STATE_FILE"):
             self.state_file_path = os.environ.get("AUTOTRADE_STATE_FILE")
-        elif os.environ.get("PYTEST_CURRENT_TEST"):
+        elif self._is_test_environment():
+            # Disable persistent state loading in any test/CI environment to prevent
+            # stale on-disk timestamps from contaminating test assertions.
             self.state_file_path = ""
         else:
             self.state_file_path = DEFAULT_STATE_FILE

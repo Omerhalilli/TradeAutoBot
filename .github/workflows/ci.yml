@@ -45,7 +45,7 @@ jobs:
           ALLOWED_CHAT_IDS: "123456789"
           ZMQ_SERVER_URL: "tcp://127.0.0.1:5555"
         run: |
-          python -m unittest discover -s tests -v
+          python -m pytest tests/ -v --tb=short
 
       - name: Run Integration & Multi-Account Test Suites
         env:
