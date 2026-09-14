@@ -2561,6 +2561,11 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleGetSymbolInfo(reqStr);
    if(action == "SCAN_SYMBOLS" || action == "SCAN" || action == "MARKET_DATA")
       return Zmq_HandleScanSymbols(reqStr);
+   if(action == "TRIGGER_SCAN_BUTTON" || action == "TRIGGER_SCAN" || action == "MANUAL_SCAN")
+   {
+      GlobalVariableSet("Trigger_Manual_Scan", 1.0);
+      return "{\"status\":\"ok\",\"action\":\"TRIGGER_SCAN_BUTTON\",\"message\":\"Manual scan triggered on chart\"}";
+   }
    if(action == "GET_BOOST" || action == "BOOST")
       return Zmq_HandleGetBoost();
    if(action == "RESET_SAFEGUARDS" || action == "RESET_PROP" || action == "RESET")

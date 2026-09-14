@@ -7405,6 +7405,12 @@ void OnTimer()
    Telegram_ProcessQueue();
    Telegram_ProcessTradeEvents();
 
+   if(GlobalVariableCheck("Trigger_Manual_Scan"))
+   {
+      GlobalVariableDel("Trigger_Manual_Scan");
+      PerformManualPortfolioScan();
+   }
+
    static uint s_lastEATimerTick = 0;
    uint nowTimerTick = GetTickCount();
    if(nowTimerTick - s_lastEATimerTick < 1000) return;
