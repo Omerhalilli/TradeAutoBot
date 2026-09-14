@@ -2574,10 +2574,25 @@ string Zmq_ProcessRequest(const string reqStr)
 //+------------------------------------------------------------------+
 void ZeroMQ_Init(string bindAddress = "tcp://*:5555")
 {
+   string cleanAddr = bindAddress;
+   StringTrimLeft(cleanAddr);
+   StringTrimRight(cleanAddr);
+   if(StringLen(cleanAddr) == 0 || StringFind(cleanAddr, "tcp://") < 0)
+   {
+      cleanAddr = "tcp://*:5555";
+   }
+   
    if(g_zmqContext.ref() == 0)
    {
       Print("[ZeroMQ ERROR] Context initialization failed");
       return;
+   }
+   
+   if(g_zmqSocket != NULL)
+   {
+      g_zmqSocket.unbind(cleanAddr);
+      delete g_zmqSocket;
+      g_zmqSocket = NULL;
    }
    
    g_zmqSocket = new Socket(g_zmqContext, ZMQ_REP);
@@ -2591,7 +2606,7 @@ void ZeroMQ_Init(string bindAddress = "tcp://*:5555")
    g_zmqSocket.setSendTimeout(1000);
    g_zmqSocket.setLinger(0);
    
-   if(g_zmqSocket.bind(bindAddress))
+   if(g_zmqSocket.bind(cleanAddr))
    {
       g_zmqReady = true; 
       EventKillTimer();
@@ -2599,20 +2614,28 @@ void ZeroMQ_Init(string bindAddress = "tcp://*:5555")
       {
          EventSetTimer(1);
       }
-      PrintFormat("[ZeroMQ Bridge ACTIVE] Listening on %s", bindAddress);
+      PrintFormat("[ZeroMQ Bridge ACTIVE] Listening on %s", cleanAddr);
    }
    else
    {
-      PrintFormat("[ZeroMQ ERROR] Failed to bind socket to %s (Error: %d)", bindAddress, zmq_errno());
+      PrintFormat("[ZeroMQ ERROR] Failed to bind socket to %s (Error: %d)", cleanAddr, zmq_errno());
    }
 }
 
 void ZeroMQ_Deinit(string bindAddress = "tcp://*:5555")
 {
+   string cleanAddr = bindAddress;
+   StringTrimLeft(cleanAddr);
+   StringTrimRight(cleanAddr);
+   if(StringLen(cleanAddr) == 0 || StringFind(cleanAddr, "tcp://") < 0)
+   {
+      cleanAddr = "tcp://*:5555";
+   }
+
    g_zmqReady = false;
    if(g_zmqSocket != NULL)
    {
-      g_zmqSocket.unbind(bindAddress);
+      g_zmqSocket.unbind(cleanAddr);
       delete g_zmqSocket;
       g_zmqSocket = NULL;
    }

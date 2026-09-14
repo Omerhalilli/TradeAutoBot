@@ -7100,7 +7100,7 @@ int OnInit()
    }
 
    Telegram_InitTradeTracker(isChartReload);
-   ZeroMQ_Init(InpZmqBindAddress);
+   ZeroMQ_Init((InpZmqBindAddress != "") ? InpZmqBindAddress : "tcp://*:5555");
 
    return(INIT_SUCCEEDED);
 }
@@ -7109,7 +7109,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   ZeroMQ_Deinit(InpZmqBindAddress);
+   ZeroMQ_Deinit((InpZmqBindAddress != "") ? InpZmqBindAddress : "tcp://*:5555");
    Telegram_FlushQueue();
    // Only purge GUI labels if EA is actually removed, not on simple timeframe changes!
    if(reason != REASON_CHARTCHANGE)
