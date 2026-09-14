@@ -349,6 +349,7 @@ input int                ButtonHeight                  = 22;                // B
 input color              ColorBtnCloseAll              = C'140,35,35';      // Close All Button Color
 input color              ColorBtnBreakEven             = C'35,95,140';      // Break-Even All Button Color
 input color              ColorBtnToggleTrade           = C'35,125,55';      // Toggle Trading Button Color
+input color              ColorBtnScanNow               = C'25,115,160';     // Scan Watchlist Button Color
 
 
 //--- [12. ADVANCED INDICATOR EXTENSIONS (CCI, DMI, BOLLINGER %B, DONCHIAN)]
@@ -3543,14 +3544,19 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
       y += rowHeight;
 
       string autoLine1 = "";
-      if(g_AutoScanBestSymbol != "" && g_AutoScanBestScore >= 6)
+      if(g_AutoScanQualifiedCount > 0 && g_AutoScanBestSymbol != "")
       {
-         autoLine1 = StringFormat("Top Portfolio Setup: %s %s (%d/10) [Cross-Pair]",
+         autoLine1 = StringFormat("CAN TRADE: %s %s (%d/10) [Score >= 8]",
                                   g_AutoScanBestSymbol, g_AutoScanBestCmd, g_AutoScanBestScore);
+      }
+      else if(g_AutoScanLastTime > 0)
+      {
+         autoLine1 = StringFormat("TRADE NAH: All %d Pairs Bypassed (Best: %s %d/10)",
+                                  g_AutoScanTotalSymbols, (g_AutoScanBestSymbol != "" ? g_AutoScanBestSymbol : "NONE"), g_AutoScanBestScore);
       }
       else
       {
-         autoLine1 = (g_AutoScanStatusDesc != "" ? g_AutoScanStatusDesc : "Portfolio Status: 24 Pairs Monitored - All < 6/10");
+         autoLine1 = (g_AutoScanStatusDesc != "" ? g_AutoScanStatusDesc : "Portfolio Status: 24 Pairs Monitored (Click [SCAN] Anytime)");
       }
       color autoCol = (g_AutoScanQualifiedCount > 0) ? clrLime : clrGold;
       RenderHUDLabel("13_AutoStatus", HUD_FitString(autoLine1, 75), textX, y, autoCol, fontSmall, false);
@@ -3564,7 +3570,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
       RenderHUDLabel("14_AutoTimer", HUD_FitString(scanCountdown, 75), textX, y, clrWheat, fontSmall, false);
       y += rowHeight;
 
-      string scoreNote = "Note: Top = Active Chart | Bottom = Best of 24 Pairs";
+      string scoreNote = "Note: Click [SCAN] below for instant on-demand analysis (Advisory)";
       RenderHUDLabel("15_ScoreNote", HUD_FitString(scoreNote, 75), textX, y, clrSilver, fontSmall, false);
    }
 
@@ -6514,10 +6520,10 @@ void RenderInteractiveButtons(int startX = -1, int startY = -1, int panelWidth =
    int sY     = (startY >= 0) ? startY : HUD_Y_Offset;
    int pW     = (panelWidth > 0) ? panelWidth : 460;
    int padX   = 10;
-   int gapX   = 6;
-   int btnW   = (int)MathRound((pW - (2 * padX) - (2 * gapX)) / 3.0);
+   int gapX   = 5;
+   int btnW   = (int)MathRound((pW - (2 * padX) - (3 * gapX)) / 4.0);
    int btnH   = 28;
-   int btnFont= MathMax(10, fontSize - 1);
+   int btnFont= MathMax(8, fontSize - 1);
    int curX   = sX + padX;
 
    // Button 1: Close All Orders
@@ -6526,13 +6532,17 @@ void RenderInteractiveButtons(int startX = -1, int startY = -1, int panelWidth =
 
    // Button 2: Break-Even All Orders
    string btnBEName = PREFIX_GUI + "BTN_BreakEven";
-   CreateActionButton(btnBEName, "BE ALL", curX + btnW + gapX, sY, btnW, btnH, ColorBtnBreakEven, clrWhite, btnFont);
+   CreateActionButton(btnBEName, "BE ALL", curX + (1 * (btnW + gapX)), sY, btnW, btnH, ColorBtnBreakEven, clrWhite, btnFont);
 
    // Button 3: Toggle AutoTrading
    string btnToggleName = PREFIX_GUI + "BTN_Toggle";
    string toggleText = g_AutoTradingRuntimeActive ? "PAUSE EA" : "RESUME EA";
    color toggleColor = g_AutoTradingRuntimeActive ? ColorBtnToggleTrade : C'150,80,20';
    CreateActionButton(btnToggleName, toggleText, curX + (2 * (btnW + gapX)), sY, btnW, btnH, toggleColor, clrWhite, btnFont);
+
+   // Button 4: On-Demand Manual Portfolio Scan (Advisory: Trade or Nah)
+   string btnScanName = PREFIX_GUI + "BTN_ScanNow";
+   CreateActionButton(btnScanName, "🔍 SCAN", curX + (3 * (btnW + gapX)), sY, btnW, btnH, ColorBtnScanNow, clrWhite, btnFont);
 }
 
 
@@ -6553,6 +6563,194 @@ void CreateActionButton(const string name, const string caption, const int x, co
    ObjectSetInteger(ChartID(), name, OBJPROP_BGCOLOR, bgColor);
    ObjectSetInteger(ChartID(), name, OBJPROP_COLOR, textColor);
    ObjectSetString(ChartID(), name, OBJPROP_TEXT, caption);
+}
+
+
+//+------------------------------------------------------------------+
+//| ON-DEMAND MANUAL PORTFOLIO SCAN (STRICT ADVISORY: TRADE OR NAH)  |
+//+------------------------------------------------------------------+
+void PerformManualPortfolioScan()
+{
+   PrintFormat("[USER ACTION] Manual On-Demand Portfolio Scan triggered by user @ %s", TimeToStr(TimeCurrent(), TIME_SECONDS));
+
+   string btnScanName = PREFIX_GUI + "BTN_ScanNow";
+   ObjectSetString(ChartID(), btnScanName, OBJPROP_TEXT, "SCANNING...");
+   ObjectSetInteger(ChartID(), btnScanName, OBJPROP_BGCOLOR, C'200,130,20');
+   ChartRedraw(ChartID());
+
+   ENUM_TIMEFRAMES scanTF = (ENUM_TIMEFRAMES)Period();
+   string symList[];
+   ArrayResize(symList, 0);
+
+   if(AutonomousWatchlist == "MARKET_WATCH" || AutonomousWatchlist == "ALL")
+   {
+      DiscoverMarketWatchSymbols(symList, "", AutonomousExcludeSymbols, 50.0);
+   }
+   else if(StringLen(AutonomousWatchlist) > 0)
+   {
+      int start = 0;
+      int len = StringLen(AutonomousWatchlist);
+      while(start < len)
+      {
+         int comma = StringFind(AutonomousWatchlist, ",", start);
+         string token = (comma >= 0) ? StringSubstr(AutonomousWatchlist, start, comma - start) : StringSubstr(AutonomousWatchlist, start);
+         StringTrimLeft(token);
+         StringTrimRight(token);
+         StringToUpper(token);
+         if(StringLen(token) > 0)
+         {
+            string resolved = ResolveBrokerSymbol(token);
+            if(resolved == "") resolved = token;
+            int sz = ArraySize(symList);
+            ArrayResize(symList, sz + 1);
+            symList[sz] = resolved;
+         }
+         if(comma < 0) break;
+         start = comma + 1;
+      }
+   }
+
+   // Fallback to default 24 institutional basket if empty
+   if(ArraySize(symList) == 0)
+   {
+      string defSyms[] = {
+         "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD",
+         "EURGBP", "EURJPY", "GBPJPY", "AUDJPY", "NZDJPY", "CADJPY", "CHFJPY",
+         "EURAUD", "EURCAD", "EURNZD", "GBPAUD", "GBPCAD", "GBPNZD", "AUDCAD",
+         "AUDNZD", "NZDCAD", "XAUUSD"
+      };
+      int defTotal = ArraySize(defSyms);
+      ArrayResize(symList, defTotal);
+      for(int d = 0; d < defTotal; d++)
+      {
+         string resolved = ResolveBrokerSymbol(defSyms[d]);
+         symList[d] = (resolved != "") ? resolved : defSyms[d];
+      }
+   }
+
+   // Always ensure active chart symbol is included
+   bool chartSymFound = false;
+   for(int c = 0; c < ArraySize(symList); c++)
+   {
+      if(symList[c] == Symbol()) { chartSymFound = true; break; }
+   }
+   if(!chartSymFound)
+   {
+      int cSz = ArraySize(symList);
+      ArrayResize(symList, cSz + 1);
+      symList[cSz] = Symbol();
+   }
+
+   int totalScanned = 0;
+   int qualifiedCount = 0;
+   string bestSymbol = "";
+   string bestCmd = "HOLD";
+   int bestScore = 0;
+   double bestAnalysisScore = 0.0;
+   double bestRankScore = -999999.0;
+   StrategySignal bestSig;
+
+   for(int i = 0; i < ArraySize(symList); i++)
+   {
+      string sym = symList[i];
+      if(StringLen(sym) == 0) continue;
+
+      SymbolSelect(sym, true);
+      double pt = MarketInfo(sym, MODE_POINT);
+      if(pt <= 0.0) continue;
+      if(!IsSymbolTradeAllowed(sym)) continue;
+      if(iBars(sym, scanTF) < 205) continue;
+
+      double bid = MarketInfo(sym, MODE_BID);
+      double ask = MarketInfo(sym, MODE_ASK);
+      if(bid <= 0.0 || ask <= 0.0) continue;
+
+      totalScanned++;
+
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, scanTF, 6, 1.5, 10.0, 150.0);
+      bool isSessionActive = IsSessionActiveForSymbol(sym);
+
+      int minReq = MathMax(8, AutonomousMinConfluenceScore);
+      bool isQualified = (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= minReq && sig.analysisScore >= 85.0);
+
+      if(isQualified)
+      {
+         qualifiedCount++;
+      }
+
+      double rankScore = (sig.analysisScore * 100.0) + (sig.rrRatio * 50.0) - (sig.spreadPoints * 2.0);
+      if(rankScore > bestRankScore)
+      {
+         bestRankScore = rankScore;
+         bestSig = sig;
+         bestSymbol = sym;
+         bestScore = sig.score;
+         bestAnalysisScore = sig.analysisScore;
+         bestCmd = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
+      }
+   }
+
+   // Update HUD variables
+   g_AutoScanLastTime = TimeCurrent();
+   g_AutoScanTotalSymbols = totalScanned;
+   g_AutoScanQualifiedCount = qualifiedCount;
+   g_AutoScanBestSymbol = (bestSymbol != "" ? bestSymbol : "NONE");
+   g_AutoScanBestCmd = bestCmd;
+   g_AutoScanBestScore = bestScore;
+   g_AutoScanBestAnalysis = bestAnalysisScore;
+
+   if(qualifiedCount > 0)
+   {
+      g_AutoScanStatusDesc = StringFormat("CAN TRADE: %s %s (%d/10, %.0f%%) [NO AUTO-ORDER]", bestSymbol, bestCmd, bestScore, bestAnalysisScore);
+   }
+   else
+   {
+      g_AutoScanStatusDesc = StringFormat("TRADE NAH: ALL %d BYPASSED (Best: %s %d/10)", totalScanned, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
+   }
+
+   // Print full diagnostic report to Experts log
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+   PrintFormat("[MANUAL SCAN @ %s] TF: %s | Scanned: %d symbols | Qualified: %d",
+               TimeToStr(TimeCurrent(), TIME_SECONDS), EnumToString(scanTF), totalScanned, qualifiedCount);
+   if(qualifiedCount > 0)
+   {
+      PrintFormat("[MANUAL SCAN RESULT] CAN TRADE: YES! Top Candidate: %s %s | Score: %d/10 (%.1f%%) | SL: %.1f | TP: %.1f | RR: %.2f",
+                  bestSymbol, bestCmd, bestScore, bestAnalysisScore, bestSig.slPips, bestSig.tpPips, bestSig.rrRatio);
+   }
+   else
+   {
+      PrintFormat("[MANUAL SCAN RESULT] CAN TRADE: NAH. No setups meet strict Grade A+ (>=8/10, >=85%%). Best: %s (%d/10). Capital 100%% safe.",
+                  (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
+   }
+   PrintFormat("[MANUAL SCAN SAFETY] Strict Advisory Mode: ZERO TRADES EXECUTED (Safety guarantee).");
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+   // Queue Telegram notification outbox message for Python dispatcher
+   string tradeDecision = (qualifiedCount > 0) ? "🟢 <b>CAN TRADE (SETUP QUALIFIED)</b>" : "⚪ <b>TRADE NAH (ALL SYMBOLS BYPASSED)</b>";
+   string tgReport = StringFormat(
+      "🔍 <b>ON-DEMAND MANUAL SCAN REPORT</b>\n" +
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+      "🕒 <b>Scan Time:</b> <code>%s</code> | <b>TF:</b> <code>%s</code>\n" +
+      "🌐 <b>Assets Evaluated:</b> <code>%d symbols</code>\n" +
+      "⚖️ <b>Trade Decision:</b> %s\n" +
+      "🎯 <b>Top Setup:</b> <code>%s %s</code> (Score: <b>%d/10</b> • <b>%.0f%%</b>)\n" +
+      "🛡️ <b>Safety Status:</b> <i>Advisory Mode (Zero trades executed). Capital safe.</i>\n" +
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      TimeToStr(TimeCurrent(), TIME_SECONDS),
+      EnumToString(scanTF),
+      totalScanned,
+      tradeDecision,
+      bestSymbol, bestCmd, bestScore, bestAnalysisScore
+   );
+   Telegram_WriteOutboxPayload(tgReport);
+
+   // Restore button appearance
+   ObjectSetString(ChartID(), btnScanName, OBJPROP_TEXT, "🔍 SCAN");
+   ObjectSetInteger(ChartID(), btnScanName, OBJPROP_BGCOLOR, ColorBtnScanNow);
+   ObjectSetInteger(ChartID(), btnScanName, OBJPROP_STATE, false);
+   PlaySound("ok.wav");
+   RenderHUDDashboard();
+   ChartRedraw(ChartID());
 }
 
 
@@ -6651,6 +6849,13 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       ObjectSetInteger(ChartID(), sparam, OBJPROP_STATE, false);
       ChartRedraw(ChartID());
       PrintFormat("[USER ACTION] AutoTrading toggled live: %s", (g_AutoTradingRuntimeActive ? "ACTIVE" : "PAUSED"));
+   }
+   // 4. On-Demand Manual Portfolio Scan Button Clicked (Trade or Nah)
+   else if(sparam == PREFIX_GUI + "BTN_ScanNow")
+   {
+      PerformManualPortfolioScan();
+      ObjectSetInteger(ChartID(), sparam, OBJPROP_STATE, false);
+      ChartRedraw(ChartID());
    }
 }
 

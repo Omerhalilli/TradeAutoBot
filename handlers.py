@@ -225,7 +225,7 @@ def get_nav_keyboard(active_section: str = "status") -> InlineKeyboardMarkup:
     b_report = "📈 24h Report" if active_section != "report" else "📈 • Report •"
     b_boost = "⚡ Turbo Boost" if active_section != "boost" else "⚡ • Boost •"
     b_auto = "🤖 AutoTrade" if active_section != "autotrade" else "🤖 • AutoTrade •"
-    b_scan = "📡 Scanner" if active_section != "scan" else "📡 • Scanner •"
+    b_scan = "🔍 Scan" if active_section != "scan" else "🔍 • Scan •"
     
     keyboard = [
         [
@@ -327,7 +327,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🤖 <b>AUTONOMOUS MULTI-SYMBOL TRADING</b>\n"
         "• /autotrade — Autonomous multi-symbol trading status, toggle & portfolio control\n"
         "  └ <code>/autotrade [on|off|status]</code> | <code>/autotrade add [SYM]</code> | <code>/autotrade remove [SYM]</code>\n"
-        "• /scan [SYM] — Live multi-indicator confluence scanner & deep 0-100 technical audit\n"
+        "• /scan [SYM|TF] — Instant on-demand portfolio scan (advisory: trade or nah, 0 auto-risk)\n"
         "• /symbols — Portfolio watchlist surveillance management\n\n"
         "📸 <b>CHARTS & MARKET INTELLIGENCE</b>\n"
         "• /screenshot — Interactive 2-step chart snapshot wizard\n"
@@ -1545,7 +1545,7 @@ async def cmd_autotrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     kb = InlineKeyboardMarkup([
         [
             InlineKeyboardButton(toggle_btn_text, callback_data=toggle_data),
-            InlineKeyboardButton("📡 Scan Market", callback_data="nav_scan"),
+            InlineKeyboardButton("🔍 Scan Watchlist", callback_data="nav_scan"),
         ],
         [
             InlineKeyboardButton("🌐 Watchlist", callback_data="nav_symbols"),
@@ -1744,9 +1744,25 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Full portfolio scan (with optional target_tf if specified)
     scan_res = await autonomous_trader.scan_portfolio_async(timeframe=target_tf)
     text = autonomous_trader.format_scan_matrix(scan_res)
-    kb = InlineKeyboardMarkup([
+
+    results = scan_res.get("results", []) if isinstance(scan_res, dict) else []
+    top_cand = None
+    for item in results:
+        if autonomous_trader.is_qualified_candidate(item):
+            top_cand = item
+            break
+
+    kb_rows = []
+    if top_cand:
+        c_sym = top_cand.get("symbol", "")
+        c_sig = str(top_cand.get("signal", "BUY")).upper()
+        c_btn = f"⚡ Execute {c_sig} {c_sym}"
+        c_data = f"trade:{c_sig.lower()}:{c_sym}:0.01"
+        kb_rows.append([InlineKeyboardButton(c_btn, callback_data=c_data)])
+
+    kb_rows.extend([
         [
-            InlineKeyboardButton("🔄 Re-Scan", callback_data="nav_scan"),
+            InlineKeyboardButton("🔍 Scan Watchlist Now", callback_data="nav_scan"),
             InlineKeyboardButton("🤖 AutoTrade Status", callback_data="nav_autotrade"),
         ],
         [
@@ -1758,6 +1774,7 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             InlineKeyboardButton("💼 Positions", callback_data="nav_pos"),
         ]
     ])
+    kb = InlineKeyboardMarkup(kb_rows)
     await send_or_edit(update, context, text, reply_markup=kb)
 
 @restricted
@@ -1766,7 +1783,7 @@ async def cmd_symbols(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = autonomous_trader.format_symbols_panel()
     kb = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📡 Scan Portfolio", callback_data="nav_scan"),
+            InlineKeyboardButton("🔍 Scan Portfolio", callback_data="nav_scan"),
             InlineKeyboardButton("🤖 AutoTrade Panel", callback_data="nav_autotrade"),
         ],
         [

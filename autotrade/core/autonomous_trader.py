@@ -1385,10 +1385,12 @@ class AutonomousMultiSymbolTrader:
             badge = "🟢 BUY" if top_sig == "BUY" else "🔴 SELL"
             msg += (
                 f"🎯 <b>TOP RANKED OPPORTUNITY:</b> <code>{top_sym}</code> {badge}\n"
+                f"• <b>Trade Decision:</b> 🟢 <b>CAN TRADE (QUALIFIED SETUP)</b>\n"
                 f"• <b>Confluence Score:</b> <b>{top_sc}/10</b> (<b>{top_as:.1f}/100</b> Institutional Grade)\n"
                 f"• <b>Actionable Setup:</b> <code>{top_sig} @ {entry_fmt}</code>\n"
                 f"• <b>Protective Stops:</b> SL <code>-{top_sl:.1f} pips</code> | TP <code>+{top_tp:.1f} pips</code> (RR: <code>{top_rr:.2f}:1</code>)\n"
                 f"• <b>Pattern Alignment:</b> <code>{top_pattern}</code>\n"
+                f"• <b>Execution:</b> <i>Advisory Mode (Zero automated orders placed. Click button below to execute).</i>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
         else:
@@ -1401,6 +1403,7 @@ class AutonomousMultiSymbolTrader:
                     top_cand_score = eff_sc
 
             msg += (
+                f"🛡️ <b>Trade Decision:</b> ⚪ <b>TRADE NAH (ALL SYMBOLS BYPASSED)</b>\n"
                 f"⚪ <b>Autonomous Status:</b> <code>HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} < {self.min_score:.1f} Required)</code>\n"
                 f"<i>Scanned {len(results)} symbols. No instrument meets the strict confluence threshold (Score ≥ {self.min_score:.1f}/10 [85%]). Capital 100% preserved. Patiently awaiting next candle boundary scan.</i>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"

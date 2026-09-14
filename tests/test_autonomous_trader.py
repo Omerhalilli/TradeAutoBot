@@ -961,6 +961,38 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         }
         matrix_text = self.trader.format_scan_matrix(scan_data)
         self.assertNotIn("TOP RANKED OPPORTUNITY", matrix_text)
+        self.assertIn("TRADE NAH", matrix_text)
+
+    def test_format_scan_matrix_trade_or_nah_verdict(self):
+        """Verifies format_scan_matrix explicitly outputs Trade Decision (CAN TRADE vs TRADE NAH)."""
+        # 1. No qualified setup -> TRADE NAH
+        scan_empty = {
+            "status": "ok",
+            "server_time": "2026.09.14 19:06:00",
+            "results": [
+                {"symbol": "GBPUSD", "signal": "HOLD", "score": 5, "analysis_score": 50.0, "trend": "NEUTRAL", "spread": 12.0}
+            ]
+        }
+        text_empty = self.trader.format_scan_matrix(scan_empty)
+        self.assertIn("TRADE NAH", text_empty)
+        self.assertIn("ALL SYMBOLS BYPASSED", text_empty)
+
+        # 2. Qualified candidate -> CAN TRADE
+        with patch.object(self.trader, "is_qualified_candidate", return_value=True):
+            scan_qual = {
+                "status": "ok",
+                "server_time": "2026.09.14 19:06:00",
+                "results": [
+                    {
+                        "symbol": "EURUSD", "signal": "BUY", "score": 9, "analysis_score": 92.0,
+                        "trend": "STRONG BULLISH", "spread": 8.0, "sl_pips": 25.0, "tp_pips": 50.0, "ask": 1.08500
+                    }
+                ]
+            }
+            text_qual = self.trader.format_scan_matrix(scan_qual)
+            self.assertIn("CAN TRADE", text_qual)
+            self.assertIn("TOP RANKED OPPORTUNITY", text_qual)
+            self.assertIn("EURUSD", text_qual)
 
     def test_scalper_mode_execution_and_spread_gate(self):
         """Verifies SCALPER mode execution limits, target ranges, spread gate, and capital safety logging."""

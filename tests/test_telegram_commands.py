@@ -856,6 +856,18 @@ class TestTelegramCommands(unittest.TestCase):
                 reply_goal = self._get_reply_text(query_goal_cb.edit_message_text)
                 self.assertIn("INSTITUTIONAL PROFIT GOAL TRACKER", reply_goal)
 
+            # 4. Test full portfolio on-demand scan (/scan without arguments)
+            message.reply_text.reset_mock()
+            update_full, context_full, msg_full = self._make_message_update(self.auth_id, text="/scan")
+            with patch("autotrade.core.autonomous_trader.zmq_client.scan_symbols", return_value=mock_scan):
+                await handlers.cmd_scan(update_full, context_full)
+                reply_full = self._get_reply_text(msg_full.reply_text)
+                self.assertIn("AUTONOMOUS MULTI-SYMBOL SCANNER", reply_full)
+                self.assertIn("TRADE NAH", reply_full)
+                reply_markup = msg_full.reply_text.call_args[1].get("reply_markup")
+                all_btn_texts = [btn.text for row in reply_markup.inline_keyboard for btn in row]
+                self.assertIn("🔍 Scan Watchlist Now", all_btn_texts)
+
         asyncio.run(run())
 
 
