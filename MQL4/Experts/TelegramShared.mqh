@@ -47,6 +47,20 @@
 #define TG_CLIPBOARD    (ShortToString(0xD83D) + ShortToString(0xDCCB))
 
 //+------------------------------------------------------------------+
+#ifndef SET_HUD_VISIBLE_DEFINED
+#define SET_HUD_VISIBLE_DEFINED
+void SetHUDVisible(bool visible, long chartId = 0)
+{
+   long target = (chartId == 0) ? ChartID() : chartId;
+   if(!visible)
+   {
+      ObjectsDeleteAll(target, "SmartEA_HUD_");
+      ChartRedraw(target);
+   }
+}
+#endif
+
+//+------------------------------------------------------------------+
 //| Escape special JSON characters                                  |
 //+------------------------------------------------------------------+
 string Telegram_JsonEscape(string text)

@@ -3184,11 +3184,23 @@ void RegisterTicketPartialClose(const int ticket)
 //+------------------------------------------------------------------+
 //| SECTION 9: ON-CHART GRAPHICS & HUD DASHBOARD                     |
 //+------------------------------------------------------------------+
+string HUD_FitString(string text, int maxChars)
+{
+   if(StringLen(text) <= maxChars) return text;
+   if(maxChars <= 3) return StringSubstr(text, 0, maxChars);
+   return StringSubstr(text, 0, maxChars - 3) + "...";
+}
+
 void RenderHUDDashboard(bool isScreenshotMode = false)
 {
    if(!ShowDashboardPanel) return;
 
    bool isCapturing = isScreenshotMode || g_HUD_IsScreenshotCapturing;
+   if(isCapturing)
+   {
+      SetHUDVisible(false, ChartID());
+      return;
+   }
 
    // 1. Chart Resolution & DPI Scaling Engine
    int chartWidth  = (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
@@ -3204,14 +3216,13 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    if(dpiScale > 3.00) dpiScale = 3.00;
 
    // Base design dimensions calibrated for crystal-clear human readability
-   // When taking screenshot for Telegram, temporarily decrease size so photo is compact
-   double basePanelWidth = isCapturing ? 240.0 : 540.0;
-   double baseRowHeight  = isCapturing ? 15.0  : 30.0;
-   double basePadX       = isCapturing ? 6.0   : 14.0;
-   double basePadY       = isCapturing ? 4.0   : 10.0;
-   double baseFontNormal = isCapturing ? 6.0   : 13.0;
-   double baseFontTitle  = isCapturing ? 7.0   : 15.0;
-   double baseFontSmall  = isCapturing ? 5.0   : 11.0;
+   double basePanelWidth = 620.0;
+   double baseRowHeight  = 26.0;
+   double basePadX       = 14.0;
+   double basePadY       = 8.0;
+   double baseFontNormal = 11.0;
+   double baseFontTitle  = 13.0;
+   double baseFontSmall  = 10.0;
 
    // Pre-evaluate lock reason notice to compute exact row count and height
    int myOrders = 0;
@@ -3256,24 +3267,20 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    }
 
    int totalRows = (lockReasonNotice != "" ? 14 : 13);
-   if(EnableAutonomousMultiSymbol) totalRows += 3;
+   if(EnableAutonomousMultiSymbol) totalRows += 4;
    double baseTotalHeight = (2.0 * basePadY) + (totalRows * baseRowHeight) + 30.0;
 
    // User-defined scale override (0 = Auto-Scale)
    double userScale = 1.0;
-   if(isCapturing)
-   {
-      userScale = 0.55;
-   }
-   else if(HUD_Scale > 0.01)
+   if(HUD_Scale > 0.01)
    {
       userScale = HUD_Scale;
    }
    else
    {
       // Auto-scale based on chart resolution
-      if(chartWidth >= 2560)      userScale = 1.25;
-      else if(chartWidth >= 1920) userScale = 1.15;
+      if(chartWidth >= 2560)      userScale = 1.20;
+      else if(chartWidth >= 1920) userScale = 1.10;
       else                        userScale = 1.0;
    }
 
@@ -3281,52 +3288,40 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    double maxScaleW = (double)(chartWidth - 30) / basePanelWidth;
    if(maxScaleW < 0.60) maxScaleW = 0.60;
 
-   // Final visual pixel scale: In normal display mode, ensure scale remains generous for readability.
+   // Final visual pixel scale
    double effectiveDpiScale = (dpiScale > 1.25) ? 1.20 : 1.0;
-   double finalScale = isCapturing ? 0.55 : MathMin(effectiveDpiScale * userScale, MathMax(1.0, maxScaleW));
-   if(!isCapturing && finalScale < 1.0) finalScale = 1.0;
-   if(finalScale > 2.50) finalScale = 2.50;
+   double finalScale = MathMin(effectiveDpiScale * userScale, MathMax(1.0, maxScaleW));
+   if(finalScale < 1.0) finalScale = 1.0;
+   if(finalScale > 2.20) finalScale = 2.20;
 
    int startX = (int)MathRound(HUD_X_Offset * (dpiScale > 1.2 ? 1.2 : 1.0));
    int startY = (int)MathRound(HUD_Y_Offset * (dpiScale > 1.2 ? 1.2 : 1.0));
 
-   int panelWidth = isCapturing ? 240 : (int)MathRound(basePanelWidth * finalScale);
-   if(!isCapturing && panelWidth < 540) panelWidth = 540;
-   if(!isCapturing && chartWidth > 600 && panelWidth > chartWidth - 30) panelWidth = chartWidth - 30;
+   int panelWidth = (int)MathRound(basePanelWidth * finalScale);
+   if(panelWidth < 620) panelWidth = 620;
+   if(chartWidth > 650 && panelWidth > chartWidth - 30) panelWidth = chartWidth - 30;
 
-   int padX       = (int)MathMax(isCapturing ? 5 : 12, MathRound(basePadX * finalScale));
-   int padY       = (int)MathMax(isCapturing ? 4 : 8,  MathRound(basePadY * finalScale));
+   int padX       = (int)MathMax(14, MathRound(basePadX * finalScale));
+   int padY       = (int)MathMax(8,  MathRound(basePadY * finalScale));
 
-   // Font sizes in points: In Windows GDI, font point sizes automatically scale with DPI.
-   // Ensure fontNormal is at least 12-13pt in normal mode so humans can easily read it on all monitors.
-   int fontNormal = isCapturing ? 6 : (int)MathRound(baseFontNormal * (HUD_Scale > 0.01 ? HUD_Scale : 1.0));
-   if(!isCapturing)
-   {
-      if(fontNormal < 12) fontNormal = 12;
-      if(fontNormal > 20) fontNormal = 20;
-   }
-   else
-   {
-      if(fontNormal < 5) fontNormal = 5;
-      if(fontNormal > 7) fontNormal = 7;
-   }
+   // Font sizes in points
+   int fontNormal = (int)MathRound(baseFontNormal * (HUD_Scale > 0.01 ? HUD_Scale : 1.0));
+   if(fontNormal < 10) fontNormal = 10;
+   if(fontNormal > 15) fontNormal = 15;
 
    // Ensure zero horizontal clipping for lines
    double ptToPx = (double)dpi / 72.0;
    int availWidth = panelWidth - (2 * padX) - 4;
-   if(!isCapturing)
+   while(fontNormal > 10 && (int)MathRound(44.0 * (fontNormal * ptToPx * 0.38)) > availWidth)
    {
-      while(fontNormal > 11 && (int)MathRound(43.0 * (fontNormal * ptToPx * 0.38)) > availWidth)
-      {
-         fontNormal--;
-      }
+      fontNormal--;
    }
-   int fontTitle = isCapturing ? 7 : (fontNormal + 2);
-   int fontSmall = isCapturing ? 5 : MathMax(9, fontNormal - 2);
+   int fontTitle = fontNormal + 2;
+   int fontSmall = MathMax(9, fontNormal - 2);
 
-   // Row height in pixels must comfortably exceed glyph height: (fontNormal * ptToPx)
+   // Row height in pixels
    int glyphHeightPx = (int)MathRound(fontNormal * ptToPx);
-   int rowHeight = isCapturing ? 15 : (int)MathMax(glyphHeightPx + 6, MathRound(baseRowHeight * finalScale));
+   int rowHeight = (int)MathMax(glyphHeightPx + 6, MathRound(baseRowHeight * finalScale));
    int panelHeight = padY + (totalRows * rowHeight) + padY;
 
    // 1. Dashboard Backdrop Canvas Panel
@@ -3351,8 +3346,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    // Header with Real vs Demo account trade mode
    bool isRealAcc = (!IsDemo() || (int)AccountInfoInteger(ACCOUNT_TRADE_MODE) == 2 || AccountNumber() == 213173);
    string accBadge = isRealAcc ? "REAL" : "DEMO";
-   string headerTitle = isCapturing ? StringFormat("=== SMARTAUTOTRADE [%s] ===", accBadge) :
-                                      StringFormat("=== SMARTAUTOTRADE EA HUD [%s] ===", accBadge);
+   string headerTitle = StringFormat("=== SMARTAUTOTRADE EA [%s] ===", accBadge);
    RenderHUDLabel("00_Title", headerTitle, textX, y, (isRealAcc ? clrGold : clrWheat), fontTitle, true);
    y += rowHeight;
 
@@ -3376,8 +3370,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    int liveSellScore = g_ScoreAggregateSell;
    int maxLiveScore  = MathMax(liveBuyScore, liveSellScore);
    string bestBias   = (liveBuyScore > liveSellScore) ? "BUY" : ((liveSellScore > liveBuyScore) ? "SELL" : "FLAT");
-   double bestScore100 = (bestBias == "BUY" ? g_ScoreAggregateBuy100 : (bestBias == "SELL" ? g_ScoreAggregateSell100 : MathMax(g_ScoreAggregateBuy100, g_ScoreAggregateSell100)));
-   string biasStr    = StringFormat("%s %d/10 (%.1f/100)", bestBias, maxLiveScore, bestScore100);
+   string biasStr    = StringFormat("%s %d/10", bestBias, maxLiveScore);
    int effectiveMinScore = MathMax(6, MinRequiredScore);
 
    double chartAtr = iATR(Symbol(), Period(), 14, 1);
@@ -3391,12 +3384,12 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
 
    if(g_LastSignalVerdict != "NONE")
    {
-      signalSummary = StringFormat("Chart [%s]: Last Signal %s (Score: %d/10, %.1f/100)", Symbol(), g_LastSignalVerdict, g_LastSignalScore, bestScore100);
+      signalSummary = StringFormat("Active Chart [%s]: %s (Score %d/10)", Symbol(), g_LastSignalVerdict, g_LastSignalScore);
       sigColor = (g_LastSignalVerdict == "BUY") ? clrLime : clrTomato;
    }
    else if(maxLiveScore < effectiveMinScore)
    {
-      signalSummary = StringFormat("Chart [%s]: %s (Need: %d) -> [NO TRADE: Capital Preserved]", Symbol(), biasStr, effectiveMinScore);
+      signalSummary = StringFormat("Active Chart [%s]: %s (Need: %d) - NO TRADE", Symbol(), biasStr, effectiveMinScore);
       sigColor = clrSilver;
    }
    else
@@ -3405,44 +3398,44 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
       string gateReason = "";
       if(UseADX_Filter && g_CalculatedADX < ADX_MinStrengthThreshold)
       {
-         gateReason = StringFormat("VETO: ADX %.1f < %.0f (Choppy)", g_CalculatedADX, ADX_MinStrengthThreshold);
+         gateReason = StringFormat("VETO: Low ADX %.0f", g_CalculatedADX);
       }
       else if(chartAtrPips > 0.0 && chartAtrPips < 10.0)
       {
-         gateReason = StringFormat("VETO: Low ATR %.1fp < 10p", chartAtrPips);
+         gateReason = StringFormat("VETO: Low ATR %.1fp", chartAtrPips);
       }
       else if(bestBias == "BUY" && g_ActiveTrendRegime != TREND_STRONG_BULLISH)
       {
-         gateReason = "VETO: EMA Stack Misaligned";
+         gateReason = "VETO: EMA Misaligned";
       }
       else if(bestBias == "SELL" && g_ActiveTrendRegime != TREND_STRONG_BEARISH)
       {
-         gateReason = "VETO: EMA Stack Misaligned";
+         gateReason = "VETO: EMA Misaligned";
       }
       else if(!IsNewBar(Symbol(), (ENUM_TIMEFRAMES)Period()))
       {
-         gateReason = "Awaiting Bar Close (Anti-Repaint)";
+         gateReason = "Awaiting Bar Close";
       }
 
       if(gateReason != "")
       {
-         signalSummary = StringFormat("Chart [%s]: %s (Need: %d) -> [%s]", Symbol(), biasStr, effectiveMinScore, gateReason);
+         signalSummary = StringFormat("Active Chart [%s]: %s - %s", Symbol(), biasStr, gateReason);
          sigColor = clrGold;
       }
       else
       {
-         signalSummary = StringFormat("Chart [%s]: %s (Need: %d) -> [READY TO EXECUTE]", Symbol(), biasStr, effectiveMinScore);
+         signalSummary = StringFormat("Active Chart [%s]: %s - READY", Symbol(), biasStr);
          sigColor = (bestBias == "BUY") ? clrLime : clrTomato;
       }
    }
-   RenderHUDLabel("02_Signal", signalSummary, textX, y, sigColor, fontNormal, true);
+   RenderHUDLabel("02_Signal", HUD_FitString(signalSummary, 75), textX, y, sigColor, fontNormal, true);
    y += rowHeight;
 
    // Confluence Breakdown Details
-   string scoreBreakdown = StringFormat("Pts: Trend(%d/%d) Mom(%d/%d) SR(%d/%d) Cndl(%d/%d)",
+   string scoreBreakdown = StringFormat("Chart Confluence: Trend(%d/%d) Mom(%d/%d) SR(%d/%d) Cndl(%d/%d)",
                                          g_ScoreTrendBuy, g_ScoreTrendSell, g_ScoreMomBuy, g_ScoreMomSell,
                                          g_ScoreSRBuy, g_ScoreSRSell, g_ScoreCandleBuy, g_ScoreCandleSell);
-   RenderHUDLabel("03_Points", scoreBreakdown, textX, y, HUD_LabelTextColor, fontSmall, false);
+   RenderHUDLabel("03_Points", HUD_FitString(scoreBreakdown, 75), textX, y, HUD_LabelTextColor, fontSmall, false);
    y += rowHeight;
 
    // Technical Oscillators Data
@@ -3469,7 +3462,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    y += rowHeight;
 
    // Account Financial Overview
-   string finStr = StringFormat("Balance: $%.2f | Equity: $%.2f | #%d", AccountBalance(), AccountEquity(), AccountNumber());
+   string finStr = StringFormat("Balance: $%.2f | Equity: $%.2f", AccountBalance(), AccountEquity());
    RenderHUDLabel("07_Fin", finStr, textX, y, HUD_ValueTextColor, fontNormal, false);
    y += rowHeight;
 
@@ -3541,31 +3534,40 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
    if(EnableAutonomousMultiSymbol)
    {
       y += 2;
-      RenderHUDLabel("12_AutoHeader", "=== AUTONOMOUS 24-SYMBOL PORTFOLIO ===", textX, y, clrCyan, fontNormal, true);
+      RenderHUDLabel("12_AutoHeader", "=== 24-PAIR PORTFOLIO SCANNER ===", textX, y, clrCyan, fontNormal, true);
       y += rowHeight;
 
-      string autoLine1 = (g_AutoScanStatusDesc != "" ? g_AutoScanStatusDesc : "Surveillance Active (24 Symbols)");
+      string autoLine1 = "";
+      if(g_AutoScanBestSymbol != "" && g_AutoScanBestScore >= 6)
+      {
+         autoLine1 = StringFormat("Top Portfolio Setup: %s %s (%d/10) [Cross-Pair]",
+                                  g_AutoScanBestSymbol, g_AutoScanBestCmd, g_AutoScanBestScore);
+      }
+      else
+      {
+         autoLine1 = (g_AutoScanStatusDesc != "" ? g_AutoScanStatusDesc : "Portfolio Status: 24 Pairs Monitored - All < 6/10");
+      }
       color autoCol = (g_AutoScanQualifiedCount > 0) ? clrLime : clrGold;
-      RenderHUDLabel("13_AutoStatus", autoLine1, textX, y, autoCol, fontSmall, false);
+      RenderHUDLabel("13_AutoStatus", HUD_FitString(autoLine1, 75), textX, y, autoCol, fontSmall, false);
       y += rowHeight;
 
       int tfSec = Period() * 60;
       datetime nextBarTime = (datetime)iTime(Symbol(), Period(), 0) + tfSec;
       int secUntilScan = MathMax(0, (int)(nextBarTime - TimeCurrent()));
-      string scanCountdown = StringFormat("Next Portfolio Scan: in %02dm %02ds (%s Synchronized)",
+      string scanCountdown = StringFormat("Portfolio Cycle: Next scan in %02dm %02ds (%s Sync)",
                                           secUntilScan / 60, secUntilScan % 60, EnumToString((ENUM_TIMEFRAMES)Period()));
-      RenderHUDLabel("14_AutoTimer", scanCountdown, textX, y, clrWheat, fontSmall, false);
+      RenderHUDLabel("14_AutoTimer", HUD_FitString(scanCountdown, 75), textX, y, clrWheat, fontSmall, false);
+      y += rowHeight;
+
+      string scoreNote = "Note: Top = Active Chart | Bottom = Best of 24 Pairs";
+      RenderHUDLabel("15_ScoreNote", HUD_FitString(scoreNote, 75), textX, y, clrSilver, fontSmall, false);
    }
 
    // Render On-Chart Action Buttons directly below HUD
-   RenderInteractiveButtons(startX, startY + panelHeight + (int)MathRound((isCapturing ? 4.0 : 8.0) * finalScale), panelWidth, finalScale, fontNormal, isCapturing);
+   RenderInteractiveButtons(startX, startY + panelHeight + (int)MathRound(8.0 * finalScale), panelWidth, finalScale, fontNormal, isCapturing);
 
-   // ── PERF: MTF Matrix throttled to every 10 seconds (or immediately on screenshot mode transition) ───
-   static bool s_lastWasCapturing = false;
-   bool captureModeChanged = (isCapturing != s_lastWasCapturing);
-   s_lastWasCapturing = isCapturing;
-
-   if(captureModeChanged || isCapturing || (GetTickCount() - g_LastMTFMatrixTick >= 10000))
+   // ── PERF: MTF Matrix throttled to every 10 seconds ───
+   if(GetTickCount() - g_LastMTFMatrixTick >= 10000)
    {
       g_LastMTFMatrixTick = GetTickCount();
       RenderMultiTimeframeMatrix(startX, startY, panelWidth, panelHeight, finalScale, chartWidth, fontNormal, isCapturing);
@@ -4753,30 +4755,37 @@ void Telegram_CmdSendChartScreenshot(string targetSymbol, ENUM_TIMEFRAMES target
    ChartSetDouble(targetChartId, CHART_SHIFT_SIZE, 10.0);
    ChartSetInteger(targetChartId, CHART_AUTOSCROLL, true);
    
-   // Temporarily decrease HUD panel size for taking photo if HUD is present on target chart
+   // Temporarily hide HUD panel for taking clean photo if HUD is present on target chart
    bool hasHud = (ObjectFind(targetChartId, PREFIX_GUI + "Backdrop") >= 0 || ObjectFind(targetChartId, PREFIX_GUI + "00_Title") >= 0);
-   if(hasHud && targetChartId == ChartID())
+   if(hasHud)
    {
       g_HUD_IsScreenshotCapturing = true;
-      RenderHUDDashboard(true);
+      SetHUDVisible(false, targetChartId);
+      ChartRedraw(targetChartId);
+      Sleep(50);
    }
    
    if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, 1280, 720, ALIGN_RIGHT);
    
-   // Wait for MT4 graphics pipeline to flush PNG to disk before restoring enlarged HUD
+   // Wait for MT4 graphics pipeline to flush PNG to disk before restoring HUD
    for(int w = 0; w < 30; w++)
    {
       if(FileIsExist(filename)) break;
       Sleep(20);
    }
 
-   // Immediately restore enlarged HUD panel objects on active chart
-   if(hasHud && targetChartId == ChartID())
+   // Immediately restore HUD panel objects on chart
+   if(hasHud)
    {
       g_HUD_IsScreenshotCapturing = false;
-      RenderHUDDashboard(false);
+      SetHUDVisible(true, targetChartId);
+      if(targetChartId == ChartID())
+      {
+         g_LastMTFMatrixTick = 0;
+         RenderHUDDashboard(false);
+      }
       ChartRedraw(targetChartId);
    }
    
@@ -5212,13 +5221,27 @@ void Telegram_CaptureAndSendScreenshot(int ticket, string caption, string replyM
    if(!TelegramSendScreenshots) return;
    
    string shotName = "Entry_" + IntegerToString(ticket) + ".png";
+   g_HUD_IsScreenshotCapturing = true;
+   SetHUDVisible(false, 0);
+   ChartRedraw(0);
+   Sleep(50);
    if(ChartScreenShot(0, shotName, 1024, 768, ALIGN_RIGHT))
    {
       Sleep(100);
+      g_HUD_IsScreenshotCapturing = false;
+      SetHUDVisible(true, 0);
+      g_LastMTFMatrixTick = 0;
+      RenderHUDDashboard(false);
+      ChartRedraw(0);
       Telegram_SendPhoto(TelegramBotToken, TelegramChatID, shotName, caption, replyMarkupJson);
    }
    else
    {
+      g_HUD_IsScreenshotCapturing = false;
+      SetHUDVisible(true, 0);
+      g_LastMTFMatrixTick = 0;
+      RenderHUDDashboard(false);
+      ChartRedraw(0);
       // Fallback: If screenshot cannot be captured (e.g. headless MT4 / no GUI window), send text alert immediately
       Telegram_SendMessage(TelegramBotToken, TelegramChatID, caption, 3, 1, replyMarkupJson);
    }
@@ -6463,7 +6486,12 @@ void SaveChartTradeScreenshot(const string signalName)
                                   EnumToString((ENUM_TIMEFRAMES)Period()),
                                   signalName,
                                   timeStr);
+   SetHUDVisible(false, ChartID());
+   ChartRedraw(ChartID());
    ChartScreenShot(ChartID(), filename, 1280, 720);
+   SetHUDVisible(true, ChartID());
+   RenderHUDDashboard(false);
+   ChartRedraw(ChartID());
    PrintFormat("[SCREENSHOT CAPTURED] Saved chart capture: %s", filename);
 }
 
@@ -6475,16 +6503,16 @@ void SaveChartTradeScreenshot(const string signalName)
 //+------------------------------------------------------------------+
 void RenderInteractiveButtons(int startX = -1, int startY = -1, int panelWidth = -1, double scale = 1.0, int fontSize = 8, bool isCapturing = false)
 {
-   if(!ShowInteractiveButtons) return;
+   if(!ShowInteractiveButtons || isCapturing) return;
 
    int sX     = (startX >= 0) ? startX : HUD_X_Offset;
    int sY     = (startY >= 0) ? startY : HUD_Y_Offset;
-   int pW     = (panelWidth > 0) ? panelWidth : (int)MathRound((isCapturing ? 240.0 : 540.0) * scale);
-   int padX   = (int)MathMax(5, MathRound((isCapturing ? 5.0 : 12.0) * scale));
-   int gapX   = (int)MathMax(2, MathRound((isCapturing ? 2.0 : 6.0) * scale));
+   int pW     = (panelWidth > 0) ? panelWidth : 460;
+   int padX   = 10;
+   int gapX   = 6;
    int btnW   = (int)MathRound((pW - (2 * padX) - (2 * gapX)) / 3.0);
-   int btnH   = isCapturing ? 16 : (int)MathMax(28, MathRound(32.0 * scale));
-   int btnFont= isCapturing ? 6 : MathMax(10, fontSize - 2);
+   int btnH   = 28;
+   int btnFont= MathMax(10, fontSize - 1);
    int curX   = sX + padX;
 
    // Button 1: Close All Orders
@@ -6629,7 +6657,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
 //+------------------------------------------------------------------+
 void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudPanelWidth = -1, int hudPanelHeight = -1, double scale = 1.0, int chartWidth = -1, int fontNormal = 8, bool isCapturing = false)
 {
-   if(!ShowDashboardPanel) return;
+   if(!ShowDashboardPanel || isCapturing) return;
 
    int cWidth  = (chartWidth > 0) ? chartWidth : (int)ChartGetInteger(0, CHART_WIDTH_IN_PIXELS);
    int cHeight = (int)ChartGetInteger(0, CHART_HEIGHT_IN_PIXELS);
@@ -6638,77 +6666,52 @@ void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudP
 
    int baseStartX = (hudStartX >= 0) ? hudStartX : HUD_X_Offset;
    int baseStartY = (hudStartY >= 0) ? hudStartY : HUD_Y_Offset;
-   int pW         = (hudPanelWidth > 0) ? hudPanelWidth : (int)MathRound((isCapturing ? 240.0 : 440.0) * scale);
-   int pH         = (hudPanelHeight > 0) ? hudPanelHeight : (int)MathRound((isCapturing ? 160.0 : 300.0) * scale);
+   int pW         = (hudPanelWidth > 0) ? hudPanelWidth : 620;
+   int pH         = (hudPanelHeight > 0) ? hudPanelHeight : 320;
 
    int dpi = (int)TerminalInfoInteger(TERMINAL_SCREEN_DPI);
    if(dpi <= 0) dpi = 96;
    double ptToPx = (double)dpi / 72.0;
 
-   // MTF Matrix width is independently sized for 6 buttons (approx 380 px baseline, 180 in capture)
-   int baseMtfW = isCapturing ? 180 : 380;
-   int mtfPanelWidth = isCapturing ? 180 : (int)MathRound((double)baseMtfW * (scale > 1.0 ? scale : 1.0));
-   int padX          = (int)MathMax(4, MathRound((isCapturing ? 4.0 : 10.0) * scale));
-   int padY          = (int)MathMax(3, MathRound((isCapturing ? 3.0 : 8.0) * scale));
-   int gap           = (int)MathMax(2, MathRound((isCapturing ? 2.0 : 4.0) * scale));
+   // MTF Matrix width is 500px with 6 pills (ample 74px per pill)
+   int mtfPanelWidth = (int)MathRound(500.0 * (scale > 0.1 ? scale : 1.0));
+   if(mtfPanelWidth < 500) mtfPanelWidth = 500;
+   int padX          = 12;
+   int padY          = 8;
+   int gap           = 6;
 
    int availCellW    = mtfPanelWidth - (2 * padX) - (5 * gap);
-   int cellW         = MathMax(isCapturing ? 24 : 50, availCellW / 6);
-   padX              = MathMax(3, (mtfPanelWidth - (6 * cellW) - (5 * gap)) / 2);
-   int cellH         = (int)MathMax(isCapturing ? 14 : 26, MathRound((isCapturing ? 16.0 : 28.0) * scale));
+   int cellW         = availCellW / 6;
+   int cellH         = 26;
 
-   int fontCell = isCapturing ? 5 : MathMax(10, fontNormal - 2);
-   while(fontCell > (isCapturing ? 4 : 8) && (int)MathRound(5.0 * (fontCell * ptToPx * 0.55)) > (cellW - 4))
-   {
-      fontCell--;
-   }
+   int fontCell = MathMax(9, fontNormal - 2);
+   int fontTitle = MathMax(11, fontNormal + 1);
+   int fontSmall = MathMax(8, fontNormal - 3);
 
-   int fontTitle = isCapturing ? 6 : MathMax(12, fontNormal + 1);
-   while(fontTitle > (isCapturing ? 4 : 10) && (int)MathRound(23.0 * (fontTitle * ptToPx * 0.56)) > (mtfPanelWidth - 2 * padX - 4))
-   {
-      fontTitle--;
-   }
-   int fontSmall = isCapturing ? 5 : MathMax(9, fontNormal - 3);
+   int rowHeight = (int)MathMax((int)MathRound(fontNormal * ptToPx) + 4, 22);
+   int btnH = 28;
 
-   int rowHeight = (int)MathMax((int)MathRound(fontNormal * ptToPx) + (isCapturing ? 2 : 6), MathRound((isCapturing ? 13.0 : 26.0) * scale));
-
-   int startX = baseStartX + pW + (int)MathRound(10.0 * scale);
+   int startX = baseStartX + pW + 24;
    int startY = baseStartY;
 
-   // Positioning: Check side-by-side vs stacked
-   int btnH = (int)MathMax(18, MathRound(22.0 * scale));
-   int estimatedMtfH = padY + rowHeight + (int)MathRound(3.0 * scale) + cellH + (int)MathRound(6.0 * scale) + (3 * rowHeight) + padY;
-
-   bool canFitSideBySide = (startX + mtfPanelWidth <= cWidth - 8);
-   bool canFitStacked    = (baseStartY + pH + btnH + (int)MathRound(8.0 * scale) + estimatedMtfH <= cHeight - 5);
-
-   if(!canFitSideBySide)
+   // Positioning: side-by-side if chart is wide enough (>= startX + mtfPanelWidth + 10)
+   // otherwise stack neatly below the action buttons
+   if(startX + mtfPanelWidth > cWidth - 10)
    {
-      if(canFitStacked)
+      startX = baseStartX;
+      startY = baseStartY + pH + btnH + 18;
+      if(mtfPanelWidth > cWidth - 20)
       {
-         startX = baseStartX;
-         startY = baseStartY + pH + btnH + (int)MathRound(8.0 * scale);
-      }
-      else
-      {
-         // Stacking would push MTF panel off-screen vertically!
-         // Adapt side-by-side: shrink mtfPanelWidth or reposition so it fits within chart width
-         startX = baseStartX + pW + (int)MathRound(6.0 * scale);
-         if(startX + mtfPanelWidth > cWidth - 6)
-         {
-            mtfPanelWidth = MathMax(220, cWidth - startX - 6);
-            availCellW    = mtfPanelWidth - (2 * padX) - (5 * gap);
-            cellW         = MathMax(30, availCellW / 6);
-            padX          = MathMax(4, (mtfPanelWidth - (6 * cellW) - (5 * gap)) / 2);
-         }
-         startY = baseStartY;
+         mtfPanelWidth = MathMax(260, cWidth - 20);
+         availCellW    = mtfPanelWidth - (2 * padX) - (5 * gap);
+         cellW         = availCellW / 6;
       }
    }
 
    int textX = startX + padX;
    int headerY = startY + padY;
-   int cellsY = headerY + rowHeight + (int)MathRound(3.0 * scale);
-   int meterY = cellsY + cellH + (int)MathRound(6.0 * scale);
+   int cellsY = headerY + rowHeight + 4;
+   int meterY = cellsY + cellH + 8;
    int gaugeValY = meterY + rowHeight;
    int adviceY = gaugeValY + rowHeight;
    int mtfPanelHeight = (adviceY + rowHeight + padY) - startY;
@@ -6729,7 +6732,7 @@ void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudP
    ObjectSetInteger(ChartID(), bgName, OBJPROP_BGCOLOR, HUD_BgColor);
    ObjectSetInteger(ChartID(), bgName, OBJPROP_BORDER_COLOR, HUD_BorderColor);
 
-   RenderHUDLabel("MTF_Header", "=== MTF CONFLUENCE ===", textX, headerY, HUD_HeaderTextColor, fontTitle, true);
+   RenderHUDLabel("MTF_Header", "=== MTF CONFLUENCE MATRIX ===", textX, headerY, HUD_HeaderTextColor, fontTitle, true);
 
    ENUM_TIMEFRAMES tfs[6] = {PERIOD_M5, PERIOD_M15, PERIOD_M30, PERIOD_H1, PERIOD_H4, PERIOD_D1};
    string tfNames[6]     = {"M5", "M15", "M30", "H1", "H4", "D1"};
@@ -6783,7 +6786,7 @@ void RenderMultiTimeframeMatrix(int hudStartX = -1, int hudStartY = -1, int hudP
    string gaugeText = StringFormat("Bullish Power: %.1f%% (%d/6 TFs)", confluencePct, bullCount);
    color gaugeColor = (confluencePct >= 66.0 ? clrLime : (confluencePct <= 33.0 ? clrTomato : clrGold));
 
-   RenderHUDLabel("Gauge_Title", "Trend Confluence Index:", textX, meterY, HUD_LabelTextColor, fontNormal, false);
+   RenderHUDLabel("Gauge_Title", "Multi-Timeframe Confluence (6 TFs):", textX, meterY, HUD_LabelTextColor, fontNormal, false);
    RenderHUDLabel("Gauge_Value", gaugeText, textX, gaugeValY, gaugeColor, fontNormal, true);
 
    string adviceStr = (confluencePct >= 66.0 ? "Action: Strong Long Alignment Active" :

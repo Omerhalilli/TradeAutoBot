@@ -156,13 +156,22 @@ def compose_chart_screenshot(chart_image_path: str, data: Dict[str, Any]) -> str
     draw.text((c1_x1 + 14 + tl_w, c1_y1 + 36), trend, font=f_bold, fill=trend_col)
 
     # Signal on right side (guaranteed no card overflow)
-    signal = telem.get("signal", "Evaluating: Active")
+    signal = str(telem.get("signal", "Evaluating: Active")).strip()
     sig_col = COLOR_GREEN if "BUY" in signal.upper() else (COLOR_RED if "SELL" in signal.upper() else COLOR_VALUE_WHITE)
     sig_lbl = "Signal: "
     sl_w = draw.textbbox((0, 0), sig_lbl, font=f_txt)[2]
+
+    max_right_w = (card_w // 2) - 18
     sv_w = draw.textbbox((0, 0), signal, font=f_bold)[2]
+    if sv_w + sl_w > max_right_w:
+        avail_w = max(20, max_right_w - sl_w)
+        while len(signal) > 4 and draw.textbbox((0, 0), signal + "...", font=f_bold)[2] > avail_w:
+            signal = signal[:-1].strip()
+        signal = signal + "..."
+        sv_w = draw.textbbox((0, 0), signal, font=f_bold)[2]
+
     total_sig_w = sl_w + sv_w
-    sig_start_x = max(c1_x1 + (card_w // 2) + 10, c1_x2 - 14 - total_sig_w)
+    sig_start_x = c1_x2 - 14 - total_sig_w
     draw.text((sig_start_x, c1_y1 + 36), sig_lbl, font=f_txt, fill=COLOR_LABEL)
     draw.text((sig_start_x + sl_w, c1_y1 + 36), signal, font=f_bold, fill=sig_col)
 

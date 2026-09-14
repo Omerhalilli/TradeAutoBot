@@ -177,6 +177,11 @@ async def outbox_alert_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                 candidate_path = os.path.join(MT4_FILES_DIR, os.path.basename(str(photo_file)))
                 if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 100:
                     photo_path = candidate_path
+                    try:
+                        from autotrade.analytics.chart_composer import compose_chart_screenshot
+                        compose_chart_screenshot(photo_path, data)
+                    except Exception as comp_err:
+                        logger.warning(f"Failed to compose outbox photo: {comp_err}")
 
             target_chats = [chat_id] if (chat_id and str(chat_id).strip()) else ALLOWED_CHAT_IDS
             curr_ts = time.time()

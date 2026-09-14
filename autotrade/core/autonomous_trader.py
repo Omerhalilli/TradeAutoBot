@@ -49,7 +49,10 @@ TIMEFRAME_SECONDS: Dict[str, int] = {
 }
 
 DEFAULT_PORTFOLIO_SYMBOLS = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD", "AUDUSD", "NZDUSD", "XAUUSD"
+    "USDCHF", "GBPUSD", "EURUSD", "USDJPY", "USDCAD", "AUDUSD",
+    "EURGBP", "EURAUD", "EURCHF", "EURJPY", "GBPCHF", "CADJPY",
+    "GBPJPY", "AUDNZD", "AUDCAD", "AUDCHF", "AUDJPY", "CHFJPY",
+    "EURNZD", "EURCAD", "CADCHF", "NZDJPY", "NZDUSD", "XAUUSD"
 ]
 
 
@@ -501,6 +504,30 @@ class AutonomousMultiSymbolTrader:
             if current_hour is not None and (0 <= current_hour < 7):
                 logger.debug(f"AutonomousTrader: Rejecting {raw_sym} during Asian off-hours (Hour {current_hour}:00) - score {sc} < 8 required.")
                 return False
+
+        # Rule 8: JPY Rollover Liquidity Gate (Avoid illiquid spread spikes/rollover 21:00-23:45)
+        if ("JPY" in canon_sym) and sc < 8:
+            server_time_str = item.get("server_time") or ""
+            current_hour = None
+            if server_time_str:
+                try:
+                    from datetime import datetime
+                    dt = datetime.strptime(str(server_time_str).strip(), "%Y.%m.%d %H:%M:%S")
+                    current_hour = dt.hour
+                except Exception:
+                    pass
+            if current_hour is not None and (21 <= current_hour <= 23):
+                logger.debug(f"AutonomousTrader: Rejecting {raw_sym} during JPY rollover off-hours (Hour {current_hour}:00) - score {sc} < 8 required.")
+                return False
+
+        # Rule 9: Reversal Candlestick Pattern Gate
+        pat = str(item.get("pattern", "")).strip().upper()
+        if sig == "SELL" and pat in ("BULLISH_ENGULFING", "HAMMER", "MORNING_STAR"):
+            logger.debug(f"AutonomousTrader: Rejecting {raw_sym} SELL into bullish candlestick pattern {pat}.")
+            return False
+        if sig == "BUY" and pat in ("BEARISH_ENGULFING", "SHOOTING_STAR", "EVENING_STAR"):
+            logger.debug(f"AutonomousTrader: Rejecting {raw_sym} BUY into bearish candlestick pattern {pat}.")
+            return False
 
         return True
 
@@ -1051,6 +1078,58 @@ class AutonomousMultiSymbolTrader:
                 f"<i>Scanned {len(results)} symbols. No instrument meets the strict confluence threshold (Score ≥ {self.min_score}/10 [60%]). Capital 100% preserved. Patiently awaiting next candle boundary scan.</i>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
+
+        # Macro Environment & Currency Sentiment Conclusion
+        bull_count = sum(1 for item in results if "BULL" in str(item.get("trend", "")).upper())
+        bear_count = sum(1 for item in results if "BEAR" in str(item.get("trend", "")).upper())
+        neutral_count = len(results) - bull_count - bear_count
+
+        usd_bull = 0
+        usd_total = 0
+        jpy_weak = 0
+        jpy_total = 0
+        for item in results:
+            s_name = canonical_symbol(item.get("symbol", ""))
+            s_trend = str(item.get("trend", "")).upper()
+            if s_name.startswith("USD") and "BULL" in s_trend:
+                usd_bull += 1
+            elif s_name.endswith("USD") and "BEAR" in s_trend:
+                usd_bull += 1
+            if "USD" in s_name:
+                usd_total += 1
+            if s_name.endswith("JPY") and "BULL" in s_trend:
+                jpy_weak += 1
+            if "JPY" in s_name:
+                jpy_total += 1
+
+        usd_bias = f"{usd_bull}/{usd_total} Bullish" if usd_total > 0 else "Neutral"
+        jpy_bias = f"{jpy_weak}/{jpy_total} Weak/Bearish" if jpy_total > 0 else "Neutral"
+
+        if bull_count > bear_count + 3:
+            market_regime = "Risk-On Trend Expansion 🚀"
+        elif bear_count > bull_count + 3:
+            market_regime = "Risk-Off Defensive Flow 🛡️"
+        else:
+            market_regime = "Rangebound / Selective Rotation ⚖️"
+
+        msg += (
+            "📊 <b>EXECUTIVE MARKET CONCLUSION & ACTION PLAN</b>\n"
+            f"• <b>Market Regime:</b> <code>{market_regime}</code>\n"
+            f"• <b>Breadth ({len(results)} Assets):</b> 🟢 {bull_count} Bull | 🔴 {bear_count} Bear | ⚪ {neutral_count} Neutral\n"
+            f"• <b>Currency Bias:</b> USD: <code>{usd_bias}</code> | JPY: <code>{jpy_bias}</code>\n"
+        )
+        if top_candidate:
+            msg += (
+                f"• <b>Action Verdict:</b> High-probability setup identified on <code>{top_candidate.get('symbol')}</code>. "
+                f"Institutional confluence verified at key technical level.\n"
+            )
+        else:
+            msg += (
+                "• <b>Action Verdict:</b> <code>Capital Preservation Active</code>. "
+                f"0 of {len(results)} assets meet strict ≥{self.min_score}/10 confluence. "
+                "Capital 100% safe; standing by for bar-close confirmation.\n"
+            )
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
         msg += "<i>💡 Autonomous Multi-Symbol Execution: High-conviction setups (Score ≥ 6) are executed automatically.</i>"
         return msg

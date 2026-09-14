@@ -282,6 +282,8 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    double ema50  = iMA(sym, tf, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
    double ema200 = iMA(sym, tf, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
    double close1 = iClose(sym, tf, 1);
+   double high1  = iHigh(sym, tf, 1);
+   double low1   = iLow(sym, tf, 1);
 
    double rsi      = iRSI(sym, tf, 14, PRICE_CLOSE, 1);
    double macd     = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 1);
@@ -431,8 +433,8 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    if(bb_up > bb_low && bb_up > 0.0)
    {
       // Proximity to lower band with bullish reaction
-      double low1 = iLow(sym, tf, 1);
-      double high1 = iHigh(sym, tf, 1);
+      low1 = iLow(sym, tf, 1);
+      high1 = iHigh(sym, tf, 1);
 
       if(low1 <= bb_low && close1 > bb_low) volBuyPts += 8.0; // Strong bounce off lower band
       else if(close1 > bb_mid) volBuyPts += 4.0;
@@ -483,8 +485,8 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       if(close1 > pivotP && MathAbs(close1 - pivotP) <= proximityDist) srBuyPts += 8.0;
       else if(close1 > pivotS1 && MathAbs(close1 - pivotS1) <= proximityDist) srBuyPts += 8.0;
 
-      if(close1 < pivotP && MathAbs(close1 - pivotP) <= proximityDist) sellPoints += 8.0;
-      else if(close1 < pivotR1 && MathAbs(close1 - pivotR1) <= proximityDist) sellPoints += 8.0;
+      if(close1 < pivotP && MathAbs(close1 - pivotP) <= proximityDist) srSellPts += 8.0;
+      else if(close1 < pivotR1 && MathAbs(close1 - pivotR1) <= proximityDist) srSellPts += 8.0;
    }
    if(srBuyPts > 15.0)  srBuyPts = 15.0;
    if(srSellPts > 15.0) srSellPts = 15.0;
@@ -701,7 +703,75 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       return sig;
    }
 
-   // 4. Higher Timeframe Confluence Gate (H4 and D1 must not contradict entry)
+   // 4. Support & Resistance, Bollinger Band & Reversal Protection Gate
+   // Strictly prohibits selling into swing support, lower Bollinger bounce, or bullish reversal patterns
+   // Strictly prohibits buying into swing resistance, upper Bollinger rejection, or bearish reversal patterns
+   if(sig.cmd == OP_SELL)
+   {
+      double suppMargin = (atr > 0.0) ? (atr * 0.75) : (pipPt * 15.0);
+      if(close1 <= swingLow || MathAbs(close1 - swingLow) <= suppMargin)
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.score = 0;
+         return sig; // Veto: Selling directly into swing support
+      }
+      if(low1 <= bb_low && close1 > bb_low)
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.score = 0;
+         return sig; // Veto: Lower band bounce contradicts short
+      }
+      if(sig.pattern == "BULLISH_ENGULFING" || sig.pattern == "HAMMER" || sig.pattern == "MORNING_STAR")
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.score = 0;
+         return sig; // Veto: Bullish reversal candlestick pattern active
+      }
+      if(ema20 > 0.0 && (ema20 - close1) > (atr * 2.5))
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.score = 0;
+         return sig; // Veto: Extended mean-reversion risk
+      }
+   }
+   else if(sig.cmd == OP_BUY)
+   {
+      double resMargin = (atr > 0.0) ? (atr * 0.75) : (pipPt * 15.0);
+      if(close1 >= swingHigh || MathAbs(close1 - swingHigh) <= resMargin)
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.score = 0;
+         return sig; // Veto: Buying directly into swing resistance
+      }
+      if(high1 >= bb_up && close1 < bb_up)
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.score = 0;
+         return sig; // Veto: Upper band rejection contradicts long
+      }
+      if(sig.pattern == "BEARISH_ENGULFING" || sig.pattern == "SHOOTING_STAR")
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.score = 0;
+         return sig; // Veto: Bearish reversal candlestick pattern active
+      }
+      if(ema20 > 0.0 && (close1 - ema20) > (atr * 2.5))
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.score = 0;
+         return sig; // Veto: Extended mean-reversion risk
+      }
+   }
+
+   // 5. Higher Timeframe Confluence Gate (H4 and D1 must not contradict entry)
    if(tf < PERIOD_H4 && iBars(sym, PERIOD_H4) >= 50)
    {
       double h4_ema20  = iMA(sym, PERIOD_H4, 20,  0, MODE_EMA, PRICE_CLOSE, 1);

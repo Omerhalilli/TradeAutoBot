@@ -489,18 +489,27 @@ int DiscoverMarketWatchSymbols(string &outSymbols[], string includeSymbols = "",
 //+------------------------------------------------------------------+
 //| Check quote freshness using MarketInfo MODE_TIME (maxAgeSec)     |
 //+------------------------------------------------------------------+
-bool IsQuoteFresh(string sym, int maxAgeSec = 5)
+bool IsQuoteFresh(string sym, int maxAgeSec = 180)
 {
    if(IsTesting()) return true;
    datetime quoteTime = (datetime)MarketInfo(sym, MODE_TIME);
    if(quoteTime <= 0)
    {
       if(sym == Symbol() && TimeCurrent() > 0) quoteTime = TimeCurrent();
-      else return false;
+      else
+      {
+         datetime lastBar = iTime(sym, PERIOD_H1, 0);
+         if(lastBar > 0) quoteTime = lastBar;
+         else return false;
+      }
    }
    datetime now = TimeCurrent();
    if(quoteTime > now) return true; // Clock skew/future tick
-   if(now - quoteTime > maxAgeSec) return false;
+   if(now - quoteTime > maxAgeSec)
+   {
+      if(now - quoteTime <= 300) return true;
+      return false;
+   }
    return true;
 }
 
@@ -533,17 +542,19 @@ bool IsSessionActiveForSymbol(string sym)
    string base = "", quote = "";
    GetSymbolCurrencies(sym, base, quote);
    
-   // 1. Universal rollover blackout window (21:50 - 23:30 server time)
+   // 1. Universal rollover blackout window (21:45 - 23:45 server time)
    // Spreads on ALL pairs widen up to 10x-20x during bank rollover
-   if((hour == 21 && min >= 50) || hour == 22 || (hour == 23 && min <= 30))
+   if((hour == 21 && min >= 45) || hour == 22 || (hour == 23 && min <= 45))
    {
       return false; // Dead rollover window across entire broker feed
    }
 
-   // 2. Asian pairs: Active during Tokyo session & London overlap (00:00 - 10:00)
+   // 2. Asian / JPY pairs: Active during Tokyo session & London/NY overlap (00:00 - 19:00 server time)
+   // Avoids dead liquidity / spread blowout transition between 19:00 and 23:45
    if(base == "JPY" || quote == "JPY" || base == "AUD" || quote == "AUD" || base == "NZD" || quote == "NZD")
    {
-      return true; // Active in Asian session & major European overlap
+      if(hour >= 0 && hour <= 19) return true;
+      return false;
    }
    
    // 3. European & US pairs: Active during London/NY core hours (06:00 - 21:00)

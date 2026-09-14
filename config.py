@@ -229,7 +229,7 @@ BREAKEVEN_LOCK_PIPS: int = int(_get_setting("BREAKEVEN_LOCK_PIPS", "RISK", "brea
 # ------------------------------------------------------------------------------
 TRADING_SYMBOLS: List[str] = [
     s.strip()
-    for s in str(_get_setting("TRADING_SYMBOLS", "STRATEGY", "trading_symbols", "GBPUSD,EURUSD,XAUUSD,USOIL,USDJPY")).split(",")
+    for s in str(_get_setting("TRADING_SYMBOLS", "STRATEGY", "trading_symbols", "USDCHF,GBPUSD,EURUSD,USDJPY,USDCAD,AUDUSD,EURGBP,EURAUD,EURCHF,EURJPY,GBPCHF,CADJPY,GBPJPY,AUDNZD,AUDCAD,AUDCHF,AUDJPY,CHFJPY,EURNZD,EURCAD,CADCHF,NZDJPY,NZDUSD,XAUUSD")).split(",")
     if s.strip()
 ]
 TRADING_TIMEFRAMES: List[str] = [

@@ -255,7 +255,7 @@ class ConfigManager:
             self.config.risk.breakeven_lock_pips = int(get_val("BREAKEVEN_LOCK_PIPS", "RISK", "breakeven_lock_pips", 1))
 
             # Strategy Settings
-            raw_syms = str(get_val("TRADING_SYMBOLS", "STRATEGY", "trading_symbols", "GBPUSD,EURUSD,XAUUSD,USOIL,USDJPY"))
+            raw_syms = str(get_val("TRADING_SYMBOLS", "STRATEGY", "trading_symbols", "USDCHF,GBPUSD,EURUSD,USDJPY,USDCAD,AUDUSD,EURGBP,EURAUD,EURCHF,EURJPY,GBPCHF,CADJPY,GBPJPY,AUDNZD,AUDCAD,AUDCHF,AUDJPY,CHFJPY,EURNZD,EURCAD,CADCHF,NZDJPY,NZDUSD,XAUUSD"))
             self.config.strategy.primary_symbols = [s.strip() for s in raw_syms.split(",") if s.strip()]
             raw_tfs = str(get_val("TRADING_TIMEFRAMES", "STRATEGY", "trading_timeframes", "M5,M15,H1,H4"))
             self.config.strategy.timeframes = [tf.strip() for tf in raw_tfs.split(",") if tf.strip()]

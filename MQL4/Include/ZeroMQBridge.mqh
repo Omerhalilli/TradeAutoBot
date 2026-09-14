@@ -1548,6 +1548,19 @@ string Zmq_HandleApplyColors()
    return "{\"status\":\"ok\",\"action\":\"APPLY_COLORS\",\"synced_count\":" + IntegerToString(syncedCount) + "}";
 }
 
+#ifndef SET_HUD_VISIBLE_DEFINED
+#define SET_HUD_VISIBLE_DEFINED
+void SetHUDVisible(bool visible, long chartId = 0)
+{
+   long target = (chartId == 0) ? ChartID() : chartId;
+   if(!visible)
+   {
+      ObjectsDeleteAll(target, "SmartEA_HUD_");
+      ChartRedraw(target);
+   }
+}
+#endif
+
 string Zmq_HandleScreenshot(const string reqJson)
 {
    string targetSymbol = Zmq_ExtractJsonString(reqJson, "symbol");
@@ -1776,29 +1789,30 @@ string Zmq_HandleScreenshot(const string reqJson)
       else telemAdvice = "Action: Mixed / Neutral Alignment";
    }
    
-   // Temporarily decrease HUD panel size for screenshot capture if HUD is present on target chart
+   // Temporarily hide HUD panel for screenshot capture so price chart is 100% clean
    if(hasHud && hudChart == targetChartId)
    {
-      g_HUD_IsScreenshotCapturing = true;
-      RenderHUDDashboard(true);
+      SetHUDVisible(false, targetChartId);
       ChartRedraw(targetChartId);
+      Sleep(50);
    }
    
    if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, width, height, ALIGN_RIGHT);
    
-   // Wait for MT4 graphics pipeline to save frame before restoring enlarged HUD
+   // Wait for MT4 graphics pipeline to save frame before restoring HUD
    for(int w = 0; w < 30; w++)
    {
       if(FileIsExist(filename)) break;
       Sleep(20);
    }
 
-   // Immediately restore enlarged HUD panel objects on active chart
+   // Immediately restore HUD panel on active chart
    if(hasHud && hudChart == targetChartId)
    {
-      g_HUD_IsScreenshotCapturing = false;
+      SetHUDVisible(true, targetChartId);
+      g_LastMTFMatrixTick = 0;
       RenderHUDDashboard(false);
       ChartRedraw(targetChartId);
    }
@@ -2084,12 +2098,12 @@ string Zmq_HandleScanSymbols(const string reqJson)
       }
       else
       {
-         symListStr = "EURUSD,GBPUSD,USDJPY,USDCHF,USDCAD,AUDUSD,NZDUSD,XAUUSD";
+         symListStr = "USDCHF,GBPUSD,EURUSD,USDJPY,USDCAD,AUDUSD,EURGBP,EURAUD,EURCHF,EURJPY,GBPCHF,CADJPY,GBPJPY,AUDNZD,AUDCAD,AUDCHF,AUDJPY,CHFJPY,EURNZD,EURCAD,CADCHF,NZDJPY,NZDUSD,XAUUSD";
       }
    }
    else if(symListStr == "" || symListStr == "WATCHLIST" || symListStr == "DEFAULT")
    {
-      symListStr = "EURUSD,GBPUSD,USDJPY,USDCHF,USDCAD,AUDUSD,NZDUSD,XAUUSD";
+      symListStr = "USDCHF,GBPUSD,EURUSD,USDJPY,USDCAD,AUDUSD,EURGBP,EURAUD,EURCHF,EURJPY,GBPCHF,CADJPY,GBPJPY,AUDNZD,AUDCAD,AUDCHF,AUDJPY,CHFJPY,EURNZD,EURCAD,CADCHF,NZDJPY,NZDUSD,XAUUSD";
    }
    
    if(ArraySize(symbols) == 0)
