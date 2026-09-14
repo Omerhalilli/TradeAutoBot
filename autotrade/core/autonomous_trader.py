@@ -165,7 +165,7 @@ class AutonomousMultiSymbolTrader:
         if not self.symbols:
             self.symbols = list(DEFAULT_PORTFOLIO_SYMBOLS)
 
-        self.min_score: float = max(8.5, float(min_score))
+        self.min_score: float = max(6.0, float(min_score))
         self.cooldown_sec: int = cooldown_sec
         self.max_spread: float = max_spread
         self.max_positions: int = max_positions
@@ -174,6 +174,29 @@ class AutonomousMultiSymbolTrader:
         self.timeframe: str = str(timeframe).strip().upper() if timeframe else "H1"
         if self.timeframe not in TIMEFRAME_SECONDS:
             self.timeframe = "H1"
+
+        try:
+            from autotrade.core.config_manager import get_execution_mode
+            cur_mode = get_execution_mode()
+            self._execution_mode = cur_mode
+            if not self._is_test_environment():
+                if cur_mode == "SCALPER":
+                    self.timeframe = "M5"
+                    self.max_positions = 1
+                    self.min_score = 7.5
+                    self.cooldown_sec = 180
+                elif cur_mode == "INTRADAY":
+                    self.timeframe = "H1"
+                    self.max_positions = 3
+                    self.min_score = 8.0
+                    self.cooldown_sec = 3600
+                elif cur_mode == "SNIPER":
+                    self.timeframe = "H1"
+                    self.max_positions = 2
+                    self.min_score = 8.5
+                    self.cooldown_sec = 14400
+        except Exception:
+            self._execution_mode = "INTRADAY"
         self.scan_on_bar_close_only: bool = scan_on_bar_close_only
         self.last_scanned_bar_boundary: int = 0
         self.total_trades_executed: int = 0
@@ -314,7 +337,54 @@ class AutonomousMultiSymbolTrader:
         if self.scan_on_bar_close_only and self.last_scanned_bar_boundary == 0:
             tf_sec = self.get_timeframe_seconds()
             self.last_scanned_bar_boundary = int(time.time() // tf_sec) * tf_sec
-        logger.info(f"AutonomousTrader: Scan on bar close only set to {self.scan_on_bar_close_only}.")
+    @property
+    def execution_mode(self) -> str:
+        """Returns current execution mode ('SCALPER', 'INTRADAY', 'SNIPER')."""
+        try:
+            from autotrade.core.config_manager import get_execution_mode
+            return get_execution_mode()
+        except Exception:
+            return getattr(self, "_execution_mode", "INTRADAY")
+
+    def set_execution_mode(self, mode: str) -> str:
+        """
+        Dynamically adjusts execution speed mode and recalibrates operational parameters:
+        - SCALPER:  M5  | Max Pos: 1 | Min Score: 7.5 | Cooldown: 180s (3m)
+        - INTRADAY: H1  | Max Pos: 3 | Min Score: 8.0 | Cooldown: 3600s (1h)
+        - SNIPER:   H1  | Max Pos: 2 | Min Score: 8.5 | Cooldown: 14400s (4h)
+        """
+        m = str(mode).strip().upper()
+        if m not in ("SCALPER", "INTRADAY", "SNIPER"):
+            m = "INTRADAY"
+        self._execution_mode = m
+        try:
+            from autotrade.core.config_manager import set_execution_mode as set_cfg_mode
+            set_cfg_mode(m)
+        except Exception:
+            pass
+
+        if m == "SCALPER":
+            self.timeframe = "M5"
+            self.cooldown_sec = 180
+            self.max_positions = 1
+            self.min_score = 7.5
+        elif m == "INTRADAY":
+            self.timeframe = "H1"
+            self.cooldown_sec = 3600
+            self.max_positions = 3
+            self.min_score = 8.0
+        elif m == "SNIPER":
+            self.timeframe = "H1"
+            self.cooldown_sec = 14400
+            self.max_positions = 2
+            self.min_score = 8.5
+
+        self.last_scanned_bar_boundary = 0
+        logger.info(
+            f"AutonomousTrader: Switched to {m} mode (Timeframe: {self.timeframe}, "
+            f"Max Positions: {self.max_positions}, Min Score: {self.min_score}, Cooldown: {self.cooldown_sec}s)."
+        )
+        return m
 
     @property
     def risk_manager(self):
@@ -550,9 +620,21 @@ class AutonomousMultiSymbolTrader:
         trend_str = str(item.get("trend", "")).strip().upper()
         htf_str = str(item.get("htf_trend", "")).strip().upper()
 
-        # Rule 1: Signal must be BUY or SELL with Hard Minimum Score >= 8.5/10 (85/100)
-        # Any candidate scoring < 8.5 is strictly prohibited from opening a trade
-        if sig not in ("BUY", "SELL") or effective_score < self.min_score or effective_score < 8.5:
+        # Rule 1: Signal must be BUY or SELL with mode-specific minimum score
+        if self.execution_mode == "SCALPER":
+            req_min = 7.5
+            effective_min = max(self.min_score, req_min)
+            if sig not in ("BUY", "SELL") or effective_score < effective_min:
+                return False
+            # Scalper directional trend gate
+            if sig == "BUY" and ("BEAR" in trend_str or "COUNTER" in trend_str):
+                return False
+            if sig == "SELL" and ("BULL" in trend_str or "COUNTER" in trend_str):
+                return False
+            return True
+
+        effective_min = max(self.min_score, 8.5)
+        if sig not in ("BUY", "SELL") or effective_score < effective_min:
             return False
 
         # Rule 2: Directional Trend Confirmation (strictly reject opposite, counter-trend, or flat trends)
@@ -727,10 +809,33 @@ class AutonomousMultiSymbolTrader:
             open_positions = pos_data.get("positions", [])
             total_open = len(open_positions)
 
-            effective_max = min(self.max_positions, MAX_OPEN_POSITIONS)
+            effective_max = 1 if self.execution_mode == "SCALPER" else min(self.max_positions, MAX_OPEN_POSITIONS)
             if total_open >= effective_max:
                 logger.debug(f"AutonomousTrader: Max open portfolio positions reached ({total_open}/{effective_max})")
                 return []
+
+            # Stalled Scalp Trade Invalidation Gate (> 10 bars without progress or adverse excursion)
+            now = time.time()
+            if self.execution_mode == "SCALPER" and open_positions:
+                for p in open_positions:
+                    p_sym = str(p.get("symbol", "")).strip().upper()
+                    p_ticket = int(p.get("ticket", 0))
+                    p_cmd = str(p.get("cmd", "")).upper()
+                    p_open_time = float(p.get("open_time", 0.0))
+                    p_open_price = float(p.get("open_price", 0.0))
+                    p_curr_price = float(p.get("current_price", p_open_price))
+                    if p_open_time > 0 and p_ticket > 0:
+                        tf_seconds = self.get_timeframe_seconds()
+                        bars_open = int((now - p_open_time) // tf_seconds)
+                        if bars_open >= 10:
+                            pip_u = 0.01 if "JPY" in p_sym or "XAU" in p_sym else 0.0001
+                            pnl_pips = (p_curr_price - p_open_price) / pip_u if "BUY" in p_cmd else (p_open_price - p_curr_price) / pip_u
+                            if pnl_pips <= 2.0:
+                                logger.warning(
+                                    f"⚠️ [SCALPER STALLED TRADE SCRATCH] Ticket #{p_ticket} ({p_sym}) has stalled for {bars_open} bars "
+                                    f"(Floating: {pnl_pips:+.1f} pips). Scratching position to enforce capital preservation."
+                                )
+                                await asyncio.to_thread(zmq_client.close_order, ticket=p_ticket)
 
             # Extract symbols currently holding open positions (raw and canonical normalized)
             open_symbols = set()
@@ -796,10 +901,13 @@ class AutonomousMultiSymbolTrader:
                     if eff_sc > top_cand_score:
                         top_cand_score = eff_sc
 
-                logger.info(
-                    f"HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} < {self.min_score:.1f} Required). "
-                    f"Capital safely preserved. Waiting for next candle boundary."
-                )
+                if self.execution_mode == "SCALPER":
+                    logger.info(f"SCALPER: 0/{len(results)} QUALIFIED. ALL SYMBOLS BYPASSED (CAPITAL SAFE)")
+                else:
+                    logger.info(
+                        f"HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} < {self.min_score:.1f} Required). "
+                        f"Capital safely preserved. Waiting for next candle boundary."
+                    )
                 return []
 
             for item in candidates:
@@ -867,18 +975,37 @@ class AutonomousMultiSymbolTrader:
                         logger.debug(f"AutonomousTrader: Skipping {raw_sym} - bar {bt_val} already traded.")
                         continue
 
-                # Calculate protective SL & TP (mandatory stops with min 1.5:1 reward-to-risk)
-                sl_pips = float(item.get("sl_pips", 30.0))
-                tp_pips = float(item.get("tp_pips", 60.0))
-                if sl_pips < 15.0:
-                    sl_pips = 25.0
-                min_rr = 1.5
-                if tp_pips < sl_pips * min_rr:
-                    tp_pips = round(sl_pips * min_rr, 1)
-                if tp_pips < 30.0:
-                    tp_pips = 30.0
+                # Mode-aware SL & TP calculation
+                if self.execution_mode == "SCALPER":
+                    sl_pips = max(6.0, min(10.0, float(item.get("sl_pips", 8.0))))
+                    tp_pips = max(10.0, min(20.0, float(item.get("tp_pips", 15.0))))
+                else:
+                    sl_pips = float(item.get("sl_pips", 30.0))
+                    tp_pips = float(item.get("tp_pips", 60.0))
+                    if sl_pips < 15.0:
+                        sl_pips = 25.0
+                    min_rr = 1.5
+                    if tp_pips < sl_pips * min_rr:
+                        tp_pips = round(sl_pips * min_rr, 1)
+                    if tp_pips < 30.0:
+                        tp_pips = 30.0
                 if sl_pips <= 0.0 or tp_pips <= 0.0:
                     continue  # Refuse trade without valid stops
+
+                # Spread-to-Target Sanity Gate (veto if spread > 15% of TP)
+                raw_sym = str(item.get("symbol", "")).strip().upper()
+                canon_sym = canonical_symbol(raw_sym)
+                pip_unit = 0.01 if ("JPY" in canon_sym or "XAU" in canon_sym or "OIL" in canon_sym) else 0.0001
+                digits = int(item.get("digits", 5 if pip_unit == 0.0001 else 3))
+                point_unit = 10.0 ** (-digits)
+                spread_points = float(item.get("spread", 0.0))
+                spread_pips = (spread_points * point_unit) / pip_unit if pip_unit > 0 else (spread_points / 10.0)
+                if spread_pips > 0.15 * tp_pips:
+                    logger.info(
+                        f"AutonomousTrader: Spread-to-Target Sanity Gate veto for {raw_sym}: "
+                        f"Spread {spread_pips:.1f} pips > 15% of TP ({tp_pips:.1f} pips, max allowed: {0.15 * tp_pips:.1f} pips)."
+                    )
+                    continue
 
                 entry_ref = float(item.get("ask" if signal == "BUY" else "bid", 0.0))
                 if entry_ref <= 0.0:
@@ -988,6 +1115,8 @@ class AutonomousMultiSymbolTrader:
                         "score": score,
                         "sl_pips": sl_pips,
                         "tp_pips": tp_pips,
+                        "sl_price": sl_price,
+                        "tp_price": tp_price,
                         "trend": item.get("trend", "ALIGNED"),
                         "timestamp": now
                     }
@@ -1026,7 +1155,7 @@ class AutonomousMultiSymbolTrader:
             return executed_trades
 
     async def _dispatch_execution_alert(self, bot, trade: Dict[str, Any]) -> None:
-        """Sends clean institutional execution alert to all authorized chats with interactive buttons."""
+        """Sends clean institutional execution alert to all authorized chats with interactive buttons and visual screenshot verification."""
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         sym = trade["symbol"]
         cmd = trade["cmd"]
@@ -1035,15 +1164,20 @@ class AutonomousMultiSymbolTrader:
         ticket = trade.get("ticket", 0)
         ticket_fmt = f"#{ticket}" if ticket else "Filled"
 
+        sl_price_fmt = f"{trade['sl_price']:.5f}" if trade.get("sl_price", 0.0) > 0 else ""
+        tp_price_fmt = f"{trade['tp_price']:.5f}" if trade.get("tp_price", 0.0) > 0 else ""
+        sl_extra = f" ({sl_price_fmt})" if sl_price_fmt else ""
+        tp_extra = f" ({tp_price_fmt})" if tp_price_fmt else ""
+
         msg = (
-            "🤖 <b>[AUTONOMOUS MULTI-SYMBOL TRADE EXECUTED]</b>\n"
+            f"🤖 <b>[AUTONOMOUS TRADE EXECUTED • {self.execution_mode}]</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Asset:</b> <code>{sym}</code> ({arrow})\n"
             f"• <b>Ticket:</b> <code>{ticket_fmt}</code> | <b>Volume:</b> <code>{trade['lots']:.2f} Lots</code>\n"
             f"• <b>Entry Price:</b> <code>{price_fmt}</code>\n"
             f"• <b>Confluence Score:</b> <b>{trade['score']}/10</b> ({trade['trend']})\n"
-            f"• <b>Stop Loss:</b> <code>-{trade['sl_pips']:.1f} pips</code>\n"
-            f"• <b>Take Profit:</b> <code>+{trade['tp_pips']:.1f} pips</code>\n"
+            f"• <b>Stop Loss:</b> <code>-{trade['sl_pips']:.1f} pips</code>{sl_extra}\n"
+            f"• <b>Take Profit:</b> <code>+{trade['tp_pips']:.1f} pips</code>{tp_extra}\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "<i>⚡ 100% Autonomous Execution: Order placed directly via MT4 ZeroMQ Bridge.</i>"
         )
@@ -1061,16 +1195,51 @@ class AutonomousMultiSymbolTrader:
                 ]
             ])
 
+        # Request Visual Verification Screenshot from MT4
+        img_path = None
+        try:
+            shot_res = await asyncio.to_thread(
+                zmq_client.get_screenshot,
+                symbol=sym,
+                timeframe=self.timeframe,
+                entry_price=trade.get("price", 0.0),
+                sl_price=trade.get("sl_price", 0.0),
+                tp_price=trade.get("tp_price", 0.0),
+                event_type="OPEN"
+            )
+            if isinstance(shot_res, dict) and shot_res.get("status") == "ok":
+                fpath = shot_res.get("path")
+                if fpath and os.path.exists(fpath):
+                    img_path = fpath
+        except Exception as ex:
+            logger.debug(f"Visual screenshot generation error for {sym}: {ex}")
+
         for chat_id in ALLOWED_CHAT_IDS:
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=msg,
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-            except Exception as ex:
-                logger.error(f"Failed to dispatch autonomous execution alert to chat {chat_id}: {ex}")
+            photo_sent = False
+            if img_path and os.path.exists(img_path) and hasattr(bot, "send_photo"):
+                try:
+                    with open(img_path, "rb") as photo_f:
+                        await bot.send_photo(
+                            chat_id=chat_id,
+                            photo=photo_f,
+                            caption=msg,
+                            reply_markup=kb,
+                            parse_mode="HTML"
+                        )
+                    photo_sent = True
+                except Exception as ex:
+                    logger.debug(f"Failed to dispatch execution photo to chat {chat_id}: {ex}")
+
+            if not photo_sent:
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=msg,
+                        reply_markup=kb,
+                        parse_mode="HTML"
+                    )
+                except Exception as ex:
+                    logger.error(f"Failed to dispatch autonomous execution alert to chat {chat_id}: {ex}")
 
     async def run_cycle_async(self, bot=None, force: bool = False) -> None:
         """Asynchronous entry point for periodic background scheduler."""

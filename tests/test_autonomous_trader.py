@@ -32,6 +32,11 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
     def tearDown(self):
         self.flag_patch.stop()
         self.temp_flag_dir.cleanup()
+        try:
+            from autotrade.core.config_manager import set_execution_mode
+            set_execution_mode("INTRADAY")
+        except Exception:
+            pass
 
     def test_initialization_and_watchlist(self):
         """Verifies symbol watchlist initialization, additions, and removals."""
@@ -956,6 +961,97 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         }
         matrix_text = self.trader.format_scan_matrix(scan_data)
         self.assertNotIn("TOP RANKED OPPORTUNITY", matrix_text)
+
+    def test_scalper_mode_execution_and_spread_gate(self):
+        """Verifies SCALPER mode execution limits, target ranges, spread gate, and capital safety logging."""
+        try:
+            self.trader.set_execution_mode("SCALPER")
+            self.assertEqual(self.trader.execution_mode, "SCALPER")
+            self.assertEqual(self.trader.timeframe, "M5")
+            self.assertEqual(self.trader.max_positions, 1)
+
+            # 1. When no candidates qualify, logs capital safe message
+            mock_scan_empty = {
+                "status": "ok",
+                "results": [
+                    {"symbol": "EURUSD", "score": 6, "signal": "HOLD", "spread": 10.0}
+                ]
+            }
+            mock_pos = {"status": "ok", "positions": []}
+            async def run_empty():
+                with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan_empty), \
+                     patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_pos), \
+                     self.assertLogs("autotrade.core.autonomous_trader", level="INFO") as log_cm:
+                    trades = await self.trader.execute_autonomous_cycle()
+                    self.assertEqual(len(trades), 0)
+                    self.assertTrue(any("SCALPER: 0/1 QUALIFIED. ALL SYMBOLS BYPASSED (CAPITAL SAFE)" in line for line in log_cm.output))
+            asyncio.run(run_empty())
+
+            # 2. When a setup qualifies in SCALPER mode
+            mock_scan_valid = {
+                "status": "ok",
+                "results": [
+                    {
+                        "symbol": "EURUSD",
+                        "score": 8,
+                        "analysis_score": 85.0,
+                        "signal": "BUY",
+                        "trend": "BULLISH",
+                        "spread": 12.0,
+                        "sl_pips": 8.0,
+                        "tp_pips": 15.0,
+                        "price": 1.08500
+                    }
+                ]
+            }
+            mock_order_res = {
+                "status": "ok",
+                "ticket": 998877,
+                "price": 1.08500,
+                "lots": 0.05
+            }
+            async def run_valid():
+                with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan_valid), \
+                     patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_pos), \
+                     patch("autotrade.core.autonomous_trader.zmq_client.open_order", return_value=mock_order_res) as mock_open:
+                    trades = await self.trader.execute_autonomous_cycle()
+                    self.assertEqual(len(trades), 1)
+                    t = trades[0]
+                    self.assertGreaterEqual(t["sl_pips"], 6.0)
+                    self.assertLessEqual(t["sl_pips"], 10.0)
+                    self.assertGreaterEqual(t["tp_pips"], 10.0)
+                    self.assertLessEqual(t["tp_pips"], 20.0)
+                    mock_open.assert_called_once()
+
+            asyncio.run(run_valid())
+
+            # 3. Spread-to-Target Sanity Gate (veto if spread > 15% of TP)
+            mock_scan_wide_spread = {
+                "status": "ok",
+                "results": [
+                    {
+                        "symbol": "EURUSD",
+                        "score": 9,
+                        "analysis_score": 90.0,
+                        "signal": "BUY",
+                        "trend": "BULLISH",
+                        "spread": 30.0,  # 3.0 pips > 0.15 * 15.0 = 2.25 pips
+                        "sl_pips": 8.0,
+                        "tp_pips": 15.0,
+                        "price": 1.08500
+                    }
+                ]
+            }
+            async def run_wide_spread():
+                with patch.object(self.trader, "scan_portfolio_async", return_value=mock_scan_wide_spread), \
+                     patch("autotrade.core.autonomous_trader.zmq_client.get_positions", return_value=mock_pos), \
+                     patch("autotrade.core.autonomous_trader.zmq_client.open_order") as mock_open:
+                    trades = await self.trader.execute_autonomous_cycle()
+                    self.assertEqual(len(trades), 0)
+                    mock_open.assert_not_called()
+            asyncio.run(run_wide_spread())
+        finally:
+            self.trader.set_execution_mode("INTRADAY")
 
 
 class TestTelegramAutonomousHandlers(unittest.TestCase):

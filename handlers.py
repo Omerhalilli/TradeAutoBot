@@ -1593,6 +1593,114 @@ async def cmd_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     await send_or_edit(update, context, text)
 
+def format_mode_panel(mode: str) -> Tuple[str, InlineKeyboardMarkup]:
+    """Builds HTML text description and interactive switcher keyboard for execution mode."""
+    m = str(mode).strip().upper()
+    if m == "SCALPER":
+        mode_badge = "⚡ <b>SCALPER</b>"
+        tf_desc = "M5 (Micro 1-5m Analysis)"
+        target_desc = "10 – 20 pips"
+        sl_desc = "6 – 10 pips (1:1.5 to 1:2.0 RR)"
+        min_score = "7.5 / 10"
+        max_pos = "1 Position (Single Best Pick)"
+        cooldown = "180 seconds (3m)"
+        philosophy = "Fast intraday micro-momentum. Pick single best qualified setup or stay 100% in cash. Hard spread veto (>15% of TP)."
+    elif m == "SNIPER":
+        mode_badge = "🎯 <b>SNIPER</b>"
+        tf_desc = "H1 / H4"
+        target_desc = "60 – 150 pips"
+        sl_desc = "Structural Swing High/Low (>= 1:2.0 RR)"
+        min_score = "8.5 / 10 (Institutional Grade A+)"
+        max_pos = "2 Positions"
+        cooldown = "14,400 seconds (4h)"
+        philosophy = "Patient swing institutional confluence. High-conviction setups only. Maximum capital preservation."
+    else:
+        m = "INTRADAY"
+        mode_badge = "⚖️ <b>INTRADAY</b>"
+        tf_desc = "H1 (with M15 confirmation)"
+        target_desc = "30 – 60 pips"
+        sl_desc = "Structural Stop (>= 1:2.0 RR)"
+        min_score = "8.0 / 10"
+        max_pos = "3 Positions"
+        cooldown = "3,600 seconds (1h)"
+        philosophy = "Balanced daily trend following & liquidity cycle sweeps. Reliable risk-adjusted reward."
+
+    text = (
+        "🎛️ <b>EXECUTION SPEED & CONFLUENCE MODE</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Active Profile:</b> {mode_badge}\n"
+        f"• <b>Operating Timeframe:</b> <code>{tf_desc}</code>\n"
+        f"• <b>Target Distance:</b> <code>{target_desc}</code>\n"
+        f"• <b>Stop Loss & RR:</b> <code>{sl_desc}</code>\n"
+        f"• <b>Min Confluence Score:</b> <code>{min_score}</code>\n"
+        f"• <b>Max Open Positions:</b> <code>{max_pos}</code>\n"
+        f"• <b>Scan Cooldown:</b> <code>{cooldown}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>💡 {philosophy}</i>\n\n"
+        "<i>Select an execution speed mode below to switch dynamically:</i>"
+    )
+
+    btn_scalper = "✅ ⚡ Scalper" if m == "SCALPER" else "⚡ Scalper"
+    btn_intraday = "✅ ⚖️ Intraday" if m == "INTRADAY" else "⚖️ Intraday"
+    btn_sniper = "✅ 🎯 Sniper" if m == "SNIPER" else "🎯 Sniper"
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(btn_scalper, callback_data="mode_scalper"),
+            InlineKeyboardButton(btn_intraday, callback_data="mode_intraday"),
+            InlineKeyboardButton(btn_sniper, callback_data="mode_sniper"),
+        ],
+        [
+            InlineKeyboardButton("📊 Scanner", callback_data="nav_scan"),
+            InlineKeyboardButton("💼 Positions", callback_data="nav_pos"),
+        ]
+    ])
+    return text, kb
+
+@restricted
+async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Configures or displays active execution speed mode ('SCALPER', 'INTRADAY', 'SNIPER')."""
+    args = context.args or []
+    if args:
+        req_mode = args[0].strip().upper()
+        if req_mode in ("SCALPER", "INTRADAY", "SNIPER"):
+            autonomous_trader.set_execution_mode(req_mode)
+            try:
+                from autotrade.core.config_manager import set_execution_mode
+                set_execution_mode(req_mode)
+            except Exception:
+                pass
+    cur_mode = autonomous_trader.execution_mode
+    text, kb = format_mode_panel(cur_mode)
+    await send_or_edit(update, context, text, reply_markup=kb)
+
+async def cb_mode_switch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles inline button clicks for execution mode switching."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    mode_map = {
+        "mode_scalper": "SCALPER",
+        "mode_intraday": "INTRADAY",
+        "mode_sniper": "SNIPER"
+    }
+    target_mode = mode_map.get(data)
+    if not target_mode:
+        return
+
+    autonomous_trader.set_execution_mode(target_mode)
+    try:
+        from autotrade.core.config_manager import set_execution_mode
+        set_execution_mode(target_mode)
+    except Exception:
+        pass
+
+    text, kb = format_mode_panel(target_mode)
+    try:
+        await query.edit_message_text(text=text, reply_markup=kb, parse_mode=ParseMode.HTML)
+    except Exception as ex:
+        logger.debug(f"Failed to edit mode message: {ex}")
+
 @restricted
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Scans all monitored instruments for confluence scores & signals across indicators."""

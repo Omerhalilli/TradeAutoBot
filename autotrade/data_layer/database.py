@@ -251,6 +251,15 @@ class DatabaseEngine:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_bars_sym_tf ON historical_market_bars(symbol, timeframe, timestamp DESC);")
 
+            # 10. System State Table (Execution mode, active configurations, persistent state)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS system_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+            """)
+
     def execute(self, query: str, params: Union[tuple, dict] = ()) -> sqlite3.Cursor:
         """Synchronously executes a parameterized query."""
         conn = self.get_connection()
@@ -533,6 +542,38 @@ class DatabaseEngine:
         """
         return self.fetch_all(query, (symbol.upper(), timeframe.upper(), limit))
 
+    def get_system_state(self, key: str, default: str = "") -> str:
+        """Retrieves a persistent system state value by key."""
+        try:
+            row = self.fetch_one("SELECT value FROM system_state WHERE key = ?", (key,))
+            if row and "value" in row:
+                return str(row["value"])
+        except Exception as ex:
+            logger.debug(f"Failed to get system state for {key}: {ex}")
+        return default
+
+    def set_system_state(self, key: str, value: str) -> None:
+        """Sets or updates a persistent system state value by key."""
+        try:
+            now = time.time()
+            self.execute("""
+                INSERT INTO system_state (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;
+            """, (key, str(value), now))
+        except Exception as ex:
+            logger.error(f"Failed to set system state for {key}={value}: {ex}")
+
+    async def get_system_state_async(self, key: str, default: str = "") -> str:
+        """Asynchronously retrieves a persistent system state value."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.get_system_state, key, default)
+
+    async def set_system_state_async(self, key: str, value: str) -> None:
+        """Asynchronously sets or updates a persistent system state value."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.set_system_state, key, value)
+
     def close_sync(self) -> None:
         """Closes all open database connections across all threads."""
         with self._lock:
@@ -584,4 +625,14 @@ def insert_market_bars(symbol: str, timeframe: str, bars: Any) -> int:
 def fetch_market_bars(symbol: str, timeframe: str, limit: int = 50000) -> List[Dict[str, Any]]:
     """Convenience wrapper to fetch chronological market bars."""
     return db_engine.fetch_market_bars(symbol, timeframe, limit)
+
+
+def get_system_state(key: str, default: str = "") -> str:
+    """Convenience wrapper to retrieve persistent system state."""
+    return db_engine.get_system_state(key, default)
+
+
+def set_system_state(key: str, value: str) -> None:
+    """Convenience wrapper to set persistent system state."""
+    db_engine.set_system_state(key, value)
 

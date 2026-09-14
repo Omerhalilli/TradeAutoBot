@@ -333,6 +333,316 @@ class QuantitativeConfluenceEngine:
 
         return quantized, round(target_cash_risk, 2)
 
+    def evaluate_symbol_scalper(
+        self,
+        symbol: str,
+        ohlcv: Dict[str, np.ndarray],
+        spread_points: float = 15.0,
+        bid: float = 0.0,
+        ask: float = 0.0,
+        server_time_str: Optional[str] = None,
+        bar_time: int = 0,
+        account_equity: float = 10000.0,
+        broker_specs: Optional[Dict[str, Any]] = None,
+        spread_history: Optional[List[float]] = None,
+        ltf_ohlcv: Optional[Dict[str, np.ndarray]] = None,
+    ) -> CandidateEvaluation:
+        """
+        Micro-Analysis Scalper Engine ("Pick Best 1 or Stay in Cash").
+        - Operating Timeframes: M1 & M5.
+        - Targets: 10–20 pips, SL: 6–10 pips, 1:1.5 to 1:2.0 RR.
+        - Metrics: VWAP deviation bands (+-1.5 to +-2.0 sigma),
+          3-bar Micro-FVG detection,
+          Order Flow absorption wicks (rejection wick >= 2.0x body),
+          Fast EMA (8/21) momentum.
+        - Spread-to-Target Sanity Gate: Veto if Spread > 15% of TP distance.
+        """
+        canon = canonical_symbol(symbol)
+        specs = self.update_broker_specs(symbol, broker_specs) if broker_specs else self.get_broker_specs(symbol)
+
+        closes = np.asarray(ohlcv.get("close", np.array([], dtype=np.float64)), dtype=np.float64)
+        highs = np.asarray(ohlcv.get("high", np.array([], dtype=np.float64)), dtype=np.float64)
+        lows = np.asarray(ohlcv.get("low", np.array([], dtype=np.float64)), dtype=np.float64)
+        opens = np.asarray(ohlcv.get("open", np.array([], dtype=np.float64)), dtype=np.float64)
+        volumes = np.asarray(ohlcv.get("volume", np.ones_like(closes)), dtype=np.float64)
+
+        n_bars = len(closes)
+        pip_unit = 0.01 if ("JPY" in canon or "XAU" in canon or "OIL" in canon) else 0.0001
+
+        curr_price = float(closes[-1]) if n_bars > 0 else 0.0
+        if curr_price <= 0.0:
+            curr_price = float(ask if ask > 0 else bid)
+
+        res = CandidateEvaluation(
+            symbol=symbol,
+            canonical_symbol=canon,
+            signal="HOLD",
+            score_100=0.0,
+            tier1_regime="CHOPPY_NOISE",
+            hurst_exponent=0.50,
+            ker_ratio=0.0,
+            htf_aligned=False,
+            adx_value=0.0,
+            rsi_value=50.0,
+            cmf_value=0.0,
+            vwap_aligned=False,
+            volume_surge=False,
+            pattern="NONE",
+            spread_points=spread_points,
+            atr_value=0.0010,
+            spread_to_atr=1.0,
+            sl_pips=8.0,
+            tp_pips=15.0,
+            rr_ratio=1.875,
+            bid=bid,
+            ask=ask,
+            bar_time=bar_time,
+            is_qualified=False,
+            disqualification_reason=""
+        )
+
+        # Check Adaptive Quarantine
+        try:
+            from autotrade.analytics.adaptive_learner import adaptive_learner
+            if adaptive_learner.is_symbol_quarantined(symbol):
+                is_q, rem_s, q_reason = adaptive_learner.get_quarantine_status(symbol)
+                rem_h = int(rem_s // 3600)
+                rem_m = int((rem_s % 3600) // 60)
+                res.disqualification_reason = f"Adaptive Quarantine Veto: {symbol} in cooling freeze ({q_reason}, {rem_h}h {rem_m}m remaining)."
+                res.veto_reasons.append(res.disqualification_reason)
+                return res
+        except Exception:
+            pass
+
+        if n_bars < 50:
+            res.disqualification_reason = f"Insufficient bars for scalper micro-analysis ({n_bars} < 50)"
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        # 1. Dynamic Spread Filter
+        spread_ok, med_spread, sp_ratio = self.compute_dynamic_spread_filter(
+            symbol=symbol,
+            current_spread=spread_points,
+            spread_history=spread_history
+        )
+        res.median_spread = med_spread
+        res.spread_ratio = sp_ratio
+        res.spread_filter_passed = spread_ok
+
+        if not spread_ok:
+            res.disqualification_reason = (
+                f"Dynamic Spread Veto: Spread {spread_points:.1f} pts > 1.8x Median ({med_spread:.1f} pts, ratio={sp_ratio:.2f})"
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        # 2. Fast EMA (8/21) Momentum
+        ema8 = indicators.ema(closes, 8)
+        ema21 = indicators.ema(closes, 21)
+        res.adaptive_fast_ema_period = 8
+        res.adaptive_slow_ema_period = 21
+
+        ema8_val = float(ema8[-1])
+        ema21_val = float(ema21[-1])
+        ema8_prev = float(ema8[-2]) if n_bars > 1 else ema8_val
+
+        bull_momentum = (ema8_val > ema21_val) and (ema8_val >= ema8_prev)
+        bear_momentum = (ema8_val < ema21_val) and (ema8_val <= ema8_prev)
+
+        if not bull_momentum and not bear_momentum:
+            res.disqualification_reason = (
+                f"Scalper EMA Veto: Fast EMA 8/21 momentum neutral or conflicting "
+                f"(EMA8={ema8_val:.5f}, EMA21={ema21_val:.5f})."
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        chosen_direction = "BUY" if bull_momentum else "SELL"
+        res.htf_aligned = True
+
+        # 3. VWAP & Deviation Bands (+-1.5 to +-2.0 sigma)
+        vwap_arr = indicators.vwap(highs, lows, closes, volumes)
+        vwap_val = float(vwap_arr[-1])
+        vwap_diff = closes - vwap_arr
+        dev_lb = min(len(closes), 30)
+        std_dev = float(np.std(vwap_diff[-dev_lb:]))
+        if std_dev <= 0:
+            std_dev = max(float(np.std(closes[-dev_lb:])), pip_unit * 5.0)
+
+        upper_1_5 = vwap_val + 1.5 * std_dev
+        upper_2_0 = vwap_val + 2.0 * std_dev
+        lower_1_5 = vwap_val - 1.5 * std_dev
+        lower_2_0 = vwap_val - 2.0 * std_dev
+
+        # Anti-chasing overextension check
+        if chosen_direction == "BUY" and curr_price > upper_2_0:
+            res.disqualification_reason = (
+                f"Scalper VWAP Overextension Veto: Price ({curr_price:.5f}) extended beyond +2.0 sigma ({upper_2_0:.5f}). "
+                f"Anti-chasing shield active."
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+        elif chosen_direction == "SELL" and curr_price < lower_2_0:
+            res.disqualification_reason = (
+                f"Scalper VWAP Overextension Veto: Price ({curr_price:.5f}) extended beyond -2.0 sigma ({lower_2_0:.5f}). "
+                f"Anti-chasing shield active."
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        # VWAP alignment or band bounce
+        recent_low_min = float(np.min(lows[-5:]))
+        recent_high_max = float(np.max(highs[-5:]))
+        vwap_bounce_buy = (recent_low_min <= lower_1_5) or (curr_price >= vwap_val)
+        vwap_bounce_sell = (recent_high_max >= upper_1_5) or (curr_price <= vwap_val)
+
+        if chosen_direction == "BUY" and not vwap_bounce_buy:
+            res.disqualification_reason = (
+                f"Scalper VWAP Veto: BUY requires price above VWAP ({vwap_val:.5f}) or bounce off -1.5 sigma band ({lower_1_5:.5f})."
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+        elif chosen_direction == "SELL" and not vwap_bounce_sell:
+            res.disqualification_reason = (
+                f"Scalper VWAP Veto: SELL requires price below VWAP ({vwap_val:.5f}) or bounce off +1.5 sigma band ({upper_1_5:.5f})."
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        res.vwap_aligned = True
+
+        # 4. 3-Bar Micro-FVG Detection
+        has_micro_fvg = False
+        for k in range(max(2, n_bars - 6), n_bars):
+            if chosen_direction == "BUY":
+                if lows[k] > highs[k - 2]:
+                    fvg_gap = (lows[k] - highs[k - 2]) / pip_unit
+                    if fvg_gap >= 0.5:
+                        has_micro_fvg = True
+                        break
+            else:
+                if highs[k] < lows[k - 2]:
+                    fvg_gap = (lows[k - 2] - highs[k]) / pip_unit
+                    if fvg_gap >= 0.5:
+                        has_micro_fvg = True
+                        break
+
+        # 5. Order Flow Absorption Wicks (rejection wick >= 2.0x body) or Engulfing
+        has_absorption_wick = False
+        detected_pattern = "NONE"
+        for k in range(max(0, n_bars - 3), n_bars):
+            c_k = closes[k]
+            o_k = opens[k]
+            h_k = highs[k]
+            l_k = lows[k]
+            body_k = abs(c_k - o_k)
+            if chosen_direction == "BUY":
+                lower_wick = min(c_k, o_k) - l_k
+                if lower_wick >= 2.0 * max(body_k, pip_unit * 0.2):
+                    has_absorption_wick = True
+                    detected_pattern = "REJECTION_WICK"
+                    break
+                if k > 0 and c_k > o_k and c_k > opens[k-1] and o_k <= closes[k-1]:
+                    has_absorption_wick = True
+                    detected_pattern = "BULLISH_ENGULFING"
+                    break
+            else:
+                upper_wick = h_k - max(c_k, o_k)
+                if upper_wick >= 2.0 * max(body_k, pip_unit * 0.2):
+                    has_absorption_wick = True
+                    detected_pattern = "REJECTION_WICK"
+                    break
+                if k > 0 and c_k < o_k and c_k < opens[k-1] and o_k >= closes[k-1]:
+                    has_absorption_wick = True
+                    detected_pattern = "BEARISH_ENGULFING"
+                    break
+
+        if not has_absorption_wick and not has_micro_fvg:
+            res.disqualification_reason = (
+                "Scalper Veto: Neither Order Flow absorption wick (>= 2.0x body) "
+                "nor 3-bar Micro-Fair Value Gap detected in recent price action."
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        res.pattern = detected_pattern
+        res.in_ote_or_fvg = has_micro_fvg
+
+        # 6. Target & SL Derivation (10-20 pips TP, 6-10 pips SL, 1:1.5 to 1:2.0 RR)
+        spread_price = spread_points * specs.point
+        if spread_price <= 0.0:
+            spread_price = 15.0 * specs.point
+        spread_pips = spread_price / pip_unit if pip_unit > 0 else (spread_points / 10.0)
+
+        if chosen_direction == "BUY":
+            local_low = float(np.min(lows[-5:]))
+            raw_sl_dist = (curr_price - local_low) + (1.5 * spread_price)
+            sl_pips = max(6.0, min(10.0, raw_sl_dist / pip_unit))
+            sl_price = curr_price - (sl_pips * pip_unit)
+            tp_pips = max(10.0, min(20.0, round(sl_pips * 1.6, 1)))
+            tp_price = curr_price + (tp_pips * pip_unit)
+        else:
+            local_high = float(np.max(highs[-5:]))
+            raw_sl_dist = (local_high - curr_price) + (1.5 * spread_price)
+            sl_pips = max(6.0, min(10.0, raw_sl_dist / pip_unit))
+            sl_price = curr_price + (sl_pips * pip_unit)
+            tp_pips = max(10.0, min(20.0, round(sl_pips * 1.6, 1)))
+            tp_price = curr_price - (tp_pips * pip_unit)
+
+        rr_actual = round(tp_pips / sl_pips, 2)
+        res.sl_pips = sl_pips
+        res.tp_pips = tp_pips
+        res.sl_price = round(sl_price, specs.digits)
+        res.tp_price = round(tp_price, specs.digits)
+        res.rr_ratio = rr_actual
+
+        # 7. Spread-to-Target Sanity Gate (Veto if Spread > 15% of TP distance)
+        max_allowed_spread_pips = 0.15 * tp_pips
+        if spread_pips > max_allowed_spread_pips:
+            res.disqualification_reason = (
+                f"Spread-to-Target Sanity Gate Veto: Live spread ({spread_pips:.1f} pips) "
+                f"> 15% of TP target ({tp_pips:.1f} pips, max allowed: {max_allowed_spread_pips:.1f} pips)."
+            )
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        # 8. Lot Sizing (0.5% max risk cap)
+        sl_dist_price = sl_pips * pip_unit
+        lots, cash_risk = self.compute_autonomous_lot_size(
+            symbol=symbol,
+            equity=account_equity,
+            sl_distance_price=sl_dist_price,
+            specs=specs
+        )
+        res.calculated_lots = lots
+        res.target_cash_risk = cash_risk
+
+        # 9. Confluence Scoring (Base 80.0 + bonuses)
+        base_score = 80.0
+        if has_micro_fvg:
+            base_score += 5.0
+        if has_absorption_wick:
+            base_score += 5.0
+        if (chosen_direction == "BUY" and recent_low_min <= lower_1_5) or (chosen_direction == "SELL" and recent_high_max >= upper_1_5):
+            base_score += 5.0
+
+        res.score_100 = min(100.0, max(0.0, base_score))
+        res.signal = chosen_direction
+
+        # Minimum score threshold: 75.0 (7.5/10)
+        if res.score_100 < 75.0:
+            res.is_qualified = False
+            res.disqualification_reason = f"Scalper Confluence Score ({res.score_100:.1f}) < 75.0 Institutional Gate."
+            res.veto_reasons.append(res.disqualification_reason)
+            return res
+
+        res.is_qualified = True
+        res.disqualification_reason = (
+            f"100% Scalper Micro-Engine Qualified (EMA8/21 Momentum | Absorption: {detected_pattern} | "
+            f"Micro-FVG: {has_micro_fvg} | TP: {tp_pips:.1f}p | SL: {sl_pips:.1f}p | RR: 1:{rr_actual})"
+        )
+        return res
+
     def evaluate_symbol(
         self,
         symbol: str,
@@ -347,11 +657,34 @@ class QuantitativeConfluenceEngine:
         broker_specs: Optional[Dict[str, Any]] = None,
         spread_history: Optional[List[float]] = None,
         ltf_ohlcv: Optional[Dict[str, np.ndarray]] = None,
+        execution_mode: Optional[str] = None,
     ) -> CandidateEvaluation:
         """
         Executes the unyielding All-Or-Nothing "Sniper" Selection Matrix.
         If ANY criteria fail, emits HOLD immediately with explicit mathematical reason.
         """
+        if execution_mode is None:
+            try:
+                from autotrade.core.config_manager import get_execution_mode
+                execution_mode = get_execution_mode()
+            except Exception:
+                execution_mode = "INTRADAY"
+
+        if execution_mode == "SCALPER":
+            return self.evaluate_symbol_scalper(
+                symbol=symbol,
+                ohlcv=ohlcv,
+                spread_points=spread_points,
+                bid=bid,
+                ask=ask,
+                server_time_str=server_time_str,
+                bar_time=bar_time,
+                account_equity=account_equity,
+                broker_specs=broker_specs,
+                spread_history=spread_history,
+                ltf_ohlcv=ltf_ohlcv,
+            )
+
         canon = canonical_symbol(symbol)
         specs = self.update_broker_specs(symbol, broker_specs) if broker_specs else self.get_broker_specs(symbol)
 
@@ -824,11 +1157,31 @@ class QuantitativeConfluenceEngine:
             tp_price = opposing_target
             tp_dist = curr_price - tp_price
 
-        rr_actual = (tp_dist / sl_dist) if sl_dist > 0 else 2.0
-        if rr_actual < 2.0:
-            tp_dist = 2.0 * sl_dist
+        # Mode-specific target projection
+        if execution_mode == "INTRADAY":
+            # INTRADAY: Target 30-60 pips, 1:2.0 RR
+            tp_dist = max(30.0 * pip_unit, min(60.0 * pip_unit, tp_dist))
             tp_price = (curr_price + tp_dist) if chosen_direction == "BUY" else (curr_price - tp_dist)
-            rr_actual = 2.0
+            rr_actual = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 2.0
+            if rr_actual < 2.0:
+                tp_dist = 2.0 * sl_dist
+                tp_price = (curr_price + tp_dist) if chosen_direction == "BUY" else (curr_price - tp_dist)
+                rr_actual = 2.0
+        elif execution_mode == "SNIPER":
+            # SNIPER: Target 60-150 pips, Score >= 8.5/10
+            tp_dist = max(60.0 * pip_unit, min(150.0 * pip_unit, tp_dist))
+            tp_price = (curr_price + tp_dist) if chosen_direction == "BUY" else (curr_price - tp_dist)
+            rr_actual = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 2.0
+            if rr_actual < 2.0:
+                tp_dist = 2.0 * sl_dist
+                tp_price = (curr_price + tp_dist) if chosen_direction == "BUY" else (curr_price - tp_dist)
+                rr_actual = 2.0
+        else:
+            rr_actual = (tp_dist / sl_dist) if sl_dist > 0 else 2.0
+            if rr_actual < 2.0:
+                tp_dist = 2.0 * sl_dist
+                tp_price = (curr_price + tp_dist) if chosen_direction == "BUY" else (curr_price - tp_dist)
+                rr_actual = 2.0
 
         res.sl_price = round(sl_price, specs.digits)
         res.tp_price = round(tp_price, specs.digits)
@@ -880,18 +1233,20 @@ class QuantitativeConfluenceEngine:
         res.score_100 = max(0.0, min(100.0, base_score + total_score_mod))
         res.adaptive_score_modifier = total_score_mod
 
-        if res.score_100 < self.min_confluence_score or res.score_100 < 85.0:
+        req_threshold = 85.0 if execution_mode == "SNIPER" else 80.0
+        effective_min = max(req_threshold, self.min_confluence_score)
+        if res.score_100 < effective_min:
             res.is_qualified = False
             res.disqualification_reason = (
-                f"Sniper Score Veto: Confluence score ({res.score_100:.1f}) is below "
-                f"the mandatory Institutional Grade A+ threshold ({max(85.0, self.min_confluence_score):.1f}/100 [8.5/10])."
+                f"{execution_mode} Score Veto: Confluence score ({res.score_100:.1f}) is below "
+                f"the mandatory Institutional threshold ({effective_min:.1f}/100 [{effective_min/10.0:.1f}/10])."
             )
             res.veto_reasons.append(res.disqualification_reason)
             return res
 
         res.is_qualified = True
         res.disqualification_reason = (
-            f"100% Sniper Matrix Qualified (Zero Manual Input | Score Mod: {score_mod:+.1f} | DNA Edge: {res.dna_edge_boost:+.1f})"
+            f"100% {execution_mode} Matrix Qualified (Zero Manual Input | Score Mod: {score_mod:+.1f} | DNA Edge: {res.dna_edge_boost:+.1f})"
         )
         return res
 

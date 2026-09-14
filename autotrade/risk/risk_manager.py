@@ -213,6 +213,12 @@ class RiskManager:
         tp_dist = abs(tp - price)
         rr = tp_dist / sl_dist if sl_dist > 0 else 0.0
         min_rr = getattr(self.config.risk, "min_risk_reward_ratio", 2.0)
+        try:
+            from autotrade.core.config_manager import get_execution_mode
+            if get_execution_mode() == "SCALPER":
+                min_rr = 1.5
+        except Exception:
+            pass
         if rr < (min_rr - 0.01):
             result.passed = False
             result.reason = f"Reward-to-risk ratio ({rr:.2f}) is below minimum required ({min_rr:.2f}:1)."

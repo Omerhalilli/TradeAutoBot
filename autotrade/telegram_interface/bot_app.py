@@ -101,8 +101,10 @@ def build_telegram_app() -> Application:
     app.add_handler(CommandHandler(["pause", "pause_bot"], handlers.cmd_pause_bot))
     app.add_handler(CommandHandler(["resume", "resume_bot"], handlers.cmd_resume_bot))
     app.add_handler(CommandHandler(["news", "calendar"], handlers.cmd_news))
+    app.add_handler(CommandHandler(["mode", "speed"], handlers.cmd_mode))
 
     # Callback Query Handlers (Supporting both modern router and existing handlers)
+    app.add_handler(CallbackQueryHandler(handlers.cb_mode_switch, pattern=r"^mode_(scalper|intraday|sniper)$"))
     app.add_handler(CallbackQueryHandler(
         command_router.handle_callback_query,
         pattern=r"^(nav_|shotsym:|shottf:|confirm_close_all|cancel_close_all|strat_toggle:|strat_run_opt|set_risk_pct:|set_dd_pct:)"

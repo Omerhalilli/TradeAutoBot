@@ -1797,9 +1797,51 @@ string Zmq_HandleScreenshot(const string reqJson)
       Sleep(50);
    }
    
+   // Draw visual trade verification lines if prices are specified (Open, BE, Close)
+   double entryPrice = Zmq_ExtractJsonNumber(reqJson, "entry_price", 0.0);
+   double slPrice    = Zmq_ExtractJsonNumber(reqJson, "sl_price", 0.0);
+   double tpPrice    = Zmq_ExtractJsonNumber(reqJson, "tp_price", 0.0);
+   int dig = (int)MarketInfo(matchedSymbol, MODE_DIGITS);
+   if(dig <= 0) dig = Digits;
+   
+   string objEntry = "__ZMQ_VERIF_ENTRY__";
+   string objSL    = "__ZMQ_VERIF_SL__";
+   string objTP    = "__ZMQ_VERIF_TP__";
+   
+   if(entryPrice > 0.0)
+   {
+      ObjectCreate(targetChartId, objEntry, OBJ_HLINE, 0, 0, entryPrice);
+      ObjectSetInteger(targetChartId, objEntry, OBJPROP_COLOR, clrLime);
+      ObjectSetInteger(targetChartId, objEntry, OBJPROP_STYLE, STYLE_SOLID);
+      ObjectSetInteger(targetChartId, objEntry, OBJPROP_WIDTH, 2);
+      ObjectSetString(targetChartId, objEntry, OBJPROP_TEXT, "ENTRY: " + DoubleToString(entryPrice, dig));
+   }
+   if(slPrice > 0.0)
+   {
+      ObjectCreate(targetChartId, objSL, OBJ_HLINE, 0, 0, slPrice);
+      ObjectSetInteger(targetChartId, objSL, OBJPROP_COLOR, clrRed);
+      ObjectSetInteger(targetChartId, objSL, OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(targetChartId, objSL, OBJPROP_WIDTH, 2);
+      ObjectSetString(targetChartId, objSL, OBJPROP_TEXT, "SL: " + DoubleToString(slPrice, dig));
+   }
+   if(tpPrice > 0.0)
+   {
+      ObjectCreate(targetChartId, objTP, OBJ_HLINE, 0, 0, tpPrice);
+      ObjectSetInteger(targetChartId, objTP, OBJPROP_COLOR, clrDeepSkyBlue);
+      ObjectSetInteger(targetChartId, objTP, OBJPROP_STYLE, STYLE_DASH);
+      ObjectSetInteger(targetChartId, objTP, OBJPROP_WIDTH, 2);
+      ObjectSetString(targetChartId, objTP, OBJPROP_TEXT, "TP: " + DoubleToString(tpPrice, dig));
+   }
+   
    if(FileIsExist(filename)) FileDelete(filename);
    ChartRedraw(targetChartId);
    bool shotOk = ChartScreenShot(targetChartId, filename, width, height, ALIGN_RIGHT);
+   
+   // Clean up visual verification lines
+   if(entryPrice > 0.0) ObjectDelete(targetChartId, objEntry);
+   if(slPrice > 0.0)    ObjectDelete(targetChartId, objSL);
+   if(tpPrice > 0.0)    ObjectDelete(targetChartId, objTP);
+   ChartRedraw(targetChartId);
    
    // Wait for MT4 graphics pipeline to save frame before restoring HUD
    for(int w = 0; w < 30; w++)
@@ -2295,6 +2337,119 @@ string Zmq_HandleGetSymbolInfo(const string reqStr)
 }
 
 //+------------------------------------------------------------------+
+//| Handler for GET_RATES                                            |
+//+------------------------------------------------------------------+
+string Zmq_HandleGetRates(const string reqStr)
+{
+   string sym = Zmq_ExtractJsonString(reqStr, "symbol");
+   if(sym == "") sym = Symbol();
+   
+   string tfStr = Zmq_ExtractJsonString(reqStr, "timeframe");
+   if(tfStr == "") tfStr = Zmq_ExtractJsonString(reqStr, "tf");
+   if(tfStr == "") tfStr = "H1";
+   StringToUpper(tfStr);
+   
+   ENUM_TIMEFRAMES tf = PERIOD_H1;
+   if(tfStr == "M1") tf = PERIOD_M1;
+   else if(tfStr == "M5") tf = PERIOD_M5;
+   else if(tfStr == "M15") tf = PERIOD_M15;
+   else if(tfStr == "M30") tf = PERIOD_M30;
+   else if(tfStr == "H1") tf = PERIOD_H1;
+   else if(tfStr == "H4") tf = PERIOD_H4;
+   else if(tfStr == "D1") tf = PERIOD_D1;
+   else if(tfStr == "W1") tf = PERIOD_W1;
+   else if(tfStr == "MN1") tf = PERIOD_MN1;
+   else
+   {
+      int tfMin = (int)Zmq_ExtractJsonNumber(reqStr, "timeframe", 60);
+      if(tfMin <= 0) tfMin = 60;
+      tf = (ENUM_TIMEFRAMES)tfMin;
+   }
+   
+   int count = (int)Zmq_ExtractJsonNumber(reqStr, "count", 100);
+   if(count <= 0) count = 100;
+   if(count > 500) count = 500;
+   
+   int symDig = (int)MarketInfo(sym, MODE_DIGITS);
+   if(symDig <= 0) symDig = Digits;
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_RATES\",";
+   json += "\"symbol\":\"" + sym + "\",";
+   json += "\"timeframe\":\"" + tfStr + "\",";
+   json += "\"count\":" + IntegerToString(count) + ",";
+   json += "\"rates\":[";
+   
+   int written = 0;
+   for(int i = 0; i < count; i++)
+   {
+      datetime barTime = iTime(sym, tf, i);
+      if(barTime == 0 && i > 0) break;
+      
+      double o = iOpen(sym, tf, i);
+      double h = iHigh(sym, tf, i);
+      double l = iLow(sym, tf, i);
+      double c = iClose(sym, tf, i);
+      long v = iVolume(sym, tf, i);
+      
+      if(written > 0) json += ",";
+      json += "{\"time\":" + IntegerToString((long)barTime) + ",";
+      json += "\"open\":" + DoubleToString(o, symDig) + ",";
+      json += "\"high\":" + DoubleToString(h, symDig) + ",";
+      json += "\"low\":" + DoubleToString(l, symDig) + ",";
+      json += "\"close\":" + DoubleToString(c, symDig) + ",";
+      json += "\"volume\":" + IntegerToString(v) + "}";
+      written++;
+   }
+   
+   json += "]}";
+   return json;
+}
+
+//+------------------------------------------------------------------+
+//| Handler for GET_QUOTE                                            |
+//+------------------------------------------------------------------+
+string Zmq_HandleGetQuote(const string reqStr)
+{
+   string sym = Zmq_ExtractJsonString(reqStr, "symbol");
+   if(sym == "") sym = Symbol();
+   
+   double bid = MarketInfo(sym, MODE_BID);
+   double ask = MarketInfo(sym, MODE_ASK);
+   double point = MarketInfo(sym, MODE_POINT);
+   int digits = (int)MarketInfo(sym, MODE_DIGITS);
+   double spread = MarketInfo(sym, MODE_SPREAD);
+   
+   if(digits <= 0) digits = Digits;
+   if(point <= 0.0) point = Point;
+   if(bid == 0.0) bid = Bid;
+   if(ask == 0.0) ask = Ask;
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"GET_QUOTE\",";
+   json += "\"symbol\":\"" + sym + "\",";
+   json += "\"bid\":" + DoubleToString(bid, digits) + ",";
+   json += "\"ask\":" + DoubleToString(ask, digits) + ",";
+   json += "\"spread\":" + DoubleToString(spread, 1) + ",";
+   json += "\"point\":" + DoubleToString(point, digits) + ",";
+   json += "\"digits\":" + IntegerToString(digits) + ",";
+   json += "\"server_time\":\"" + TimeToStr(TimeCurrent(), TIME_DATE|TIME_SECONDS) + "\",";
+   json += "\"timestamp\":" + IntegerToString((long)TimeCurrent());
+   json += "}";
+   return json;
+}
+
+//+------------------------------------------------------------------+
+//| Handler for STREAM_TICKS                                         |
+//+------------------------------------------------------------------+
+string Zmq_HandleStreamTicks(const string reqStr)
+{
+   return Zmq_HandleGetQuote(reqStr);
+}
+
+//+------------------------------------------------------------------+
 //| Request Dispatcher                                               |
 //+------------------------------------------------------------------+
 string Zmq_ProcessRequest(const string reqStr)
@@ -2344,10 +2499,16 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleApplyColors();
    if(action == "SCREENSHOT" || action == "GET_SCREENSHOT")
       return Zmq_HandleScreenshot(reqStr);
-   if(action == "GET_MARKET_WATCH_SYMBOLS" || action == "DISCOVER_SYMBOLS")
+   if(action == "GET_MARKET_WATCH_SYMBOLS" || action == "DISCOVER_SYMBOLS" || action == "GET_MARKET_WATCH")
       return Zmq_HandleGetMarketWatchSymbols();
    if(action == "GET_SYMBOLS" || action == "SYMBOLS")
       return Zmq_HandleGetMarketWatchSymbols();
+   if(action == "GET_RATES" || action == "RATES")
+      return Zmq_HandleGetRates(reqStr);
+   if(action == "GET_QUOTE" || action == "QUOTE")
+      return Zmq_HandleGetQuote(reqStr);
+   if(action == "STREAM_TICKS" || action == "TICKS")
+      return Zmq_HandleStreamTicks(reqStr);
    if(action == "GET_SYMBOL_INFO" || action == "SYMBOL_INFO")
       return Zmq_HandleGetSymbolInfo(reqStr);
    if(action == "SCAN_SYMBOLS" || action == "SCAN" || action == "MARKET_DATA")
@@ -2356,7 +2517,7 @@ string Zmq_ProcessRequest(const string reqStr)
       return Zmq_HandleGetBoost();
    if(action == "RESET_SAFEGUARDS" || action == "RESET_PROP" || action == "RESET")
       return Zmq_HandleResetSafeguards();
-   if(action == "OPEN_ORDER" || action == "ORDER_SEND" || action == "BUY" || action == "SELL")
+   if(action == "OPEN_ORDER" || action == "ORDER_SEND" || action == "BUY" || action == "SELL" || action == "EXECUTE_ORDER")
       return Zmq_HandleOpenOrder(reqStr);
    if(action == "CLOSE_TICKET")
       return Zmq_HandleCloseSymbol(reqStr);

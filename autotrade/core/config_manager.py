@@ -88,6 +88,7 @@ class StrategyConfig:
     default_fixed_lot: float = 0.05
     kelly_fraction: float = 0.5                  # Half-Kelly for conservative capital preservation
     min_risk_reward_ratio: float = 2.0           # Minimum TP / SL ratio (2.0:1)
+    execution_mode: str = "INTRADAY"             # SCALPER, INTRADAY, SNIPER
 
 
 @dataclass
@@ -262,6 +263,18 @@ class ConfigManager:
             self.config.strategy.default_sizing_method = str(get_val("DEFAULT_SIZING_METHOD", "STRATEGY", "default_sizing_method", "auto")).strip()
             self.config.strategy.default_fixed_lot = float(get_val("DEFAULT_FIXED_LOT", "STRATEGY", "default_fixed_lot", 0.05))
             self.config.strategy.min_risk_reward_ratio = float(get_val("MIN_RISK_REWARD_RATIO", "STRATEGY", "min_risk_reward_ratio", 2.0))
+            
+            # Execution mode (SCALPER, INTRADAY, SNIPER)
+            default_mode = "INTRADAY"
+            try:
+                from autotrade.data_layer.database import get_system_state
+                default_mode = get_system_state("execution_mode", "INTRADAY")
+            except Exception:
+                pass
+            raw_mode = str(get_val("EXECUTION_MODE", "STRATEGY", "execution_mode", default_mode)).strip().upper()
+            if raw_mode not in ("SCALPER", "INTRADAY", "SNIPER"):
+                raw_mode = "INTRADAY"
+            self.config.strategy.execution_mode = raw_mode
 
             # System & Logging
             self.config.log_level = get_val("LOG_LEVEL", "SYSTEM", "log_level", "INFO").upper()
@@ -367,8 +380,39 @@ class ConfigManager:
             d = asdict(self.config)
             if d.get("telegram", {}).get("bot_token"):
                 tok = d["telegram"]["bot_token"]
-                d["telegram"]["bot_token"] = tok[:6] + "..." + tok[-4:] if len(tok) > 10 else "***"
             return d
+
+    def set_execution_mode(self, mode: str) -> str:
+        """Updates execution mode ('SCALPER', 'INTRADAY', 'SNIPER') and persists to SQLite."""
+        m = str(mode).strip().upper()
+        if m not in ("SCALPER", "INTRADAY", "SNIPER"):
+            m = "INTRADAY"
+        with self._lock:
+            self.config.strategy.execution_mode = m
+            try:
+                from autotrade.data_layer.database import set_system_state
+                set_system_state("execution_mode", m)
+            except Exception as ex:
+                logger.debug(f"Could not persist execution_mode to SQLite: {ex}")
+            event_bus.publish(
+                EventType.CONFIG_UPDATED,
+                payload={"key": "execution_mode", "value": m},
+                source="ConfigManager"
+            )
+        return m
+
+    def get_execution_mode(self) -> str:
+        """Returns current execution mode, checking SQLite if not set."""
+        with self._lock:
+            m = getattr(self.config.strategy, "execution_mode", "")
+            if not m:
+                try:
+                    from autotrade.data_layer.database import get_system_state
+                    m = get_system_state("execution_mode", "INTRADAY")
+                except Exception:
+                    m = "INTRADAY"
+                self.config.strategy.execution_mode = m
+            return m
 
 
 # Global singleton instance
@@ -381,3 +425,11 @@ def get_config() -> SystemConfig:
 def get_config_manager() -> ConfigManager:
     """Returns the singleton ConfigManager controller."""
     return _config_manager
+
+def get_execution_mode() -> str:
+    """Returns the active execution speed mode ('SCALPER', 'INTRADAY', 'SNIPER')."""
+    return _config_manager.get_execution_mode()
+
+def set_execution_mode(mode: str) -> str:
+    """Sets the active execution speed mode ('SCALPER', 'INTRADAY', 'SNIPER')."""
+    return _config_manager.set_execution_mode(mode)

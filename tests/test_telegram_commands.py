@@ -859,6 +859,45 @@ class TestTelegramCommands(unittest.TestCase):
         asyncio.run(run())
 
 
+    def test_cmd_mode_and_switcher(self):
+        """Verifies interactive execution mode switcher (/mode) and callback handlers."""
+        async def run():
+            from autotrade.core.autonomous_trader import autonomous_trader
+            # 1. Display default / current mode panel
+            update, context, message = self._make_message_update(self.auth_id, text="/mode")
+            await handlers.cmd_mode(update, context)
+            self.assertTrue(message.reply_text.called)
+            reply = self._get_reply_text(message.reply_text)
+            self.assertIn("EXECUTION SPEED & CONFLUENCE MODE", reply)
+
+            # 2. Switch mode via command arg /mode scalper
+            update2, context2, message2 = self._make_message_update(self.auth_id, text="/mode scalper", args=["scalper"])
+            await handlers.cmd_mode(update2, context2)
+            reply2 = self._get_reply_text(message2.reply_text)
+            self.assertIn("SCALPER", reply2)
+            self.assertEqual(autonomous_trader.execution_mode, "SCALPER")
+            self.assertEqual(autonomous_trader.timeframe, "M5")
+            self.assertEqual(autonomous_trader.max_positions, 1)
+
+            # 3. Switch mode via callback query mode_sniper
+            update_cb, context_cb, query_cb = self._make_callback_update(self.auth_id, callback_data="mode_sniper")
+            await handlers.cb_mode_switch(update_cb, context_cb)
+            query_cb.answer.assert_called()
+            query_cb.edit_message_text.assert_called()
+            reply_cb = self._get_reply_text(query_cb.edit_message_text)
+            self.assertIn("SNIPER", reply_cb)
+            self.assertEqual(autonomous_trader.execution_mode, "SNIPER")
+            self.assertEqual(autonomous_trader.max_positions, 2)
+
+            # 4. Switch mode via callback query mode_intraday
+            update_cb2, context_cb2, query_cb2 = self._make_callback_update(self.auth_id, callback_data="mode_intraday")
+            await handlers.cb_mode_switch(update_cb2, context_cb2)
+            self.assertEqual(autonomous_trader.execution_mode, "INTRADAY")
+            self.assertEqual(autonomous_trader.max_positions, 3)
+
+        asyncio.run(run())
+
+
 if __name__ == "__main__":
     unittest.main()
 

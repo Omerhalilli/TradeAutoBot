@@ -2532,6 +2532,11 @@ void CleanupStealthOrders()
 //+------------------------------------------------------------------+
 int ExecuteSmartOrder(const int command, const double volume, const double entryPrice, const double stopLoss, const double takeProfit, string targetSymbol = "")
 {
+   // VETO: MT4 Zero-Logic Execution Slave Rule
+   // Autonomous trade opening inside MQL4 is strictly prohibited.
+   // Orders may ONLY be placed via ZeroMQ OPEN_ORDER commands dispatched from Python.
+   Print("[SECURITY VETO] MQL4 autonomous order execution blocked. MT4 is a zero-logic execution slave.");
+   return -1;
    string sym = (targetSymbol == "" || targetSymbol == "CURRENT") ? Symbol() : targetSymbol;
    int ticket = -1;
    int attempts = 0;
@@ -7120,248 +7125,14 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
-//| Autonomous Multi-Symbol Surveillance & Execution Engine         |
+//| Autonomous Multi-Symbol Surveillance & Execution Engine (SLAVE)  |
 //+------------------------------------------------------------------+
 void Autonomous_MultiSymbolScan()
 {
-   if(!EnableAutonomousMultiSymbol) return;
-   if(!g_AutoTradingRuntimeActive) return;
-   if(g_DailyLossCircuitTripped || g_PropLockoutActive) return;
-   if(IsAutoTradePausedByTelegram()) return;
-   if(GlobalVariableCheck("AutoTrading_Paused") && GlobalVariableGet("AutoTrading_Paused") > 0.5) return;
-
-   // 1. Daily loss circuit breaker check
-   if(CheckDailyLossCircuitBreaker(MaxDailyDrawdownPercent, MagicNumber))
-   {
-      return;
-   }
-
-   // 2. Strict global open position limit check across portfolio
-   if(GetGlobalActivePositions(MagicNumber) >= MaxOpenPositions)
-   {
-      return;
-   }
-
-   // Coordinate master scanner across multiple open chart instances of EA
-   string gvScanMaster = "AUTONOMOUS_SCAN_MASTER_CHART";
-   long currentChart = ChartID();
-   if(!GlobalVariableCheck(gvScanMaster))
-   {
-      GlobalVariableSet(gvScanMaster, (double)currentChart);
-   }
-   else
-   {
-      long masterChart = (long)GlobalVariableGet(gvScanMaster);
-      if(masterChart != currentChart)
-      {
-         bool masterAlive = false;
-         long cid = ChartFirst();
-         while(cid >= 0)
-         {
-            if(cid == masterChart) { masterAlive = true; break; }
-            cid = ChartNext(cid);
-         }
-         if(masterAlive) return; // Master chart handles autonomous multi-symbol scanning!
-         GlobalVariableSet(gvScanMaster, (double)currentChart);
-      }
-   }
-   
-   // Automatically detect active chart timeframe
-   ENUM_TIMEFRAMES activeTF = (ENUM_TIMEFRAMES)Period();
-
-   if(ScanOnBarCloseOnly)
-   {
-      int tfSec = activeTF * 60;
-      datetime currentBarTime = iTime(Symbol(), activeTF, 0);
-      datetime currentBrokerBar = (tfSec > 0) ? (datetime)((long)TimeCurrent() / tfSec * tfSec) : 0;
-      if(currentBrokerBar > currentBarTime) currentBarTime = currentBrokerBar;
-      if(currentBarTime <= 0) return;
-
-      if(g_LastAutonomousBarTime == 0)
-      {
-         // Initial startup: lock to current forming bar so no trade occurs on startup
-         g_LastAutonomousBarTime = currentBarTime;
-         return;
-      }
-
-      if(currentBarTime <= g_LastAutonomousBarTime)
-      {
-         return; // Inside current forming bar: between bar closes, no new entry scans take place!
-      }
-
-      g_LastAutonomousBarTime = currentBarTime;
-      PrintFormat("[AUTONOMOUS MULTI-SYMBOL] 🕯️ New candle boundary confirmed on %s (%s). Executing portfolio surveillance scan...",
-                  Symbol(), EnumToString(activeTF));
-   }
-   else
-   {
-      uint nowTick = GetTickCount();
-      if(g_LastAutonomousScanTick == 0)
-      {
-         g_LastAutonomousScanTick = nowTick;
-         return; // Initial startup stabilization delay: never trade immediately on startup
-      }
-      if(nowTick - g_LastAutonomousScanTick < (uint)(AutonomousScanIntervalSec * 1000)) return;
-      g_LastAutonomousScanTick = nowTick;
-   }
-
-   // 3. Build watchlist: dynamic discovery from Market Watch or whitelist
-   string scanSymbols[];
-   int numSymbols = 0;
-   
-   string trimmedWatchlist = AutonomousWatchlist;
-   StringTrimLeft(trimmedWatchlist);
-   StringTrimRight(trimmedWatchlist);
-   StringToUpper(trimmedWatchlist);
-   
-   if(trimmedWatchlist == "" || trimmedWatchlist == "MARKET_WATCH" || trimmedWatchlist == "ALL" || trimmedWatchlist == "PROFILE" || trimmedWatchlist == "AUTO")
-   {
-      numSymbols = DiscoverMarketWatchSymbols(scanSymbols, "", AutonomousExcludeSymbols, MaxMarginUsagePct);
-   }
-   else
-   {
-      int start = 0;
-      int totalLen = StringLen(AutonomousWatchlist);
-      while(start < totalLen)
-      {
-         int comma = StringFind(AutonomousWatchlist, ",", start);
-         string symToken = (comma >= 0) ? StringSubstr(AutonomousWatchlist, start, comma - start) : StringSubstr(AutonomousWatchlist, start);
-         StringTrimLeft(symToken);
-         StringTrimRight(symToken);
-         start = (comma >= 0) ? (comma + 1) : totalLen;
-         if(StringLen(symToken) == 0) continue;
-         
-         if(!IsSymbolAllowed(symToken, "", AutonomousExcludeSymbols)) continue;
-
-         string resolved = ResolveBrokerSymbol(symToken);
-         if(resolved == "") resolved = symToken;
-         
-         if(!IsSymbolTradeAllowed(resolved)) continue;
-         if(!IsSymbolTradeableForBalance(resolved, MaxMarginUsagePct)) continue;
-
-         ArrayResize(scanSymbols, numSymbols + 1);
-         scanSymbols[numSymbols] = resolved;
-         numSymbols++;
-      }
-   }
-   
-   if(numSymbols <= 0) return;
-
-   int effectiveMinScore = MathMax(8, AutonomousMinConfluenceScore);
-
-   // 4. Scan all configured symbols one by one and rank best opportunity
-   StrategySignal bestSig;
-   bestSig.valid = false;
-   bestSig.cmd   = -1;
-   bestSig.score = 0;
-   double bestRankScore = -1.0;
-   string bestSymbol    = "";
-   double bestLots      = 0.0;
-   int qualifiedCount   = 0;
-
-   for(int i = 0; i < numSymbols; i++)
-   {
-      // Atomic verification before each symbol
-      if(GetGlobalActivePositions(MagicNumber) >= MaxOpenPositions) return;
-
-      string sym = scanSymbols[i];
-
-      SymbolSelect(sym, true);
-
-      // When not in strict bar-close mode, verify symbol-level new bar
-      if(!ScanOnBarCloseOnly && !IsNewBar(sym, activeTF)) continue;
-
-      // 5. Check persistent symbol cooldown FIRST
-      if(IsSymbolInCooldown(sym, AutonomousCooldownMinutes)) continue;
-
-      // 6. Pre-filter before expensive indicator calculations (liquidity, trade permission, margin affordability)
-      if(!PreFilterSymbol(sym, (double)MaxSpreadPoints, 205, activeTF, true, MaxMarginUsagePct)) continue;
-
-      // 7. Exact canonical symbol matching: verify no existing position is open for this pair
-      bool hasOpenPosition = false;
-      for(int k = 0; k < OrdersTotal(); k++)
-      {
-         if(!OrderSelect(k, SELECT_BY_POS, MODE_TRADES)) continue;
-         if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
-         if(AreSymbolsMatching(OrderSymbol(), sym))
-         {
-            hasOpenPosition = true;
-            break;
-         }
-      }
-      if(hasOpenPosition) continue;
-
-      // 8. Currency exposure correlation clamping
-      if(!CanOpenCurrencyExposure(sym, MaxExposurePerCurrency, MagicNumber)) continue;
-
-      // 9. Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
-      // Score < 8 or analysisScore < 85.0 is strictly prohibited from opening a trade
-      StrategySignal sig = EvaluateSymbolOpportunity(sym, activeTF, effectiveMinScore, 1.5, 10.0, 150.0);
-      if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.score < 8 || sig.analysisScore < 85.0) continue;
-
-      double entryPrice = (sig.cmd == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
-      double orderLots = CalculateDynamicLotSize(entryPrice, sig.slPrice, sym);
-      if(orderLots <= 0.0) continue;
-
-      qualifiedCount++;
-
-      // Composite ranking: prioritize higher analysis score (0-100), superior RR, lower spread
-      double rankScore = (sig.analysisScore * 100.0) + (sig.rrRatio * 50.0) - (sig.spreadPoints * 2.0);
-      if(rankScore > bestRankScore)
-      {
-         bestRankScore = rankScore;
-         bestSig       = sig;
-         bestSymbol    = sym;
-         bestLots      = orderLots;
-      }
-   }
-
-   g_AutoScanLastTime       = TimeCurrent();
-   g_AutoScanTotalSymbols   = numSymbols;
-   g_AutoScanQualifiedCount = qualifiedCount;
-
-   // 10. Post-scan decision: If one or more qualified setups found, select and execute the best one!
-   // Must strictly satisfy score >= 8 and analysisScore >= 85.0
-   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= 8 && bestSig.score >= effectiveMinScore && bestSig.analysisScore >= 85.0 && bestSymbol != "")
-   {
-      g_AutoScanBestSymbol   = bestSymbol;
-      g_AutoScanBestCmd      = (bestSig.cmd == OP_BUY ? "BUY" : "SELL");
-      g_AutoScanBestScore    = bestSig.score;
-      g_AutoScanBestAnalysis = bestSig.analysisScore;
-      g_AutoScanBestLots     = bestLots;
-      g_AutoScanStatusDesc   = StringFormat("FILLED %s %s (Score %d/10, %.1f/100, %.2fL) | Qual: %d/%d",
-                                            bestSymbol, g_AutoScanBestCmd, bestSig.score, bestSig.analysisScore, bestLots, qualifiedCount, numSymbols);
-
-      if(AutonomousTradeDirectly)
-      {
-         int chartScore = MathMax(g_ScoreTrendBuy + g_ScoreMomBuy + g_ScoreSRBuy + g_ScoreCandleBuy,
-                                  g_ScoreTrendSell + g_ScoreMomSell + g_ScoreSRSell + g_ScoreCandleSell);
-         PrintFormat("[AUTONOMOUS MULTI-SYMBOL SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
-                     numSymbols, qualifiedCount, effectiveMinScore, bestSymbol,
-                     (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSig.score, bestSig.analysisScore, bestLots, bestSig.rrRatio);
-
-         int ticket = ExecuteSmartOrder(bestSig.cmd, bestLots, bestSig.entryPrice, bestSig.slPrice, bestSig.tpPrice, bestSymbol);
-         if(ticket > 0)
-         {
-            PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Successfully filled %s on %s (Lots: %.2f, Score: %d/10, Ticket: #%d) | Note: Attached chart %s was %d/10 (not traded).",
-                        (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSymbol, bestLots, bestSig.score, ticket, Symbol(), chartScore);
-            RecordSymbolCooldown(bestSymbol);
-         }
-         else
-         {
-            PrintFormat("[AUTONOMOUS MULTI-SYMBOL] Order execution failed for %s. Enforcing cooldown to break retry loop.", bestSymbol);
-            RecordSymbolCooldown(bestSymbol);
-         }
-      }
-   }
-   else
-   {
-      g_AutoScanBestSymbol = "";
-      g_AutoScanStatusDesc = StringFormat("HOLD: ALL SYMBOLS BYPASSED (Score < %d/10 [85%%]). Capital 100%% safe.", effectiveMinScore);
-      // No symbol reached confluence threshold >= 8 (85%); bypass all symbols and wait cleanly for next cycle
-      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. HOLD: ALL SYMBOLS BYPASSED (No actionable setup >= %d/10 [85.0 Required]). Capital safely preserved on %s and portfolio. Waiting for next candle boundary.",
-                  numSymbols, effectiveMinScore, Symbol());
-   }
+   // ZERO-LOGIC EXECUTION SLAVE:
+   // MT4 EA never scans or opens trades autonomously.
+   // All market surveillance, scoring, and execution directives are strictly issued by Python.
+   return;
 }
 
 
@@ -7370,17 +7141,11 @@ void OnTimer()
    ZeroMQ_Poll();
    Telegram_ProcessQueue();
    Telegram_ProcessTradeEvents();
-   Autonomous_MultiSymbolScan();
 
    static uint s_lastEATimerTick = 0;
    uint nowTimerTick = GetTickCount();
    if(nowTimerTick - s_lastEATimerTick < 1000) return;
    s_lastEATimerTick = nowTimerTick;
-
-   // Multi-Symbol Lifecycle Management & Protection (Runs 1 Hz across entire portfolio)
-   ManageActiveTradeLifecycle();
-   MonitorStealthStops();
-   EnforceTradeExpiration();
 
    // --- Dynamic Account Switch & Safeguard Sanity Recalibration ---
    static int s_lastEAAccountNumber = 0;
@@ -7509,102 +7274,10 @@ void OnTimer()
 
 void OnTick()
 {
+   // MT4 ZERO-LOGIC EXECUTION SLAVE:
+   // MT4 EA only polls the ZeroMQ socket for execution directives from Python.
+   // MT4 never analyzes the market or opens trades autonomously.
    ZeroMQ_Poll();
-   // 1. Manage existing positions on every tick
-   ManageActiveTradeLifecycle();
-   MonitorStealthStops();
-   UpdateConsecutiveLossTracker();
-   EnforceTradeExpiration();
-
-
-   // 2. Bar close evaluation constraint (prevents repainting and immediate entry on startup)
-   if(!IsNewBar(Symbol(), (ENUM_TIMEFRAMES)Period()))
-   {
-      return; // Inside current forming bar
-   }
-
-   g_LastBarProcessedTime = iTime(Symbol(), Period(), 0);
-
-   // 3. Multi-Indicator Confluence Scoring
-   int buyScore = 0;
-   int sellScore = 0;
-   ExecuteScoringPipeline(buyScore, sellScore);
-
-   ENUM_SIGNAL_DECISION decision = SIGNAL_NEUTRAL;
-   int finalWinningScore = 0;
-   int effectiveMinScore = MathMax(6, MinRequiredScore);
-
-   // Strict Directional Trend Confirmation: EMA 20 > EMA 50 > EMA 200 and Price > EMA 200 for BUY, or EMA 20 < EMA 50 < EMA 200 and Price < EMA 200 for SELL
-   // If score is < 6 (e.g. 5), opening a trade is STRICTLY PROHIBITED
-   double ema20  = iMA(Symbol(), Period(), EMA_Fast_Period,   0, MODE_EMA, EMA_AppliedPrice, 1);
-   double ema50  = iMA(Symbol(), Period(), EMA_Medium_Period, 0, MODE_EMA, EMA_AppliedPrice, 1);
-   double ema200 = iMA(Symbol(), Period(), EMA_Slow_Period,   0, MODE_EMA, EMA_AppliedPrice, 1);
-   double close1 = iClose(Symbol(), Period(), 1);
-
-   bool buyTrendConfirmed  = (ema200 > 0.0 && ema20 > ema50 && ema50 > ema200 && close1 > ema200);
-   bool sellTrendConfirmed = (ema200 > 0.0 && ema20 < ema50 && ema50 < ema200 && close1 < ema200);
-
-   if(buyScore >= effectiveMinScore && buyScore > sellScore && buyTrendConfirmed && g_ActiveTrendRegime == TREND_STRONG_BULLISH)
-   {
-      decision = SIGNAL_LONG;
-      finalWinningScore = buyScore;
-      g_LastSignalVerdict = "BUY";
-   }
-   else if(sellScore >= effectiveMinScore && sellScore > buyScore && sellTrendConfirmed && g_ActiveTrendRegime == TREND_STRONG_BEARISH)
-   {
-      decision = SIGNAL_SHORT;
-      finalWinningScore = sellScore;
-      g_LastSignalVerdict = "SELL";
-   }
-   else
-   {
-      decision = SIGNAL_NEUTRAL;
-      g_LastSignalVerdict = "NONE";
-   }
-
-   g_LastSignalScore = finalWinningScore;
-
-
-   // 4. Draw Support/Resistance & Pivot Lines
-   DrawSupportResistanceLines();
-
-
-   // 5. Signal Action
-   if(decision != SIGNAL_NEUTRAL)
-   {
-      DrawChartSignalMarker(decision, 1);
-      if(!AutonomousTradeDirectly)
-      {
-         BroadcastSignalAlerts(decision, finalWinningScore);
-      }
-
-
-      // Check Filters and Execute if AutoTrading is enabled
-      // CRITICAL: Standalone single-chart mode only (!EnableAutonomousMultiSymbol).
-      // When EnableAutonomousMultiSymbol is active, ALL portfolio trade decisions are governed strictly
-      // by Autonomous_MultiSymbolScan(), ensuring deep comparison across all 24 symbols, and allowing 
-      // full bypass of all symbols when no setup meets >= 6/10.
-      if(!EnableAutonomousMultiSymbol && ValidateTradeFilters(decision))
-      {
-         if(g_AutoTradingRuntimeActive && !IsAutoTradePausedByTelegram())
-         {
-            double entryPrice = (decision == SIGNAL_LONG) ? Ask : Bid;
-            int cmd = (decision == SIGNAL_LONG) ? OP_BUY : OP_SELL;
-
-
-            // Advanced SL/TP Calculation via Configured Priority & Hybrid Confluence
-            double slPrice = 0.0;
-            double tpPrice = 0.0;
-            CalculateAdvancedSLTP(cmd, entryPrice, slPrice, tpPrice);
-
-
-            // Calculate precise lot size based on the final selected SL distance
-            double orderLots = CalculateDynamicLotSize(entryPrice, slPrice);
-            ExecuteSmartOrder(cmd, orderLots, entryPrice, slPrice, tpPrice);
-            SaveChartTradeScreenshot(g_LastSignalVerdict);
-         }
-      }
-   }
 }
 //+------------------------------------------------------------------+
 

@@ -83,6 +83,7 @@ async def post_init(application) -> None:
             BotCommand("panic", "🚨 Emergency Kill-Switch Alias"),
             BotCommand("colors", "🎨 Apply Dark Theme Color Scheme to Charts"),
             BotCommand("news", "📅 High-Impact Economic Calendar"),
+            BotCommand("mode", "🎛️ Switch Execution Mode (Scalper/Intraday/Sniper)"),
             BotCommand("autotrade", "🤖 Autonomous Multi-Symbol Trading Panel"),
             BotCommand("scan", "📡 Scan Multi-Symbol Portfolio Confluence"),
             BotCommand("timeframe", "⏱️ Timeframe & Bar-Close Synchronization"),
@@ -315,11 +316,13 @@ def create_application():
     app.add_handler(CommandHandler(["timeframe", "tf"], handlers.cmd_timeframe))
     app.add_handler(CommandHandler(["symbols", "watchlist"], handlers.cmd_symbols))
     app.add_handler(CommandHandler(["news", "calendar"], handlers.cmd_news))
+    app.add_handler(CommandHandler(["mode", "speed"], handlers.cmd_mode))
 
     # Slash text commands from EA messages: /close_12345, /half_12345, /be_12345, /shot_SYM_TF
     app.add_handler(MessageHandler(filters.Regex(r"^/(close|half|be|shot)_\w+"), handlers.handle_slash_action))
 
     # Callback Query Handlers
+    app.add_handler(CallbackQueryHandler(handlers.cb_mode_switch, pattern=r"^mode_(scalper|intraday|sniper)$"))
     app.add_handler(CallbackQueryHandler(handlers.cb_quick_trade, pattern=r"^trade:(buy|sell):"))
     app.add_handler(CallbackQueryHandler(handlers.cb_switch_account, pattern=r"^switch_acc:"))
     app.add_handler(CallbackQueryHandler(handlers.cb_nav_action, pattern=r"^(nav_|boost_colors|scan_sym:)"))

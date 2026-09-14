@@ -263,8 +263,33 @@ class MT4ZmqClient:
     def apply_colors(self, timeout_ms: int = 5000) -> Dict[str, Any]:
         return self.send_command("APPLY_COLORS", timeout_ms=timeout_ms)
 
-    def get_screenshot(self, symbol: str = "", timeframe: str = "", width: int = 1280, height: int = 720, timeout_ms: int = 10000, compose: bool = True) -> Dict[str, Any]:
-        res = self.send_command("SCREENSHOT", symbol=symbol, timeframe=timeframe, width=width, height=height, timeout_ms=timeout_ms)
+    def get_screenshot(
+        self,
+        symbol: str = "",
+        timeframe: str = "",
+        width: int = 1280,
+        height: int = 720,
+        entry_price: float = 0.0,
+        sl_price: float = 0.0,
+        tp_price: float = 0.0,
+        event_type: str = "",
+        timeout_ms: int = 10000,
+        compose: bool = True,
+        **kwargs
+    ) -> Dict[str, Any]:
+        res = self.send_command(
+            "SCREENSHOT",
+            symbol=symbol,
+            timeframe=timeframe,
+            width=width,
+            height=height,
+            entry_price=entry_price,
+            sl_price=sl_price,
+            tp_price=tp_price,
+            event_type=event_type,
+            timeout_ms=timeout_ms,
+            **kwargs
+        )
         if compose and res.get("status") == "ok":
             fn = res.get("filename")
             if fn:
@@ -408,6 +433,11 @@ class MT4ZmqClient:
     async def get_symbols_async(self, timeout_ms: int = 5000) -> Dict[str, Any]:
         """Asynchronously queries MT4 active symbols."""
         return await self.send_command_async("GET_SYMBOLS", timeout_ms=timeout_ms)
+
+    async def get_screenshot_async(self, **kwargs) -> Dict[str, Any]:
+        """Asynchronously requests chart screenshot from MT4 bridge and composes telemetry overlay."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: self.get_screenshot(**kwargs))
 
     def close(self):
         """Stops heartbeat thread and closes sockets cleanly."""
