@@ -453,7 +453,7 @@ input string             AutonomousExcludeSymbols      = "*RUB*,*TRY*,*ZAR*"; //
 input bool               AutonomousTradeDirectly       = true;              // 100% Autonomous Execution (Direct Trade, Zero Advisory Prompting)
 input int                AutonomousScanBatchSize       = 3;                 // Round-Robin Time-Sliced Batch Size (3-5)
 input int                AutonomousScanIntervalSec     = 20;                // Background Multi-Symbol Scan Interval (Seconds)
-input int                AutonomousMinConfluenceScore  = 8;                 // Minimum Score to Execute Autonomous Trade (0-10)
+input double             AutonomousMinConfluenceScore  = 6.5;               // Minimum Score to Execute Autonomous Trade (0-10)
 input int                AutonomousCooldownMinutes     = 60;                // Per-Symbol Cooldown Guard (Minutes After Trade)
 input int                AutonomousMaxConcurrentTrades = 1;                 // Maximum Autonomous Concurrent Open Positions (1 default)
 
@@ -3547,10 +3547,10 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
       y += rowHeight;
 
       string autoLine1 = "";
-      int autoMinThreshold = MathMax(6, AutonomousMinConfluenceScore);
+      double autoMinThreshold = MathMax(6.0, AutonomousMinConfluenceScore);
       if(g_AutoScanQualifiedCount > 0 && g_AutoScanBestSymbol != "")
       {
-         autoLine1 = StringFormat("CAN TRADE: %s %s (%d/10) [Score >= %d]",
+         autoLine1 = StringFormat("CAN TRADE: %s %s (%d/10) [Score >= %.1f]",
                                   g_AutoScanBestSymbol, g_AutoScanBestCmd, g_AutoScanBestScore, autoMinThreshold);
       }
       else if(g_AutoScanLastTime > 0)
@@ -6660,8 +6660,8 @@ void PerformManualPortfolioScan()
    int totalInList = ArraySize(symList);
    int totalScanned = 0;
    int qualifiedCount = 0;
-   int minReq = MathMax(6, AutonomousMinConfluenceScore);
-   double minAnalysis = (minReq >= 8) ? 80.0 : ((minReq >= 7) ? 70.0 : 65.0);
+   double minReq = MathMax(6.0, AutonomousMinConfluenceScore);
+   double minAnalysis = (minReq >= 8.0) ? 80.0 : ((minReq >= 7.0) ? 70.0 : 65.0);
    string bestSymbol = "";
    string bestCmd = "HOLD";
    int bestScore = 0;
@@ -6729,7 +6729,7 @@ void PerformManualPortfolioScan()
          if(sig.score > 10) sig.score = 10;
       }
       bool isSessionActive = IsSessionActiveForSymbol(sym);
-      bool isQualified = (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= minReq && sig.analysisScore >= minAnalysis);
+      bool isQualified = (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= (int)MathFloor(minReq) && sig.analysisScore >= minAnalysis);
       string sigCmd = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
       double spreadPts = (ask - bid) / pt;
 
@@ -6783,7 +6783,7 @@ void PerformManualPortfolioScan()
    }
    else
    {
-      PrintFormat("[PORTFOLIO SCAN VERDICT] TRADE NAH: All %d symbols bypassed. No setups meet strict Grade A (>=%d/10, >=%.0f%%). Best: %s (%d/10). Capital 100%% safe.",
+      PrintFormat("[PORTFOLIO SCAN VERDICT] TRADE NAH: All %d symbols bypassed. No setups meet strict Grade A (>=%.1f/10, >=%.0f%%). Best: %s (%d/10). Capital 100%% safe.",
                   totalScanned, minReq, minAnalysis, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
    }
    PrintFormat("[PORTFOLIO SCAN SAFETY] Advisory Mode: ZERO TRADES EXECUTED (Safety guarantee).");
@@ -7265,9 +7265,9 @@ int OnInit()
       Print("[INIT ERROR] MinRequiredScore must be between 6 and 10 (score < 6 is strictly prohibited). Current: ", MinRequiredScore);
       return(INIT_FAILED);
    }
-   if(AutonomousMinConfluenceScore < 8 || AutonomousMinConfluenceScore > 10)
+   if(AutonomousMinConfluenceScore < 6.0 || AutonomousMinConfluenceScore > 10.0)
    {
-      Print("[INIT ERROR] AutonomousMinConfluenceScore must be between 8 and 10 (score < 8 is strictly prohibited). Current: ", AutonomousMinConfluenceScore);
+      Print("[INIT ERROR] AutonomousMinConfluenceScore must be between 6.0 and 10.0 (score < 6.0 is strictly prohibited). Current: ", AutonomousMinConfluenceScore);
       return(INIT_FAILED);
    }
    if(MagicNumber <= 0)

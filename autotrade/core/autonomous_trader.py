@@ -1553,7 +1553,7 @@ class AutonomousMultiSymbolTrader:
                 f"• Order: <b>{sig} {sym}</b>\n"
                 f"• Protective Stop Loss: <code>-{sl_pips:.1f} pips</code>\n"
                 f"• Target Take Profit: <code>+{tp_pips:.1f} pips</code> (Reward-to-Risk: <code>{rr:.2f}:1</code>)\n"
-                f"<i>⚡ This setup satisfies autonomous trade entry criteria (Score ≥ {self.min_score:.1f}/10 [85%]).</i>\n"
+                f"<i>⚡ This setup satisfies autonomous trade entry criteria (Score ≥ {self.min_score:.1f}/10 [{int(round(self.min_score * 10))}%]).</i>\n"
             )
         else:
             msg += (

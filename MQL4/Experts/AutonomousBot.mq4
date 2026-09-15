@@ -32,7 +32,7 @@ input bool               EmergencyKillSwitch           = false;             // E
 
 //--- [02] PER-TRADE & SCANNER SAFETY FILTERS
 input string             Sec_PerTradeSafety            = "=== 2. PER-TRADE & SCANNER SAFETY FILTERS ===";
-input int                MinConfluenceScore            = 8;                 // Minimum Confluence Score to Execute (stands on 8 or past 8)
+input double             MinConfluenceScore            = 6.5;               // Minimum Confluence Score to Execute (stands on 6.5 or past 6.5)
 input double             MinRewardToRisk               = 1.5;               // Minimum Reward-to-Risk Ratio (TP >= 1.5 * SL)
 input double             MaxSpreadPoints               = 40.0;              // Maximum Allowed Spread (Points)
 input double             MinATRPips                    = 10.0;              // Minimum ATR in Pips (Filter dead / choppy market)
@@ -128,9 +128,9 @@ int OnInit()
 {
    Print("[AUTONOMOUS BOT] Initializing Ultra-Safe Multi-Symbol Autonomous Bot v2.00...");
 
-   if(MinConfluenceScore < 8 || MinConfluenceScore > 10)
+   if(MinConfluenceScore < 6.0 || MinConfluenceScore > 10.0)
    {
-      Print("[INIT ERROR] MinConfluenceScore must be between 8 and 10 (score < 8 is strictly prohibited). Current: ", MinConfluenceScore);
+      Print("[INIT ERROR] MinConfluenceScore must be between 6.0 and 10.0 (score < 6.0 is strictly prohibited). Current: ", MinConfluenceScore);
       return(INIT_FAILED);
    }
 
@@ -297,9 +297,9 @@ void ScanNextSymbolBatch(int batchSize = 0)
       }
 
       // Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
-      int effectiveMinScore = MathMax(6, MinConfluenceScore);
-      double effectiveMinPoints = (effectiveMinScore >= 8) ? 80.0 : ((effectiveMinScore >= 7) ? 70.0 : 65.0);
-      StrategySignal sig = EvaluateSymbolOpportunity(sym, activeTF, effectiveMinScore, MinRewardToRisk, MinATRPips, MaxATRPips);
+      double effectiveMinScore = MathMax(6.0, MinConfluenceScore);
+      double effectiveMinPoints = (effectiveMinScore >= 8.0) ? 80.0 : ((effectiveMinScore >= 7.0) ? 70.0 : 65.0);
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, activeTF, (int)MathFloor(effectiveMinScore), MinRewardToRisk, MinATRPips, MaxATRPips);
       g_LastScannedScore  = sig.score;
       g_LastScannedSignal = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
 
@@ -339,11 +339,11 @@ void ScanNextSymbolBatch(int batchSize = 0)
    }
 
    // 3. Post-scan decision: If one or more qualified opportunities found, execute the best one!
-   int finalEffectiveMinScore = MathMax(6, MinConfluenceScore);
-   double finalEffectiveMinPoints = (finalEffectiveMinScore >= 8) ? 80.0 : ((finalEffectiveMinScore >= 7) ? 70.0 : 65.0);
-   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= finalEffectiveMinScore && bestSig.analysisScore >= finalEffectiveMinPoints && bestSymbol != "")
+   double finalEffectiveMinScore = MathMax(6.0, MinConfluenceScore);
+   double finalEffectiveMinPoints = (finalEffectiveMinScore >= 8.0) ? 80.0 : ((finalEffectiveMinScore >= 7.0) ? 70.0 : 65.0);
+   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= (int)MathFloor(finalEffectiveMinScore) && bestSig.analysisScore >= finalEffectiveMinPoints && bestSymbol != "")
    {
-      PrintFormat("[AUTONOMOUS PORTFOLIO SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
+      PrintFormat("[AUTONOMOUS PORTFOLIO SELECTION] Scanned %d symbols (%d qualified >= %.1f). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
                   scanCount, qualifiedCount, MinConfluenceScore, bestSymbol,
                   (bestSig.cmd == OP_BUY ? "BUY" : "SELL"), bestSig.score, bestSig.analysisScore, bestLots, bestSig.rrRatio);
 
@@ -363,7 +363,7 @@ void ScanNextSymbolBatch(int batchSize = 0)
    else
    {
       // No symbol reached confluence score >= effectiveMinScore (effectiveMinPoints%) or passed filters; bypass all symbols and wait cleanly for next cycle
-      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. HOLD: ALL SYMBOLS BYPASSED (No actionable setup >= %d/10 [%.0f%% Required]). Capital safely preserved. Waiting for next candle close.",
+      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. HOLD: ALL SYMBOLS BYPASSED (No actionable setup >= %.1f/10 [%.0f%% Required]). Capital safely preserved. Waiting for next candle close.",
                   scanCount, finalEffectiveMinScore, finalEffectiveMinPoints);
    }
 }
