@@ -1403,10 +1403,11 @@ class AutonomousMultiSymbolTrader:
                 if eff_sc > top_cand_score:
                     top_cand_score = eff_sc
 
+            score_pct = int(round(self.min_score * 10))
             msg += (
                 f"🛡️ <b>Trade Decision:</b> ⚪ <b>TRADE NAH (ALL SYMBOLS BYPASSED)</b>\n"
-                f"⚪ <b>Autonomous Status:</b> <code>HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} < {self.min_score:.1f} Required)</code>\n"
-                f"<i>Scanned {len(results)} symbols. No instrument meets the strict confluence threshold (Score ≥ {self.min_score:.1f}/10 [85%]). Capital 100% preserved. Patiently awaiting next candle boundary scan.</i>\n"
+                f"⚪ <b>Autonomous Status:</b> <code>HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} &lt; {self.min_score:.1f} Required)</code>\n"
+                f"<i>Scanned {len(results)} symbols. No instrument meets the strict confluence threshold (Score ≥ {self.min_score:.1f}/10 [{score_pct}%]). Capital 100% preserved. Patiently awaiting next candle boundary scan.</i>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
 
