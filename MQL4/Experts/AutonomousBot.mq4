@@ -298,7 +298,7 @@ void ScanNextSymbolBatch(int batchSize = 0)
 
       // Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
       int effectiveMinScore = MathMax(6, MinConfluenceScore);
-      double effectiveMinPoints = (effectiveMinScore >= 8) ? 80.0 : ((effectiveMinScore >= 7) ? 70.0 : 60.0);
+      double effectiveMinPoints = (effectiveMinScore >= 8) ? 80.0 : ((effectiveMinScore >= 7) ? 70.0 : 65.0);
       StrategySignal sig = EvaluateSymbolOpportunity(sym, activeTF, effectiveMinScore, MinRewardToRisk, MinATRPips, MaxATRPips);
       g_LastScannedScore  = sig.score;
       g_LastScannedSignal = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
@@ -340,7 +340,7 @@ void ScanNextSymbolBatch(int batchSize = 0)
 
    // 3. Post-scan decision: If one or more qualified opportunities found, execute the best one!
    int finalEffectiveMinScore = MathMax(6, MinConfluenceScore);
-   double finalEffectiveMinPoints = (finalEffectiveMinScore >= 8) ? 80.0 : ((finalEffectiveMinScore >= 7) ? 70.0 : 60.0);
+   double finalEffectiveMinPoints = (finalEffectiveMinScore >= 8) ? 80.0 : ((finalEffectiveMinScore >= 7) ? 70.0 : 65.0);
    if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= finalEffectiveMinScore && bestSig.analysisScore >= finalEffectiveMinPoints && bestSymbol != "")
    {
       PrintFormat("[AUTONOMOUS PORTFOLIO SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",

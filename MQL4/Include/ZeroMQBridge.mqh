@@ -2280,7 +2280,7 @@ string Zmq_HandleScanSymbols(const string reqJson)
       
       PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Signal: %-4s | Score: %2d/10 (%5.1f%%) | Trend: %-15s | Spread: %4.1f pts%s",
                   i + 1, totalSymbolsInList, sym, signal, sig.score, sig.analysisScore, sig.trend, spread,
-                  (sig.score >= 7 && sig.analysisScore >= 70.0 ? " [QUALIFIED SETUP]" : ""));
+                  (sig.score >= 6 && sig.analysisScore >= 65.0 ? " [QUALIFIED SETUP]" : ""));
 
       double contractSize = MarketInfo(sym, MODE_LOTSIZE);
       double minLot = MarketInfo(sym, MODE_MINLOT);

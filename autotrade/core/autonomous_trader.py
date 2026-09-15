@@ -188,7 +188,7 @@ class AutonomousMultiSymbolTrader:
                 elif cur_mode == "INTRADAY":
                     self.timeframe = "H1"
                     self.max_positions = 3
-                    self.min_score = 7.0
+                    self.min_score = 6.5
                     self.cooldown_sec = 3600
                 elif cur_mode == "SNIPER":
                     self.timeframe = "H1"
@@ -372,7 +372,7 @@ class AutonomousMultiSymbolTrader:
             self.timeframe = "H1"
             self.cooldown_sec = 3600
             self.max_positions = 3
-            self.min_score = 7.0
+            self.min_score = 6.5
         elif m == "SNIPER":
             self.timeframe = "H1"
             self.cooldown_sec = 14400
@@ -633,7 +633,7 @@ class AutonomousMultiSymbolTrader:
                 return False
             return True
 
-        effective_min = max(self.min_score, 7.0)
+        effective_min = max(self.min_score, 6.5)
         if sig not in ("BUY", "SELL") or effective_score < effective_min:
             return False
 
@@ -1463,7 +1463,7 @@ class AutonomousMultiSymbolTrader:
             )
         msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
-        msg += f"<i>💡 Autonomous Multi-Symbol Execution: High-conviction setups (Score ≥ {self.min_score:.0f}) are executed automatically.</i>"
+        msg += f"<i>💡 Autonomous Multi-Symbol Execution: High-conviction setups (Score ≥ {self.min_score:.1f}) are executed automatically.</i>"
         return msg
 
     def format_single_symbol_analysis(self, symbol: str, scan_res: Optional[Dict[str, Any]] = None) -> str:

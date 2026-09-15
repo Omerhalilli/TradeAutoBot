@@ -216,7 +216,7 @@ void DistributeHUDPoints(double trendPts, double momPts, double srPts, double cn
 //+------------------------------------------------------------------+
 StrategySignal EvaluateSymbolOpportunity(string sym, 
                                           ENUM_TIMEFRAMES tf = PERIOD_H1, 
-                                          int minConfluenceScore = 7,
+                                          int minConfluenceScore = 6,
                                           double minRewardToRisk = 1.5,
                                           double minATRPips = 10.0,
                                           double maxATRPips = 150.0)
@@ -615,7 +615,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
 
    // Enforce strict minimum score threshold: must be >= 7 and analysisScore >= 70.0 (sub-70% is strictly prohibited)
    int effectiveMinScore = MathMax(6, minConfluenceScore);
-   double effectiveMinPoints = (effectiveMinScore >= 8) ? 80.0 : ((effectiveMinScore >= 7) ? 70.0 : 60.0);
+   double effectiveMinPoints = (effectiveMinScore >= 8) ? 80.0 : ((effectiveMinScore >= 7) ? 70.0 : 65.0);
 
    // Directional assignment with strict Directional Trend Confirmation
    long symTradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);

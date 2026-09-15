@@ -6661,7 +6661,7 @@ void PerformManualPortfolioScan()
    int totalScanned = 0;
    int qualifiedCount = 0;
    int minReq = MathMax(6, AutonomousMinConfluenceScore);
-   double minAnalysis = (minReq >= 8) ? 80.0 : ((minReq >= 7) ? 70.0 : 60.0);
+   double minAnalysis = (minReq >= 8) ? 80.0 : ((minReq >= 7) ? 70.0 : 65.0);
    string bestSymbol = "";
    string bestCmd = "HOLD";
    int bestScore = 0;
