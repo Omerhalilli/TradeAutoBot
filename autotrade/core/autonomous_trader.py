@@ -183,17 +183,17 @@ class AutonomousMultiSymbolTrader:
                 if cur_mode == "SCALPER":
                     self.timeframe = "M5"
                     self.max_positions = 1
-                    self.min_score = 7.5
+                    self.min_score = 7.0
                     self.cooldown_sec = 180
                 elif cur_mode == "INTRADAY":
                     self.timeframe = "H1"
                     self.max_positions = 3
-                    self.min_score = 8.0
+                    self.min_score = 7.0
                     self.cooldown_sec = 3600
                 elif cur_mode == "SNIPER":
                     self.timeframe = "H1"
                     self.max_positions = 2
-                    self.min_score = 8.5
+                    self.min_score = 8.0
                     self.cooldown_sec = 14400
         except Exception:
             self._execution_mode = "INTRADAY"
@@ -349,9 +349,9 @@ class AutonomousMultiSymbolTrader:
     def set_execution_mode(self, mode: str) -> str:
         """
         Dynamically adjusts execution speed mode and recalibrates operational parameters:
-        - SCALPER:  M5  | Max Pos: 1 | Min Score: 7.5 | Cooldown: 180s (3m)
-        - INTRADAY: H1  | Max Pos: 3 | Min Score: 8.0 | Cooldown: 3600s (1h)
-        - SNIPER:   H1  | Max Pos: 2 | Min Score: 8.5 | Cooldown: 14400s (4h)
+        - SCALPER:  M5  | Max Pos: 1 | Min Score: 7.0 | Cooldown: 180s (3m)
+        - INTRADAY: H1  | Max Pos: 3 | Min Score: 7.0 | Cooldown: 3600s (1h)
+        - SNIPER:   H1  | Max Pos: 2 | Min Score: 8.0 | Cooldown: 14400s (4h)
         """
         m = str(mode).strip().upper()
         if m not in ("SCALPER", "INTRADAY", "SNIPER"):
@@ -367,17 +367,17 @@ class AutonomousMultiSymbolTrader:
             self.timeframe = "M5"
             self.cooldown_sec = 180
             self.max_positions = 1
-            self.min_score = 7.5
+            self.min_score = 7.0
         elif m == "INTRADAY":
             self.timeframe = "H1"
             self.cooldown_sec = 3600
             self.max_positions = 3
-            self.min_score = 8.0
+            self.min_score = 7.0
         elif m == "SNIPER":
             self.timeframe = "H1"
             self.cooldown_sec = 14400
             self.max_positions = 2
-            self.min_score = 8.5
+            self.min_score = 8.0
 
         self.last_scanned_bar_boundary = 0
         logger.info(
@@ -622,7 +622,7 @@ class AutonomousMultiSymbolTrader:
 
         # Rule 1: Signal must be BUY or SELL with mode-specific minimum score
         if self.execution_mode == "SCALPER":
-            req_min = 7.5
+            req_min = 7.0
             effective_min = max(self.min_score, req_min)
             if sig not in ("BUY", "SELL") or effective_score < effective_min:
                 return False
@@ -633,7 +633,7 @@ class AutonomousMultiSymbolTrader:
                 return False
             return True
 
-        effective_min = max(self.min_score, 8.5)
+        effective_min = max(self.min_score, 7.0)
         if sig not in ("BUY", "SELL") or effective_score < effective_min:
             return False
 
@@ -1297,12 +1297,13 @@ class AutonomousMultiSymbolTrader:
         countdown_str = self.format_countdown_string(secs_left)
         sync_desc = f"Bar-Close Synchronized ({self.timeframe})" if self.scan_on_bar_close_only else "Interval"
 
+        score_pct = int(round(self.min_score * 10))
         msg = (
             "⚡ <b>AUTONOMOUS MULTI-SYMBOL SCANNER</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🕒 <b>Scan Time:</b> <code>{server_time}</code> | <b>TF:</b> <code>{self.timeframe}</code> ({sync_desc})\n"
             f"⏳ <b>Next Scheduled Scan:</b> <code>in {countdown_str}</code>\n"
-            f"🌐 <b>Portfolio:</b> <b>{len(results)} Assets</b> | <b>Threshold:</b> <b>Score ≥ {self.min_score:.1f}/10 (85%) Institutional Grade A+ Sniper</b>\n"
+            f"🌐 <b>Portfolio:</b> <b>{len(results)} Assets</b> | <b>Threshold:</b> <b>Score ≥ {self.min_score:.1f}/10 ({score_pct}%) Confluence Gate</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         )
         if data.get("bridge_unsupported"):

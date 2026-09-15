@@ -708,10 +708,10 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
             "symbol": "GBPUSD", "score": 8, "signal": "BUY", "trend": "BULLISH",
             "adx": 28.0, "rsi": 72.0, "htf_trend": "BULLISH", "spread": 10.0
         }
-        # 3. Oversold RSI (< 45) on BUY rejected
+        # 3. Oversold RSI (< 40) on BUY rejected
         item_oversold_buy_rsi = {
             "symbol": "USDJPY", "score": 8, "signal": "BUY", "trend": "BULLISH",
-            "adx": 28.0, "rsi": 40.0, "htf_trend": "BULLISH", "spread": 10.0
+            "adx": 28.0, "rsi": 35.0, "htf_trend": "BULLISH", "spread": 10.0
         }
         # 4. Trend contradiction rejected
         item_trend_contradiction = {
@@ -895,10 +895,12 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         }
         self.assertTrue(self.trader.is_qualified_candidate(valid_buy))
 
-        # 1. Score < 8.5 rejected
-        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 8, "analysis_score": 80.0}))
+        # 1. Score < 7.0 rejected, score >= 7.0 accepted when all gates pristine
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 6.5, "analysis_score": 65.0}))
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 6, "analysis_score": 60.0}))
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 5, "analysis_score": 50.0}))
+        self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "score": 7, "analysis_score": 70.0}))
+        self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "score": 8, "analysis_score": 80.0}))
 
         # 2. Counter-trend rejected
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "trend": "COUNTER-TREND BULLISH"}))

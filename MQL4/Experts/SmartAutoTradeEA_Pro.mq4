@@ -3547,10 +3547,11 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
       y += rowHeight;
 
       string autoLine1 = "";
+      int autoMinThreshold = MathMax(6, AutonomousMinConfluenceScore);
       if(g_AutoScanQualifiedCount > 0 && g_AutoScanBestSymbol != "")
       {
-         autoLine1 = StringFormat("CAN TRADE: %s %s (%d/10) [Score >= 8]",
-                                  g_AutoScanBestSymbol, g_AutoScanBestCmd, g_AutoScanBestScore);
+         autoLine1 = StringFormat("CAN TRADE: %s %s (%d/10) [Score >= %d]",
+                                  g_AutoScanBestSymbol, g_AutoScanBestCmd, g_AutoScanBestScore, autoMinThreshold);
       }
       else if(g_AutoScanLastTime > 0)
       {
@@ -6727,8 +6728,9 @@ void PerformManualPortfolioScan()
       }
       bool isSessionActive = IsSessionActiveForSymbol(sym);
 
-      int minReq = MathMax(8, AutonomousMinConfluenceScore);
-      bool isQualified = (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= minReq && sig.analysisScore >= 85.0);
+      int minReq = MathMax(6, AutonomousMinConfluenceScore);
+      double minAnalysis = (minReq >= 8) ? 80.0 : ((minReq >= 7) ? 70.0 : 60.0);
+      bool isQualified = (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= minReq && sig.analysisScore >= minAnalysis);
       string sigCmd = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
       double spreadPts = (ask - bid) / pt;
 

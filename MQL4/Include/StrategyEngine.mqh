@@ -613,9 +613,9 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
 
    sig.rrRatio = (sig.slPips > 0.0) ? NormalizeDouble(sig.tpPips / sig.slPips, 2) : 2.0;
 
-   // Enforce strict minimum score threshold: must be >= 8 and analysisScore >= 85.0 (sub-85% is strictly prohibited)
-   int effectiveMinScore = MathMax(8, minConfluenceScore);
-   double effectiveMinPoints = 85.0;
+   // Enforce strict minimum score threshold: must be >= 7 and analysisScore >= 70.0 (sub-70% is strictly prohibited)
+   int effectiveMinScore = MathMax(6, minConfluenceScore);
+   double effectiveMinPoints = (effectiveMinScore >= 8) ? 80.0 : ((effectiveMinScore >= 7) ? 70.0 : 60.0);
 
    // Directional assignment with strict Directional Trend Confirmation
    long symTradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);

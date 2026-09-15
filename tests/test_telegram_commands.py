@@ -863,7 +863,7 @@ class TestTelegramCommands(unittest.TestCase):
                 await handlers.cmd_scan(update_full, context_full)
                 reply_full = self._get_reply_text(msg_full.reply_text)
                 self.assertIn("AUTONOMOUS MULTI-SYMBOL SCANNER", reply_full)
-                self.assertIn("TRADE NAH", reply_full)
+                self.assertIn("CAN TRADE", reply_full)
                 reply_markup = msg_full.reply_text.call_args[1].get("reply_markup")
                 all_btn_texts = [btn.text for row in reply_markup.inline_keyboard for btn in row]
                 self.assertIn("🔍 Scan Watchlist Now", all_btn_texts)
