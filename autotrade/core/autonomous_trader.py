@@ -1463,7 +1463,7 @@ class AutonomousMultiSymbolTrader:
             )
         msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
-        msg += "<i>💡 Autonomous Multi-Symbol Execution: High-conviction setups (Score ≥ 6) are executed automatically.</i>"
+        msg += f"<i>💡 Autonomous Multi-Symbol Execution: High-conviction setups (Score ≥ {self.min_score:.0f}) are executed automatically.</i>"
         return msg
 
     def format_single_symbol_analysis(self, symbol: str, scan_res: Optional[Dict[str, Any]] = None) -> str:
