@@ -1175,6 +1175,128 @@ string HandleScanSymbols(const string reqJson)
    return json;
 }
 
+#import "user32.dll"
+int GetAncestor(int hWnd, int gaFlags);
+int FindWindowExA(int hWndParent, int hWndChildAfter, string lpszClass, string lpszWindow);
+int GetClassNameA(int hWnd, uchar &lpClassName[], int nMaxCount);
+int SendMessageA(int hWnd, int Msg, int wParam, int lParam);
+int SendMessageA(int hWnd, int Msg, int wParam, int &rect[]);
+int PostMessageA(int hWnd, int Msg, int wParam, int lParam);
+bool ShowWindow(int hWnd, int nCmdShow);
+#import
+
+int FindTerminalTabControl(int parent)
+{
+   int child = 0;
+   uchar cls[256];
+   while(true)
+   {
+      child = FindWindowExA(parent, child, NULL, NULL);
+      if(child == 0) break;
+      
+      ArrayInitialize(cls, 0);
+      GetClassNameA(child, cls, 255);
+      string sClass = CharArrayToString(cls);
+      if(sClass == "SysTabControl32")
+      {
+         int count = SendMessageA(child, 0x1304, 0, 0); // TCM_GETITEMCOUNT
+         if(count >= 5) return child;
+      }
+      int found = FindTerminalTabControl(child);
+      if(found != 0) return found;
+   }
+   return 0;
+}
+
+string HandleSwitchTab(const string reqStr)
+{
+   int chartWnd = WindowHandle(Symbol(), Period());
+   int mainWnd = GetAncestor(chartWnd, 2); // GA_ROOT = 2
+   if(mainWnd != 0)
+      ShowWindow(mainWnd, 3); // SW_MAXIMIZE = 3
+   
+   int hTab = FindTerminalTabControl(mainWnd);
+   if(hTab == 0 && mainWnd != 0)
+   {
+      int rootWnd = GetAncestor(mainWnd, 2);
+      if(rootWnd != 0 && rootWnd != mainWnd)
+         hTab = FindTerminalTabControl(rootWnd);
+   }
+   if(hTab == 0)
+   {
+      int top = 0;
+      uchar topCls[256];
+      while(true)
+      {
+         top = FindWindowExA(0, top, NULL, NULL);
+         if(top == 0) break;
+         ArrayInitialize(topCls, 0);
+         GetClassNameA(top, topCls, 255);
+         string sTopCls = CharArrayToString(topCls);
+         if(StringFind(sTopCls, "MetaQuotes") >= 0)
+         {
+            hTab = FindTerminalTabControl(top);
+            if(hTab != 0) break;
+         }
+      }
+   }
+   if(hTab == 0)
+      return "{\"status\":\"error\",\"message\":\"Terminal tab control not found\",\"mainWnd\":\"" + IntegerToString(mainWnd) + "\"}";
+      
+   int count = SendMessageA(hTab, 0x1304, 0, 0); // TCM_GETITEMCOUNT
+   int curSel = SendMessageA(hTab, 0x130B, 0, 0); // TCM_GETCURSEL
+   
+   int targetIndex = -1;
+   string targetName = ExtractJsonString(reqStr, "tab");
+   if(targetName == "" || StringFind(targetName, "expert") >= 0 || StringFind(targetName, "EXPERTS") >= 0)
+   {
+      targetIndex = count - 2;
+   }
+   else if(StringFind(targetName, "journal") >= 0 || StringFind(targetName, "JOURNAL") >= 0)
+   {
+      targetIndex = count - 1;
+   }
+   else if(StringFind(targetName, "trade") >= 0 || StringFind(targetName, "TRADE") >= 0)
+   {
+      targetIndex = 0;
+   }
+   
+   int idxPos = StringFind(reqStr, "\"index\":");
+   if(idxPos >= 0)
+   {
+      string sub = StringSubstr(reqStr, idxPos + 8);
+      targetIndex = (int)StringToInteger(sub);
+   }
+   
+   if(targetIndex < 0 || targetIndex >= count)
+      targetIndex = count - 2;
+      
+   int rect[4];
+   ArrayInitialize(rect, 0);
+   SendMessageA(hTab, 0x130A, targetIndex, rect); // TCM_GETITEMRECT
+   
+   int clickX = (rect[0] + rect[2]) / 2;
+   int clickY = (rect[1] + rect[3]) / 2;
+   int lParam = (clickY << 16) | (clickX & 0xFFFF);
+   
+   SendMessageA(hTab, 0x0201, 1, lParam); // WM_LBUTTONDOWN
+   SendMessageA(hTab, 0x0202, 0, lParam); // WM_LBUTTONUP
+   
+   int newSel = SendMessageA(hTab, 0x130B, 0, 0); // TCM_GETCURSEL
+   
+   string json = "{";
+   json += "\"status\":\"ok\",";
+   json += "\"action\":\"SWITCH_TAB\",";
+   json += "\"item_count\":" + IntegerToString(count) + ",";
+   json += "\"prev_sel\":" + IntegerToString(curSel) + ",";
+   json += "\"target_idx\":" + IntegerToString(targetIndex) + ",";
+   json += "\"new_sel\":" + IntegerToString(newSel) + ",";
+   json += "\"rect\":[" + IntegerToString(rect[0]) + "," + IntegerToString(rect[1]) + "," + IntegerToString(rect[2]) + "," + IntegerToString(rect[3]) + "],";
+   json += "\"click\":[" + IntegerToString(clickX) + "," + IntegerToString(clickY) + "]";
+   json += "}";
+   return json;
+}
+
 //+------------------------------------------------------------------+
 //| DISPATCH REQUEST                                                 |
 //+------------------------------------------------------------------+
@@ -1190,6 +1312,20 @@ string ProcessRequest(const string reqStr)
       StringToUpper(action);
    }
    
+   if(action == "SWITCH_TAB" || action == "SELECT_TAB" || action == "TAB_EXPERTS")
+      return HandleSwitchTab(reqStr);
+   if(action == "TRIGGER_SCAN_BUTTON" || action == "TRIGGER_SCAN" || action == "MANUAL_SCAN")
+   {
+      GlobalVariableSet("Trigger_Manual_Scan", 1.0);
+      return "{\"status\":\"ok\",\"action\":\"TRIGGER_SCAN_BUTTON\",\"message\":\"Manual scan triggered on chart\"}";
+   }
+   if(action == "RELOAD_EA" || action == "RELOAD")
+   {
+      ENUM_TIMEFRAMES curTf = (ENUM_TIMEFRAMES)Period();
+      ENUM_TIMEFRAMES tempTf = (curTf == PERIOD_H1) ? PERIOD_H4 : PERIOD_H1;
+      ChartSetSymbolPeriod(0, Symbol(), tempTf);
+      return "{\"status\":\"ok\",\"action\":\"RELOAD_EA\",\"message\":\"Chart timeframe toggled to force EA reload\"}";
+   }
    if(action == "GET_ACCOUNT" || action == "ACCOUNT")
       return HandleGetAccount();
    if(action == "GET_POSITIONS" || action == "POSITIONS")

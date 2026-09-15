@@ -6660,14 +6660,19 @@ void PerformManualPortfolioScan()
    int totalInList = ArraySize(symList);
    int totalScanned = 0;
    int qualifiedCount = 0;
-   double minReq = MathMax(6.0, AutonomousMinConfluenceScore);
-   double minAnalysis = (minReq >= 8.0) ? 80.0 : ((minReq >= 7.0) ? 70.0 : 65.0);
+   double minReq = (AutonomousMinConfluenceScore >= 6.0 && AutonomousMinConfluenceScore <= 10.0) ? AutonomousMinConfluenceScore : 6.5;
+   double minAnalysis = minReq * 10.0;
    string bestSymbol = "";
    string bestCmd = "HOLD";
    int bestScore = 0;
    double bestAnalysisScore = 0.0;
    double bestRankScore = -999999.0;
    StrategySignal bestSig;
+   string candSymbols[50];
+   StrategySignal candSignals[50];
+   double candSpreads[50];
+   ArrayInitialize(candSpreads, 0.0);
+   int candCount = 0;
 
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
    PrintFormat("[PORTFOLIO SCAN START] Scanning %d portfolio assets on %s @ %s",
@@ -6733,9 +6738,18 @@ void PerformManualPortfolioScan()
       string sigCmd = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
       double spreadPts = (ask - bid) / pt;
 
+      bool meetsThreshold = (sig.score >= (int)MathFloor(minReq) && sig.analysisScore >= minAnalysis);
+      if(meetsThreshold && candCount < 50)
+      {
+         candSymbols[candCount] = sym;
+         candSignals[candCount] = sig;
+         candSpreads[candCount] = spreadPts;
+         candCount++;
+      }
+
       PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Signal: %-4s | Score: %2d/10 (%5.1f%%) | Trend: %-15s | Spread: %4.1f pts%s",
                   i + 1, totalInList, sym, sigCmd, sig.score, sig.analysisScore, sig.trend, spreadPts,
-                  (isQualified ? " [QUALIFIED SETUP]" : ""));
+                  (isQualified ? " [QUALIFIED SETUP]" : (meetsThreshold ? " [CANDIDATE >= 6.5]" : "")));
 
       if(isQualified)
       {
@@ -6772,6 +6786,38 @@ void PerformManualPortfolioScan()
       g_AutoScanStatusDesc = StringFormat("TRADE NAH: ALL %d BYPASSED (Best: %s %d/10)", totalScanned, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
    }
 
+   // Detailed Breakdown for Candidates meeting threshold (>= minReq, >= minAnalysis)
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+   PrintFormat("=== CANDIDATES MEETING SCORE THRESHOLD (>=%.1f/10, >=%.0f%%) ===", minReq, minAnalysis);
+   if(candCount == 0)
+   {
+      PrintFormat("  No symbols reached threshold >=%.1f (>=%.0f%%). Best candidate was %s (%d/10, %.1f%%).",
+                  minReq, minAnalysis, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore, bestAnalysisScore);
+   }
+   else
+   {
+      PrintFormat("  Found %d candidate symbol(s) reaching threshold >=%.1f (>=%.0f%%):", candCount, minReq, minAnalysis);
+      for(int c = 0; c < candCount; c++)
+      {
+         string cSym = candSymbols[c];
+         StrategySignal cSig = candSignals[c];
+         double cSpr = candSpreads[c];
+         string proposedDir = (cSig.buyScore > cSig.sellScore ? "BUY" : (cSig.sellScore > cSig.buyScore ? "SELL" : "NEUTRAL"));
+         bool canEnter = (cSig.valid && cSig.cmd >= 0);
+         string actionStr = canEnter ? StringFormat("ENTER %s [QUALIFIED]", (cSig.cmd == OP_BUY ? "BUY" : "SELL")) : StringFormat("DO NOT ENTER [Veto: %s]", cSig.vetoReason);
+
+         PrintFormat("------------------------------------------------------------");
+         PrintFormat("  [CANDIDATE %d/%d] %s | Score: %d/10 (%.1f%%) | Proposed Direction: %s",
+                     c + 1, candCount, cSym, cSig.score, cSig.analysisScore, proposedDir);
+         PrintFormat("    • Analysis : Trend: %s | H4 HTF: %s | ADX: %.1f | RSI: %.1f | Spread: %.1f pts",
+                     cSig.trend, cSig.htfTrend, cSig.adx, cSig.rsi, cSpr);
+         PrintFormat("    • Targets  : SL=%.1f pips | TP=%.1f pips | RR=%.2f",
+                     cSig.slPips, cSig.tpPips, cSig.rrRatio);
+         PrintFormat("    • Decision : %s", actionStr);
+      }
+      PrintFormat("------------------------------------------------------------");
+   }
+
    // Print full diagnostic report to Experts log
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
    PrintFormat("[PORTFOLIO SCAN COMPLETE] Processed %d/%d valid symbols on %s | Qualified setups: %d",
@@ -6783,8 +6829,9 @@ void PerformManualPortfolioScan()
    }
    else
    {
-      PrintFormat("[PORTFOLIO SCAN VERDICT] TRADE NAH: All %d symbols bypassed. No setups meet strict Grade A (>=%.1f/10, >=%.0f%%). Best: %s (%d/10). Capital 100%% safe.",
-                  totalScanned, minReq, minAnalysis, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
+      string bestVeto = (bestSig.vetoReason != "" && bestSig.vetoReason != "Pending evaluation") ? bestSig.vetoReason : "Did not pass all safety gates";
+      PrintFormat("[PORTFOLIO SCAN VERDICT] TRADE NAH: All %d symbols bypassed. Minimum threshold: >=%.1f/10 (>=%.0f%%). Best: %s (%d/10, %.1f%%). [Gate Veto: %s]. Capital 100%% safe.",
+                  totalScanned, minReq, minAnalysis, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore, bestAnalysisScore, bestVeto);
    }
    PrintFormat("[PORTFOLIO SCAN SAFETY] Advisory Mode: ZERO TRADES EXECUTED (Safety guarantee).");
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

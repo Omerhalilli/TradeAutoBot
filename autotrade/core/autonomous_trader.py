@@ -904,10 +904,16 @@ class AutonomousMultiSymbolTrader:
                 if self.execution_mode == "SCALPER":
                     logger.info(f"SCALPER: 0/{len(results)} QUALIFIED. ALL SYMBOLS BYPASSED (CAPITAL SAFE)")
                 else:
-                    logger.info(
-                        f"HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} < {self.min_score:.1f} Required). "
-                        f"Capital safely preserved. Waiting for next candle boundary."
-                    )
+                    if top_cand_score >= self.min_score:
+                        logger.info(
+                            f"HOLD: ALL SYMBOLS BYPASSED (Top Score {top_cand_score:.1f} >= {self.min_score:.1f}, "
+                            f"but safety gates vetoed entry). Capital safely preserved. Waiting for next candle boundary."
+                        )
+                    else:
+                        logger.info(
+                            f"HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} < {self.min_score:.1f} Required). "
+                            f"Capital safely preserved. Waiting for next candle boundary."
+                        )
                 return []
 
             for item in candidates:
@@ -1403,11 +1409,17 @@ class AutonomousMultiSymbolTrader:
                 if eff_sc > top_cand_score:
                     top_cand_score = eff_sc
 
-            score_pct = int(round(self.min_score * 10))
+            if top_cand_score >= self.min_score:
+                status_desc = f"HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} &gt;= {self.min_score:.1f} - Safety Gates Vetoed)"
+                sub_desc = f"Scanned {len(results)} symbols. Top candidate reached score ≥ {self.min_score:.1f}/10 [{score_pct}%], but institutional safety gates preserved capital. Awaiting next scan."
+            else:
+                status_desc = f"HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} &lt; {self.min_score:.1f} Required)"
+                sub_desc = f"Scanned {len(results)} symbols. No instrument meets the confluence threshold (Score ≥ {self.min_score:.1f}/10 [{score_pct}%]). Capital 100% preserved. Awaiting next scan."
+
             msg += (
                 f"🛡️ <b>Trade Decision:</b> ⚪ <b>TRADE NAH (ALL SYMBOLS BYPASSED)</b>\n"
-                f"⚪ <b>Autonomous Status:</b> <code>HOLD: ALL SYMBOLS BYPASSED (Score {top_cand_score:.1f} &lt; {self.min_score:.1f} Required)</code>\n"
-                f"<i>Scanned {len(results)} symbols. No instrument meets the strict confluence threshold (Score ≥ {self.min_score:.1f}/10 [{score_pct}%]). Capital 100% preserved. Patiently awaiting next candle boundary scan.</i>\n"
+                f"⚪ <b>Autonomous Status:</b> <code>{status_desc}</code>\n"
+                f"<i>{sub_desc}</i>\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             )
 

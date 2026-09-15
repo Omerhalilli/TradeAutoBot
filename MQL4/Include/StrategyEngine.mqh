@@ -56,6 +56,8 @@ struct StrategySignal
    double cndlSellPts;
    double mtfBuyPts;         // 0 - 10 points (MTF H4 confluence)
    double mtfSellPts;
+   int    proposedCmd;       // Proposed direction before safety gates: OP_BUY, OP_SELL, or -1
+   string vetoReason;        // Detailed reason if vetoed, or 'ALL GATES PASSED'
 };
 
 //+------------------------------------------------------------------+
@@ -261,15 +263,29 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    sig.cndlSellPts   = 0.0;
    sig.mtfBuyPts     = 0.0;
    sig.mtfSellPts    = 0.0;
+   sig.proposedCmd   = -1;
+   sig.vetoReason    = "Pending evaluation";
 
-   if(iBars(sym, tf) < 205) return sig;
+   if(iBars(sym, tf) < 205)
+   {
+      sig.vetoReason = StringFormat("Insufficient history (%d bars < 205)", iBars(sym, tf));
+      return sig;
+   }
 
    double pt = MarketInfo(sym, MODE_POINT);
-   if(pt <= 0.0) return sig;
+   if(pt <= 0.0)
+   {
+      sig.vetoReason = "Symbol unavailable or invalid point size";
+      return sig;
+   }
 
    double ask = MarketInfo(sym, MODE_ASK);
    double bid = MarketInfo(sym, MODE_BID);
-   if(ask <= 0.0 || bid <= 0.0) return sig;
+   if(ask <= 0.0 || bid <= 0.0)
+   {
+      sig.vetoReason = "No live market quotes (bid/ask <= 0)";
+      return sig;
+   }
 
    int dig = (int)MarketInfo(sym, MODE_DIGITS);
    double pipPt = GetSymbolPipSize(sym);
@@ -621,6 +637,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    long symTradeMode = SymbolInfoInteger(sym, SYMBOL_TRADE_MODE);
    if(buyScore10 > sellScore10 && buyScore10 >= effectiveMinScore && buyPoints >= effectiveMinPoints)
    {
+      sig.proposedCmd = OP_BUY;
       sig.entryPrice = ask;
       sig.slPrice = NormalizeDouble(ask - slDist, dig);
       sig.tpPrice = NormalizeDouble(ask + tpDist, dig);
@@ -634,10 +651,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       else
       {
          sig.cmd = -1;
+         sig.vetoReason = (!trendConfirmed) ? "EMA Trend Stack not aligned (EMA20>50>200) or Price <= EMA200" : "Broker trade mode restricted for BUY";
       }
    }
    else if(sellScore10 > buyScore10 && sellScore10 >= effectiveMinScore && sellPoints >= effectiveMinPoints)
    {
+      sig.proposedCmd = OP_SELL;
       sig.entryPrice = bid;
       sig.slPrice = NormalizeDouble(bid + slDist, dig);
       sig.tpPrice = NormalizeDouble(bid - tpDist, dig);
@@ -651,14 +670,18 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       else
       {
          sig.cmd = -1;
+         sig.vetoReason = (!trendConfirmed) ? "EMA Trend Stack not aligned (EMA20<50<200) or Price >= EMA200" : "Broker trade mode restricted for SELL";
       }
    }
    else
    {
+      sig.proposedCmd = (buyPoints > sellPoints ? OP_BUY : (sellPoints > buyPoints ? OP_SELL : -1));
       sig.entryPrice = (ask + bid) / 2.0;
       sig.slPrice = NormalizeDouble(sig.entryPrice - slDist, dig);
       sig.tpPrice = NormalizeDouble(sig.entryPrice + tpDist, dig);
       sig.cmd = -1; // Below threshold or tied direction
+      sig.vetoReason = StringFormat("Confluence score below threshold (Score: %d/10, Points: %.1f%%, Req: %d/10, %.1f%%)",
+                                    finalScore, finalAnalysis, effectiveMinScore, effectiveMinPoints);
    }
 
    // 1. Minimum Confluence Score Gate: strictly enforce effectiveMinScore and effectiveMinPoints
@@ -674,18 +697,21 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.vetoReason = StringFormat("ADX weak/choppy (%.1f <= 20.0)", adx_main);
       return sig;
    }
    if(sig.cmd == OP_BUY && adx_plus <= adx_minus)
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.vetoReason = StringFormat("ADX -DI (%.1f) exceeds +DI (%.1f)", adx_minus, adx_plus);
       return sig;
    }
    if(sig.cmd == OP_SELL && adx_minus <= adx_plus)
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.vetoReason = StringFormat("ADX +DI (%.1f) exceeds -DI (%.1f)", adx_plus, adx_minus);
       return sig;
    }
 
@@ -694,12 +720,14 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.vetoReason = StringFormat("RSI %.1f outside BUY corridor [45.0, 65.0]", rsi);
       return sig;
    }
    if(sig.cmd == OP_SELL && (rsi < 35.0 || rsi > 55.0))
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.vetoReason = StringFormat("RSI %.1f outside SELL corridor [35.0, 55.0]", rsi);
       return sig;
    }
 
@@ -713,24 +741,28 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       {
          sig.cmd = -1;
          sig.valid = false;
+         sig.vetoReason = "Selling directly into swing support";
          return sig; // Veto: Selling directly into swing support
       }
       if(low1 <= bb_low && close1 > bb_low)
       {
          sig.cmd = -1;
          sig.valid = false;
+         sig.vetoReason = "Lower band bounce contradicts short";
          return sig; // Veto: Lower band bounce contradicts short
       }
       if(sig.pattern == "BULLISH_ENGULFING" || sig.pattern == "HAMMER" || sig.pattern == "MORNING_STAR")
       {
          sig.cmd = -1;
          sig.valid = false;
+         sig.vetoReason = StringFormat("Bullish reversal pattern active (%s)", sig.pattern);
          return sig; // Veto: Bullish reversal candlestick pattern active
       }
       if(ema20 > 0.0 && (ema20 - close1) > (atr * 2.5))
       {
          sig.cmd = -1;
          sig.valid = false;
+         sig.vetoReason = "Extended mean-reversion risk";
          return sig; // Veto: Extended mean-reversion risk
       }
    }
@@ -741,24 +773,28 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       {
          sig.cmd = -1;
          sig.valid = false;
+         sig.vetoReason = "Buying directly into swing resistance";
          return sig; // Veto: Buying directly into swing resistance
       }
       if(high1 >= bb_up && close1 < bb_up)
       {
          sig.cmd = -1;
          sig.valid = false;
+         sig.vetoReason = "Upper band rejection contradicts long";
          return sig; // Veto: Upper band rejection contradicts long
       }
       if(sig.pattern == "BEARISH_ENGULFING" || sig.pattern == "SHOOTING_STAR")
       {
          sig.cmd = -1;
          sig.valid = false;
+         sig.vetoReason = StringFormat("Bearish reversal pattern active (%s)", sig.pattern);
          return sig; // Veto: Bearish reversal candlestick pattern active
       }
       if(ema20 > 0.0 && (close1 - ema20) > (atr * 2.5))
       {
          sig.cmd = -1;
          sig.valid = false;
+         sig.vetoReason = "Extended mean-reversion risk";
          return sig; // Veto: Extended mean-reversion risk
       }
    }
@@ -777,12 +813,14 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.vetoReason = "H4 bearish stack contradicts BUY";
             return sig; // H4 bearish stack contradicts BUY
          }
          if(sig.cmd == OP_SELL && ((h4_ema20 > h4_ema50 && h4_ema50 > h4_ema200) || (h4_ema50 > h4_ema200 && h4_close > h4_ema50) || h4_close > h4_ema200))
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.vetoReason = "H4 bullish stack contradicts SELL";
             return sig; // H4 bullish stack contradicts SELL
          }
       }
@@ -792,12 +830,14 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.vetoReason = "H4 EMAs contradict BUY entry";
             return sig;
          }
          if(sig.cmd == OP_SELL && (h4_ema20 > h4_ema50 || h4_close > h4_ema50))
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.vetoReason = "H4 EMAs contradict SELL entry";
             return sig;
          }
       }
@@ -816,12 +856,14 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.vetoReason = "D1 bearish trend contradicts BUY";
             return sig; // D1 bearish trend contradicts BUY
          }
          if(sig.cmd == OP_SELL && ((d1_ema20 > d1_ema50 && d1_ema50 > d1_ema200) || (d1_ema50 > d1_ema200 && d1_close > d1_ema50) || d1_close > d1_ema200))
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.vetoReason = "D1 bullish trend contradicts SELL";
             return sig; // D1 bullish trend contradicts SELL
          }
       }
@@ -831,12 +873,14 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.vetoReason = "D1 EMAs contradict BUY entry";
             return sig;
          }
          if(sig.cmd == OP_SELL && (d1_ema20 > d1_ema50 || d1_close > d1_ema50))
          {
             sig.cmd = -1;
             sig.valid = false;
+            sig.vetoReason = "D1 EMAs contradict SELL entry";
             return sig;
          }
       }
@@ -847,12 +891,14 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.vetoReason = StringFormat("ATR volatility (%.1f pips) below min (%.1f pips)", atrPips, minATRPips);
       return sig; // Insufficient ATR volatility for trade entry
    }
    if(maxATRPips > 0.0 && atrPips > maxATRPips)
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.vetoReason = StringFormat("ATR volatility (%.1f pips) exceeds max (%.1f pips)", atrPips, maxATRPips);
       return sig; // Excessive volatility spike
    }
 
@@ -861,10 +907,12 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    {
       sig.cmd = -1;
       sig.valid = false;
+      sig.vetoReason = "Invalid protective stop levels calculated";
       return sig;
    }
 
    sig.valid = true;
+   sig.vetoReason = "ALL GATES PASSED (Trade Qualified)";
    return sig;
 }
 

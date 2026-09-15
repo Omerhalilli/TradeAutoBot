@@ -2280,7 +2280,7 @@ string Zmq_HandleScanSymbols(const string reqJson)
       
       PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Signal: %-4s | Score: %2d/10 (%5.1f%%) | Trend: %-15s | Spread: %4.1f pts%s",
                   i + 1, totalSymbolsInList, sym, signal, sig.score, sig.analysisScore, sig.trend, spread,
-                  (sig.score >= 6 && sig.analysisScore >= 65.0 ? " [QUALIFIED SETUP]" : ""));
+                  (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= 6 && sig.analysisScore >= 65.0 ? " [QUALIFIED SETUP]" : ((sig.score >= 6 && sig.analysisScore >= 65.0) ? " [CANDIDATE >= 6.5]" : "")));
 
       double contractSize = MarketInfo(sym, MODE_LOTSIZE);
       double minLot = MarketInfo(sym, MODE_MINLOT);
@@ -2328,6 +2328,9 @@ string Zmq_HandleScanSymbols(const string reqJson)
       json += "\"adx\":" + DoubleToString(sig.adx, 1) + ",";
       json += "\"atr\":" + DoubleToString(sig.atr, dig) + ",";
       json += "\"session_active\":" + (isSessionActive ? "true" : "false") + ",";
+      json += "\"valid\":" + (sig.valid ? "true" : "false") + ",";
+      json += "\"veto_reason\":\"" + Zmq_JsonEscape(sig.vetoReason) + "\",";
+      json += "\"proposed_cmd\":" + IntegerToString(sig.proposedCmd) + ",";
       json += "\"bar_time\":" + IntegerToString((long)iTime(sym, tf, 0));
       json += "}";
       validCount++;
@@ -2501,6 +2504,100 @@ string Zmq_HandleStreamTicks(const string reqStr)
    return Zmq_HandleGetQuote(reqStr);
 }
 
+#import "user32.dll"
+int GetAncestor(int hWnd, int gaFlags);
+int GetParent(int hWnd);
+int FindWindowExA(int hWndParent, int hWndChildAfter, string lpszClass, string lpszWindow);
+int GetClassNameA(int hWnd, uchar &lpClassName[], int nMaxCount);
+int GetWindowTextA(int hWnd, uchar &lpString[], int nMaxCount);
+int SendMessageA(int hWnd, int Msg, int wParam, int lParam);
+int SendMessageA(int hWnd, int Msg, int wParam, int &rect[]);
+int PostMessageA(int hWnd, int Msg, int wParam, int lParam);
+bool ShowWindow(int hWnd, int nCmdShow);
+bool GetWindowRect(int hWnd, int &rect[]);
+#import
+
+int FindTerminalTabControl(int parent)
+{
+   return 0;
+}
+
+string Zmq_HandleSwitchTab(string reqStr)
+{
+   int chartWnd = WindowHandle(Symbol(), Period());
+   int mainWnd = chartWnd;
+   while(GetParent(mainWnd) != 0)
+      mainWnd = GetParent(mainWnd);
+      
+   if(mainWnd != 0)
+      ShowWindow(mainWnd, 3); // SW_MAXIMIZE = 3
+      
+   string tabList = "";
+   int foundTab = 0;
+   
+   int stack[500];
+   int top = 0;
+   stack[top++] = mainWnd;
+   
+   uchar cls[256];
+   int rect[4];
+   
+   int matchedTabs[10];
+   ArrayInitialize(matchedTabs, 0);
+   int nMatched = 0;
+   
+   while(top > 0)
+   {
+      int curr = stack[--top];
+      int child = 0;
+      while(true)
+      {
+         child = FindWindowExA(curr, child, NULL, NULL);
+         if(child == 0) break;
+         
+         ArrayInitialize(cls, 0);
+         GetClassNameA(child, cls, 255);
+         string sClass = CharArrayToString(cls);
+         
+         if(StringFind(sClass, "AfxWnd") >= 0 || StringFind(sClass, "Tab") >= 0)
+         {
+            ArrayInitialize(rect, 0);
+            GetWindowRect(child, rect);
+            int w = rect[2] - rect[0];
+            int h = rect[3] - rect[1];
+            if(w > 500 && h >= 15 && h <= 50)
+            {
+               if(tabList != "") tabList += ",";
+               tabList += "{\"h\":\"" + IntegerToString(child) + "\",\"c\":\"" + sClass + "\",\"w\":" + IntegerToString(w) + ",\"h_\":" + IntegerToString(h) + ",\"rect\":[" + IntegerToString(rect[0]) + "," + IntegerToString(rect[1]) + "," + IntegerToString(rect[2]) + "," + IntegerToString(rect[3]) + "]}";
+               if(nMatched < 10) matchedTabs[nMatched++] = child;
+            }
+         }
+         
+         if(top < 490)
+            stack[top++] = child;
+      }
+   }
+   
+   if(nMatched > 0)
+   {
+      int clickX = 1006;
+      int customX = (int)Zmq_ExtractJsonNumber(reqStr, "x", -1.0);
+      if(customX > 0) clickX = customX;
+      int clickY = 16;
+      int lParam = (clickY << 16) | (clickX & 0xFFFF);
+      
+      for(int m = 0; m < nMatched; m++)
+      {
+         SendMessageA(matchedTabs[m], 0x0201, 1, lParam); // WM_LBUTTONDOWN
+         SendMessageA(matchedTabs[m], 0x0202, 0, lParam); // WM_LBUTTONUP
+      }
+      
+      return "{\"status\":\"ok\",\"action\":\"SWITCH_TAB\",\"matched_count\":" + IntegerToString(nMatched) + ",\"click\":[" + IntegerToString(clickX) + "," + IntegerToString(clickY) + "],\"candidates\":[" + tabList + "]}";
+   }
+   
+   return "{\"status\":\"error\",\"message\":\"Tab bar not found\",\"tabs\":[" + tabList + "]}";
+}
+
 //+------------------------------------------------------------------+
 //| Request Dispatcher                                               |
 //+------------------------------------------------------------------+
@@ -2515,6 +2612,8 @@ string Zmq_ProcessRequest(const string reqStr)
       StringToUpper(action);
    }
    
+   if(action == "SWITCH_TAB" || action == "SELECT_TAB" || action == "TAB_EXPERTS")
+      return Zmq_HandleSwitchTab(reqStr);
    if(action == "GET_ACCOUNT" || action == "ACCOUNT")
       return Zmq_HandleGetAccount();
    if(action == "GET_POSITIONS" || action == "POSITIONS")
