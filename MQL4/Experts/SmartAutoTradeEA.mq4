@@ -6660,6 +6660,8 @@ void PerformManualPortfolioScan()
    int totalInList = ArraySize(symList);
    int totalScanned = 0;
    int qualifiedCount = 0;
+   int minReq = MathMax(6, AutonomousMinConfluenceScore);
+   double minAnalysis = (minReq >= 8) ? 80.0 : ((minReq >= 7) ? 70.0 : 60.0);
    string bestSymbol = "";
    string bestCmd = "HOLD";
    int bestScore = 0;
@@ -6727,9 +6729,6 @@ void PerformManualPortfolioScan()
          if(sig.score > 10) sig.score = 10;
       }
       bool isSessionActive = IsSessionActiveForSymbol(sym);
-
-      int minReq = MathMax(6, AutonomousMinConfluenceScore);
-      double minAnalysis = (minReq >= 8) ? 80.0 : ((minReq >= 7) ? 70.0 : 60.0);
       bool isQualified = (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= minReq && sig.analysisScore >= minAnalysis);
       string sigCmd = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
       double spreadPts = (ask - bid) / pt;
@@ -6784,8 +6783,8 @@ void PerformManualPortfolioScan()
    }
    else
    {
-      PrintFormat("[PORTFOLIO SCAN VERDICT] TRADE NAH: All %d symbols bypassed. No setups meet strict Grade A+ (>=8/10, >=85%%). Best: %s (%d/10). Capital 100%% safe.",
-                  totalScanned, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
+      PrintFormat("[PORTFOLIO SCAN VERDICT] TRADE NAH: All %d symbols bypassed. No setups meet strict Grade A (>=%d/10, >=%.0f%%). Best: %s (%d/10). Capital 100%% safe.",
+                  totalScanned, minReq, minAnalysis, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
    }
    PrintFormat("[PORTFOLIO SCAN SAFETY] Advisory Mode: ZERO TRADES EXECUTED (Safety guarantee).");
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");

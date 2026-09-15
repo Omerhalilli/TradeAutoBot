@@ -297,13 +297,14 @@ void ScanNextSymbolBatch(int batchSize = 0)
       }
 
       // Quantitative Confluence Scoring (0-100 analysis scale, score 0-10)
-      int effectiveMinScore = MathMax(8, MinConfluenceScore);
+      int effectiveMinScore = MathMax(6, MinConfluenceScore);
+      double effectiveMinPoints = (effectiveMinScore >= 8) ? 80.0 : ((effectiveMinScore >= 7) ? 70.0 : 60.0);
       StrategySignal sig = EvaluateSymbolOpportunity(sym, activeTF, effectiveMinScore, MinRewardToRisk, MinATRPips, MaxATRPips);
       g_LastScannedScore  = sig.score;
       g_LastScannedSignal = (sig.cmd == OP_BUY ? "BUY" : (sig.cmd == OP_SELL ? "SELL" : "HOLD"));
 
-      // Confluence threshold: must stand on 8 or past 8 and analysisScore >= 85.0 (sub-85% strictly prohibited)
-      if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.score < 8 || sig.analysisScore < 85.0)
+      // Confluence threshold: must satisfy effectiveMinScore and effectiveMinPoints
+      if(!sig.valid || sig.cmd < 0 || sig.score < effectiveMinScore || sig.analysisScore < effectiveMinPoints)
       {
          continue;
       }
@@ -338,8 +339,9 @@ void ScanNextSymbolBatch(int batchSize = 0)
    }
 
    // 3. Post-scan decision: If one or more qualified opportunities found, execute the best one!
-   int finalEffectiveMinScore = MathMax(8, MinConfluenceScore);
-   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= 8 && bestSig.score >= finalEffectiveMinScore && bestSig.analysisScore >= 85.0 && bestSymbol != "")
+   int finalEffectiveMinScore = MathMax(6, MinConfluenceScore);
+   double finalEffectiveMinPoints = (finalEffectiveMinScore >= 8) ? 80.0 : ((finalEffectiveMinScore >= 7) ? 70.0 : 60.0);
+   if(bestRankScore > 0.0 && bestSig.valid && bestSig.cmd >= 0 && bestSig.score >= finalEffectiveMinScore && bestSig.analysisScore >= finalEffectiveMinPoints && bestSymbol != "")
    {
       PrintFormat("[AUTONOMOUS PORTFOLIO SELECTION] Scanned %d symbols (%d qualified >= %d). Selected BEST: %s | %s | Score: %d/10 (%.1f/100) | Lots: %.2f | RR: %.2f",
                   scanCount, qualifiedCount, MinConfluenceScore, bestSymbol,
@@ -360,9 +362,9 @@ void ScanNextSymbolBatch(int batchSize = 0)
    }
    else
    {
-      // No symbol reached confluence score >= 8 (85%) or passed filters; bypass all symbols and wait cleanly for next cycle
-      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. HOLD: ALL SYMBOLS BYPASSED (No actionable setup >= %d/10 [85.0 Required]). Capital safely preserved. Waiting for next candle close.",
-                  scanCount, MinConfluenceScore);
+      // No symbol reached confluence score >= effectiveMinScore (effectiveMinPoints%) or passed filters; bypass all symbols and wait cleanly for next cycle
+      PrintFormat("[AUTONOMOUS SCAN CYCLE COMPLETE] Scanned %d symbols. HOLD: ALL SYMBOLS BYPASSED (No actionable setup >= %d/10 [%.0f%% Required]). Capital safely preserved. Waiting for next candle close.",
+                  scanCount, finalEffectiveMinScore, finalEffectiveMinPoints);
    }
 }
 

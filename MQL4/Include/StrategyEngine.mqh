@@ -216,7 +216,7 @@ void DistributeHUDPoints(double trendPts, double momPts, double srPts, double cn
 //+------------------------------------------------------------------+
 StrategySignal EvaluateSymbolOpportunity(string sym, 
                                           ENUM_TIMEFRAMES tf = PERIOD_H1, 
-                                          int minConfluenceScore = 8,
+                                          int minConfluenceScore = 7,
                                           double minRewardToRisk = 1.5,
                                           double minATRPips = 10.0,
                                           double maxATRPips = 150.0)
@@ -661,8 +661,8 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       sig.cmd = -1; // Below threshold or tied direction
    }
 
-   // 1. Minimum Confluence Score Gate: strictly enforce score >= 8 and analysisScore >= 85.0 (sub-85% is strictly prohibited)
-   if(finalScore < effectiveMinScore || finalScore < 8 || finalAnalysis < effectiveMinPoints || sig.cmd < 0)
+   // 1. Minimum Confluence Score Gate: strictly enforce effectiveMinScore and effectiveMinPoints
+   if(finalScore < effectiveMinScore || finalAnalysis < effectiveMinPoints || sig.cmd < 0)
    {
       sig.cmd = -1;
       sig.valid = false;

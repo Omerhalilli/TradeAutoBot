@@ -1233,7 +1233,7 @@ class QuantitativeConfluenceEngine:
         res.score_100 = max(0.0, min(100.0, base_score + total_score_mod))
         res.adaptive_score_modifier = total_score_mod
 
-        req_threshold = 85.0 if execution_mode == "SNIPER" else 80.0
+        req_threshold = 85.0 if execution_mode == "SNIPER" else (60.0 if execution_mode == "SCALPER" else 70.0)
         effective_min = max(req_threshold, self.min_confluence_score)
         if res.score_100 < effective_min:
             res.is_qualified = False
