@@ -2213,6 +2213,21 @@ string Zmq_HandleScanSymbols(const string reqJson)
    json += "\"results\":[";
    
    int validCount = 0;
+   int qualifiedCount = 0;
+   double minReq = 6.5;
+   double minAnalysis = 65.0;
+   string bestSymbol = "";
+   string bestCmd = "HOLD";
+   int bestScore = 0;
+   double bestAnalysisScore = 0.0;
+   double bestRankScore = -999999.0;
+   StrategySignal bestSig;
+   string candSymbols[50];
+   StrategySignal candSignals[50];
+   double candSpreads[50];
+   ArrayInitialize(candSpreads, 0.0);
+   int candCount = 0;
+
    for(int i = 0; i < totalSymbolsInList; i++)
    {
       string rawSym = symbols[i];
@@ -2278,9 +2293,35 @@ string Zmq_HandleScanSymbols(const string reqJson)
       if(isSessionActive && sig.valid && sig.cmd == OP_BUY && sig.score >= 6) signal = "BUY";
       else if(isSessionActive && sig.valid && sig.cmd == OP_SELL && sig.score >= 6) signal = "SELL";
       
+      bool meetsThreshold = (sig.score >= (int)MathFloor(minReq) && sig.analysisScore >= minAnalysis);
+      if(meetsThreshold && candCount < 50)
+      {
+         candSymbols[candCount] = sym;
+         candSignals[candCount] = sig;
+         candSpreads[candCount] = spread;
+         candCount++;
+      }
+
+      bool isQualified = (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= (int)MathFloor(minReq) && sig.analysisScore >= minAnalysis);
+      if(isQualified)
+      {
+         qualifiedCount++;
+      }
+
+      double rankScore = (sig.analysisScore * 100.0) + (sig.rrRatio * 50.0) - (spread * 2.0);
+      if(rankScore > bestRankScore)
+      {
+         bestRankScore = rankScore;
+         bestSig = sig;
+         bestSymbol = sym;
+         bestScore = sig.score;
+         bestAnalysisScore = sig.analysisScore;
+         bestCmd = (sig.buyScore > sig.sellScore ? "BUY" : (sig.sellScore > sig.buyScore ? "SELL" : signal));
+      }
+
       PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Signal: %-4s | Score: %2d/10 (%5.1f%%) | Trend: %-15s | Spread: %4.1f pts%s",
                   i + 1, totalSymbolsInList, sym, signal, sig.score, sig.analysisScore, sig.trend, spread,
-                  (isSessionActive && sig.valid && sig.cmd >= 0 && sig.score >= 6 && sig.analysisScore >= 65.0 ? " [QUALIFIED SETUP]" : ((sig.score >= 6 && sig.analysisScore >= 65.0) ? " [CANDIDATE >= 6.5]" : "")));
+                  (isQualified ? " [QUALIFIED SETUP]" : (meetsThreshold ? " [CANDIDATE >= 6.5]" : "")));
 
       double contractSize = MarketInfo(sym, MODE_LOTSIZE);
       double minLot = MarketInfo(sym, MODE_MINLOT);
@@ -2336,6 +2377,65 @@ string Zmq_HandleScanSymbols(const string reqJson)
       validCount++;
    }
    json += "],\"count\":" + IntegerToString(validCount) + "}";
+
+   // Update HUD variables on chart
+   g_AutoScanLastTime = TimeCurrent();
+   g_AutoScanTotalSymbols = totalSymbolsInList;
+   g_AutoScanQualifiedCount = qualifiedCount;
+   g_AutoScanBestSymbol = (bestSymbol != "" ? bestSymbol : "NONE");
+   g_AutoScanBestCmd = bestCmd;
+   g_AutoScanBestScore = bestScore;
+   g_AutoScanBestAnalysis = bestAnalysisScore;
+
+   if(qualifiedCount > 0)
+   {
+      g_AutoScanStatusDesc = StringFormat("CAN TRADE: %s %s (%d/10, %.0f%%) [PYTHON DIRECT ORDER]", bestSymbol, bestCmd, bestScore, bestAnalysisScore);
+   }
+   else
+   {
+      g_AutoScanStatusDesc = StringFormat("TRADE NAH: ALL %d BYPASSED (Best: %s %d/10)", totalSymbolsInList, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore);
+   }
+
+   // Candle boundary synchronization: mark this bar boundary as scanned
+   datetime currentBarTime = (datetime)iTime(Symbol(), tf, 0);
+   if(currentBarTime > 0)
+   {
+      g_LastAutonomousBarTime = currentBarTime;
+      GlobalVariableSet("AUTONOMOUS_LAST_SCAN_BAR", (double)currentBarTime);
+   }
+
+   // Detailed Breakdown for Candidates meeting threshold (>=6.5/10, >=65%)
+   PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+   PrintFormat("=== CANDIDATES MEETING SCORE THRESHOLD (>=%.1f/10, >=%.0f%%) ===", minReq, minAnalysis);
+   if(candCount == 0)
+   {
+      PrintFormat("  No symbols reached threshold >=%.1f (>=%.0f%%). Best candidate was %s (%d/10, %.1f%%).",
+                  minReq, minAnalysis, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore, bestAnalysisScore);
+   }
+   else
+   {
+      PrintFormat("  Found %d candidate symbol(s) reaching threshold >=%.1f (>=%.0f%%):", candCount, minReq, minAnalysis);
+      for(int c = 0; c < candCount; c++)
+      {
+         string cSym = candSymbols[c];
+         StrategySignal cSig = candSignals[c];
+         double cSpr = candSpreads[c];
+         string proposedDir = (cSig.buyScore > cSig.sellScore ? "BUY" : (cSig.sellScore > cSig.buyScore ? "SELL" : "NEUTRAL"));
+         bool canEnter = (cSig.valid && cSig.cmd >= 0);
+         string actionStr = canEnter ? StringFormat("ENTER %s [QUALIFIED]", (cSig.cmd == OP_BUY ? "BUY" : "SELL")) : StringFormat("DO NOT ENTER [Veto: %s]", cSig.vetoReason);
+
+         PrintFormat("------------------------------------------------------------");
+         PrintFormat("  [CANDIDATE %d/%d] %s | Score: %d/10 (%.1f%%) | Proposed Direction: %s",
+                     c + 1, candCount, cSym, cSig.score, cSig.analysisScore, proposedDir);
+         PrintFormat("    • Analysis : Trend: %s | H4 HTF: %s | ADX: %.1f | RSI: %.1f | Spread: %.1f pts",
+                     cSig.trend, cSig.htfTrend, cSig.adx, cSig.rsi, cSpr);
+         PrintFormat("    • Targets  : SL=%.1f pips | TP=%.1f pips | RR=%.2f",
+                     cSig.slPips, cSig.tpPips, cSig.rrRatio);
+         PrintFormat("    • Decision : %s", actionStr);
+      }
+      PrintFormat("------------------------------------------------------------");
+   }
+
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
    PrintFormat("[PORTFOLIO SCAN COMPLETE] Processed %d/%d valid symbols on %s", validCount, totalSymbolsInList, EnumToString(tf));
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -2603,6 +2703,7 @@ string Zmq_HandleSwitchTab(string reqStr)
 //+------------------------------------------------------------------+
 string Zmq_ProcessRequest(const string reqStr)
 {
+   GlobalVariableSet("ZMQ_LAST_HEARTBEAT", (double)TimeCurrent());
    string action = Zmq_ExtractJsonString(reqStr, "action");
    if(action == "")
    {

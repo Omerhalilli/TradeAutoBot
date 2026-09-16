@@ -1251,6 +1251,14 @@ class AutonomousMultiSymbolTrader:
         """Asynchronous entry point for periodic background scheduler."""
         if not self.is_autotrade_active():
             return
+        # Maintain periodic ZeroMQ heartbeat ping with MT4 terminal (every 10s)
+        now = time.time()
+        if now - getattr(self, "_last_ping_time", 0.0) >= 10.0:
+            self._last_ping_time = now
+            try:
+                await asyncio.to_thread(zmq_client.ping)
+            except Exception:
+                pass
         if not force and self.scan_on_bar_close_only and not self.is_new_bar_boundary():
             return
         try:

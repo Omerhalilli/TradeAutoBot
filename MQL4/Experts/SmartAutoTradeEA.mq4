@@ -6773,6 +6773,13 @@ void PerformManualPortfolioScan()
    g_AutoScanBestScore = bestScore;
    g_AutoScanBestAnalysis = bestAnalysisScore;
 
+   datetime curBar = (datetime)iTime(Symbol(), scanTF, 0);
+   if(curBar > 0)
+   {
+      g_LastAutonomousBarTime = curBar;
+      GlobalVariableSet("AUTONOMOUS_LAST_SCAN_BAR", (double)curBar);
+   }
+
    if(qualifiedCount > 0)
    {
       g_AutoScanStatusDesc = StringFormat("CAN TRADE: %s %s (%d/10, %.0f%%) [NO AUTO-ORDER]", bestSymbol, bestCmd, bestScore, bestAnalysisScore);
@@ -7546,6 +7553,31 @@ void Autonomous_MultiSymbolScan()
    if(currentBrokerBar > currentBarTime) currentBarTime = currentBrokerBar;
    if(currentBarTime <= 0) return;
 
+   // 5. ZeroMQ Python Master Coordination:
+   // If the Python AI engine is actively communicating via ZeroMQ, Python orchestrates
+   // all scheduled candle-close portfolio surveillance, deep confluence scoring,
+   // adaptive learning quarantine checks, and autonomous order dispatch.
+   // Deferring to Python prevents redundant duplicate scans on the same candle.
+   if(GlobalVariableCheck("ZMQ_LAST_HEARTBEAT"))
+   {
+      datetime lastZmq = (datetime)GlobalVariableGet("ZMQ_LAST_HEARTBEAT");
+      if(TimeCurrent() - lastZmq < 60)
+      {
+         g_LastAutonomousBarTime = currentBarTime;
+         return;
+      }
+   }
+
+   if(GlobalVariableCheck("AUTONOMOUS_LAST_SCAN_BAR"))
+   {
+      datetime lastScanBar = (datetime)GlobalVariableGet("AUTONOMOUS_LAST_SCAN_BAR");
+      if(currentBarTime <= lastScanBar)
+      {
+         g_LastAutonomousBarTime = currentBarTime;
+         return;
+      }
+   }
+
    if(g_LastAutonomousBarTime == 0)
    {
       g_LastAutonomousBarTime = currentBarTime;
@@ -7558,10 +7590,11 @@ void Autonomous_MultiSymbolScan()
    }
 
    g_LastAutonomousBarTime = currentBarTime;
-   PrintFormat("[AUTONOMOUS MULTI-SYMBOL] 🕯️ New candle boundary confirmed on %s (%s). Triggering autonomous portfolio scan & trade execution...",
+   GlobalVariableSet("AUTONOMOUS_LAST_SCAN_BAR", (double)currentBarTime);
+   PrintFormat("[AUTONOMOUS MULTI-SYMBOL] 🕯️ New candle boundary confirmed on %s (%s). Triggering autonomous portfolio scan & trade execution (Standalone Mode)...",
                Symbol(), EnumToString(activeTF));
 
-   // Execute synchronized scan and order dispatch
+   // Execute synchronized scan and order dispatch (only in standalone mode when Python is offline)
    PerformManualPortfolioScan();
 }
 
