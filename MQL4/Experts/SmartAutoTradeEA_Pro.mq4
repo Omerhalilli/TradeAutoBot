@@ -454,7 +454,7 @@ input string             AutonomousExcludeSymbols      = "*RUB*,*TRY*,*ZAR*"; //
 input bool               AutonomousTradeDirectly       = true;              // 100% Autonomous Execution (Direct Trade, Zero Advisory Prompting)
 input int                AutonomousScanBatchSize       = 3;                 // Round-Robin Time-Sliced Batch Size (3-5)
 input int                AutonomousScanIntervalSec     = 20;                // Background Multi-Symbol Scan Interval (Seconds)
-input double             AutonomousMinConfluenceScore  = 6.5;               // Minimum Score to Execute Autonomous Trade (0-10)
+input double             AutonomousMinConfluenceScore  = 6.0;               // Minimum Score to Execute Autonomous Trade (0-10)
 input int                AutonomousCooldownMinutes     = 60;                // Per-Symbol Cooldown Guard (Minutes After Trade)
 input int                AutonomousMaxConcurrentTrades = 1;                 // Maximum Autonomous Concurrent Open Positions (1 default)
 
@@ -6656,7 +6656,7 @@ void PerformManualPortfolioScan()
    int totalInList = ArraySize(symList);
    int totalScanned = 0;
    int qualifiedCount = 0;
-   double minReq = (AutonomousMinConfluenceScore >= 6.0 && AutonomousMinConfluenceScore <= 10.0) ? AutonomousMinConfluenceScore : 6.5;
+   double minReq = (AutonomousMinConfluenceScore >= 6.0 && AutonomousMinConfluenceScore <= 10.0) ? AutonomousMinConfluenceScore : 6.0;
    double minAnalysis = minReq * 10.0;
    string bestSymbol = "";
    string bestCmd = "HOLD";
@@ -6745,7 +6745,7 @@ void PerformManualPortfolioScan()
 
       PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Signal: %-4s | Score: %2d/10 (%5.1f%%) | Trend: %-15s | Spread: %4.1f pts%s",
                   i + 1, totalInList, sym, sigCmd, sig.score, sig.analysisScore, sig.trend, spreadPts,
-                  (isQualified ? " [QUALIFIED SETUP]" : (meetsThreshold ? " [CANDIDATE >= 6.5]" : "")));
+                  (isQualified ? " [QUALIFIED SETUP]" : (meetsThreshold ? " [CANDIDATE >= 6.0]" : "")));
 
       if(isQualified)
       {

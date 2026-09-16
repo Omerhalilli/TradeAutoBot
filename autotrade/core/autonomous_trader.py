@@ -188,7 +188,7 @@ class AutonomousMultiSymbolTrader:
                 elif cur_mode == "INTRADAY":
                     self.timeframe = "H1"
                     self.max_positions = 3
-                    self.min_score = 6.5
+                    self.min_score = 6.0
                     self.cooldown_sec = 3600
                 elif cur_mode == "SNIPER":
                     self.timeframe = "H1"
@@ -372,7 +372,7 @@ class AutonomousMultiSymbolTrader:
             self.timeframe = "H1"
             self.cooldown_sec = 3600
             self.max_positions = 3
-            self.min_score = 6.5
+            self.min_score = 6.0
         elif m == "SNIPER":
             self.timeframe = "H1"
             self.cooldown_sec = 14400
@@ -633,7 +633,7 @@ class AutonomousMultiSymbolTrader:
                 return False
             return True
 
-        effective_min = max(self.min_score, 6.5)
+        effective_min = max(self.min_score, 6.0)
         if sig not in ("BUY", "SELL") or effective_score < effective_min:
             return False
 

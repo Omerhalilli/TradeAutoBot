@@ -224,12 +224,12 @@ class QuantitativeConfluenceEngine:
     - Rule 4: Oscillator Exhaustion Veto (Anti-Chasing Shield)
     - Rule 5: Lower-Timeframe Execution Confirmation (M15 / M5 Rejection Wick >= 2x Body or Engulfing)
     """
-    def __init__(self, min_confluence_score: float = 65.0):
-        # Scale-invariant normalization: convert 0-10 scale (e.g. 6.5) to 0-100 scale (65.0)
+    def __init__(self, min_confluence_score: float = 60.0):
+        # Scale-invariant normalization: convert 0-10 scale (e.g. 6.0) to 0-100 scale (60.0)
         score_val = float(min_confluence_score)
         if score_val <= 10.0:
             score_val = score_val * 10.0
-        self.min_confluence_score = max(65.0, score_val)
+        self.min_confluence_score = max(60.0, score_val)
         # Rolling spread tracking: keeps up to 100 historical spread observations per symbol
         self._rolling_spreads: Dict[str, deque[float]] = {}
         # Dynamic broker specs cache
@@ -1233,7 +1233,7 @@ class QuantitativeConfluenceEngine:
         res.score_100 = max(0.0, min(100.0, base_score + total_score_mod))
         res.adaptive_score_modifier = total_score_mod
 
-        req_threshold = 85.0 if execution_mode == "SNIPER" else (60.0 if execution_mode == "SCALPER" else 65.0)
+        req_threshold = 85.0 if execution_mode == "SNIPER" else (60.0 if execution_mode == "SCALPER" else 60.0)
         effective_min = max(req_threshold, self.min_confluence_score)
         if res.score_100 < effective_min:
             res.is_qualified = False

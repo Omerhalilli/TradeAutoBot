@@ -2214,8 +2214,8 @@ string Zmq_HandleScanSymbols(const string reqJson)
    
    int validCount = 0;
    int qualifiedCount = 0;
-   double minReq = 6.5;
-   double minAnalysis = 65.0;
+   double minReq = 6.0;
+   double minAnalysis = 60.0;
    string bestSymbol = "";
    string bestCmd = "HOLD";
    int bestScore = 0;
@@ -2321,7 +2321,7 @@ string Zmq_HandleScanSymbols(const string reqJson)
 
       PrintFormat("[PORTFOLIO SCAN %02d/%02d] %-7s | Signal: %-4s | Score: %2d/10 (%5.1f%%) | Trend: %-15s | Spread: %4.1f pts%s",
                   i + 1, totalSymbolsInList, sym, signal, sig.score, sig.analysisScore, sig.trend, spread,
-                  (isQualified ? " [QUALIFIED SETUP]" : (meetsThreshold ? " [CANDIDATE >= 6.5]" : "")));
+                  (isQualified ? " [QUALIFIED SETUP]" : (meetsThreshold ? " [CANDIDATE >= 6.0]" : "")));
 
       double contractSize = MarketInfo(sym, MODE_LOTSIZE);
       double minLot = MarketInfo(sym, MODE_MINLOT);
@@ -2404,7 +2404,7 @@ string Zmq_HandleScanSymbols(const string reqJson)
       GlobalVariableSet("AUTONOMOUS_LAST_SCAN_BAR", (double)currentBarTime);
    }
 
-   // Detailed Breakdown for Candidates meeting threshold (>=6.5/10, >=65%)
+   // Detailed Breakdown for Candidates meeting threshold (>=6.0/10, >=60%)
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
    PrintFormat("=== CANDIDATES MEETING SCORE THRESHOLD (>=%.1f/10, >=%.0f%%) ===", minReq, minAnalysis);
    if(candCount == 0)

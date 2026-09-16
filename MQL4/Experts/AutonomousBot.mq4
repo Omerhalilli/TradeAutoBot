@@ -32,7 +32,7 @@ input bool               EmergencyKillSwitch           = false;             // E
 
 //--- [02] PER-TRADE & SCANNER SAFETY FILTERS
 input string             Sec_PerTradeSafety            = "=== 2. PER-TRADE & SCANNER SAFETY FILTERS ===";
-input double             MinConfluenceScore            = 6.5;               // Minimum Confluence Score to Execute (stands on 6.5 or past 6.5)
+input double             MinConfluenceScore            = 6.0;               // Minimum Confluence Score to Execute (stands on 6.0 or past 6.0)
 input double             MinRewardToRisk               = 1.5;               // Minimum Reward-to-Risk Ratio (TP >= 1.5 * SL)
 input double             MaxSpreadPoints               = 40.0;              // Maximum Allowed Spread (Points)
 input double             MinATRPips                    = 10.0;              // Minimum ATR in Pips (Filter dead / choppy market)

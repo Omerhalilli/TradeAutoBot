@@ -895,9 +895,10 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         }
         self.assertTrue(self.trader.is_qualified_candidate(valid_buy))
 
-        # 1. Score < 6.5 rejected, score >= 6.5 accepted when all gates pristine
-        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 6.0, "analysis_score": 60.0}))
+        # 1. Score < 6.0 rejected, score >= 6.0 accepted when all gates pristine
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 5.5, "analysis_score": 55.0}))
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "score": 5, "analysis_score": 50.0}))
+        self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "score": 6.0, "analysis_score": 60.0}))
         self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "score": 6.5, "analysis_score": 65.0}))
         self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "score": 7, "analysis_score": 70.0}))
         self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "score": 8, "analysis_score": 80.0}))
