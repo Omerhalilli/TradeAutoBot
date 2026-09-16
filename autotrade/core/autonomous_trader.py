@@ -1575,6 +1575,13 @@ class AutonomousMultiSymbolTrader:
                 f"• Target Take Profit: <code>+{tp_pips:.1f} pips</code> (Reward-to-Risk: <code>{rr:.2f}:1</code>)\n"
                 f"<i>⚡ This setup satisfies autonomous trade entry criteria (Score ≥ {self.min_score:.1f}/10 [{int(round(self.min_score * 10))}%]).</i>\n"
             )
+        elif score >= self.min_score and score >= 6:
+            veto = str(item.get("veto_reason", "Awaiting directional alignment")).strip()
+            msg += (
+                "⏳ <b>EXECUTION RECOMMENDATION:</b>\n"
+                f"• <b>HOLD & WAIT:</b> Score ({score}/10) met threshold (≥{self.min_score:.1f}), but safety gates/direction vetoed execution: <code>{veto}</code>.\n"
+                "<i>Capital safely protected until institutional alignment occurs.</i>\n"
+            )
         else:
             msg += (
                 "⏳ <b>EXECUTION RECOMMENDATION:</b>\n"
