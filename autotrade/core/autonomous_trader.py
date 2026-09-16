@@ -657,13 +657,13 @@ class AutonomousMultiSymbolTrader:
             except (ValueError, TypeError):
                 return False
 
-        # Rule 5: Strict RSI Momentum Corridor (Veto BUY if RSI > 55, Veto SELL if RSI < 45)
+        # Rule 5: Strict RSI Momentum Corridor (Veto BUY if RSI < 40 or > 65, Veto SELL if RSI < 35 or > 60)
         if "rsi" in item and item["rsi"] is not None:
             try:
                 rsi_val = float(item["rsi"])
-                if sig == "BUY" and (rsi_val < 40.0 or rsi_val > 55.0):
+                if sig == "BUY" and (rsi_val < 40.0 or rsi_val > 65.0):
                     return False
-                if sig == "SELL" and (rsi_val < 45.0 or rsi_val > 60.0):
+                if sig == "SELL" and (rsi_val < 35.0 or rsi_val > 60.0):
                     return False
             except (ValueError, TypeError):
                 return False

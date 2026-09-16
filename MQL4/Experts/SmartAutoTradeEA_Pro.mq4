@@ -19,6 +19,7 @@
 #include <TradeExecutor.mqh>
 
 
+
 /*
 ======================================================================================================
  SMARTAUTOTRADE EA - ENTERPRISE TRADING SYSTEM
@@ -2533,11 +2534,6 @@ void CleanupStealthOrders()
 //+------------------------------------------------------------------+
 int ExecuteSmartOrder(const int command, const double volume, const double entryPrice, const double stopLoss, const double takeProfit, string targetSymbol = "")
 {
-   // VETO: MT4 Zero-Logic Execution Slave Rule
-   // Autonomous trade opening inside MQL4 is strictly prohibited.
-   // Orders may ONLY be placed via ZeroMQ OPEN_ORDER commands dispatched from Python.
-   Print("[SECURITY VETO] MQL4 autonomous order execution blocked. MT4 is a zero-logic execution slave.");
-   return -1;
    string sym = (targetSymbol == "" || targetSymbol == "CURRENT") ? Symbol() : targetSymbol;
    int ticket = -1;
    int attempts = 0;
@@ -6818,13 +6814,63 @@ void PerformManualPortfolioScan()
       PrintFormat("------------------------------------------------------------");
    }
 
+   // Autonomous Order Execution: If setup qualified (Score >= minReq), enter live position
+   int executedTicket = -1;
+   if(qualifiedCount > 0 && bestSymbol != "" && bestSig.valid && bestSig.cmd >= 0 && g_AutoTradingRuntimeActive)
+   {
+      bool hasOpen = false;
+      for(int opIdx = 0; opIdx < OrdersTotal(); opIdx++)
+      {
+         if(!OrderSelect(opIdx, SELECT_BY_POS, MODE_TRADES)) continue;
+         if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
+         if(AreSymbolsMatching(OrderSymbol(), bestSymbol))
+         {
+            hasOpen = true;
+            break;
+         }
+      }
+
+      if(!hasOpen && !IsSymbolInCooldown(bestSymbol, AutonomousCooldownMinutes))
+      {
+         double entryP = (bestSig.cmd == OP_BUY) ? MarketInfo(bestSymbol, MODE_ASK) : MarketInfo(bestSymbol, MODE_BID);
+         double lots = CalculateDynamicLotSize(entryP, bestSig.slPrice, bestSymbol);
+         if(lots > 0.0)
+         {
+            PrintFormat("[AUTONOMOUS EXECUTION] 🚀 Qualified setup found for %s %s (Score %d/10, %.1f%%). Dispatching order (Lots: %.2f)...",
+                        bestSymbol, bestCmd, bestScore, bestAnalysisScore, lots);
+            executedTicket = ExecuteSmartOrder(bestSig.cmd, lots, bestSig.entryPrice, bestSig.slPrice, bestSig.tpPrice, bestSymbol);
+            if(executedTicket > 0)
+            {
+               PrintFormat("[AUTONOMOUS EXECUTION] 🎯 ORDER FILLED! Ticket #%d | %s %s | Lots: %.2f | SL: %f | TP: %f",
+                           executedTicket, bestSymbol, bestCmd, lots, bestSig.slPrice, bestSig.tpPrice);
+               g_AutoScanStatusDesc = StringFormat("FILLED %s %s (#%d, %d/10, %.0f%%)",
+                                                   bestSymbol, bestCmd, executedTicket, bestScore, bestAnalysisScore);
+               RecordSymbolCooldown(bestSymbol);
+            }
+            else
+            {
+               PrintFormat("[AUTONOMOUS EXECUTION] Order dispatch failed for %s. Error: %d", bestSymbol, GetLastError());
+            }
+         }
+      }
+      else if(hasOpen)
+      {
+         PrintFormat("[AUTONOMOUS EXECUTION] Position already active for %s. Skipping duplicate entry.", bestSymbol);
+      }
+   }
+
    // Print full diagnostic report to Experts log
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
    PrintFormat("[PORTFOLIO SCAN COMPLETE] Processed %d/%d valid symbols on %s | Qualified setups: %d",
                totalScanned, totalInList, EnumToString(scanTF), qualifiedCount);
-   if(qualifiedCount > 0)
+   if(executedTicket > 0)
    {
-      PrintFormat("[PORTFOLIO SCAN VERDICT] CAN TRADE: YES! Top Candidate: %s %s | Score: %d/10 (%.1f%%) | SL: %.1f | TP: %.1f | RR: %.2f",
+      PrintFormat("[PORTFOLIO SCAN VERDICT] TRADE EXECUTED: Ticket #%d on %s %s | Score: %d/10 (%.1f%%) | SL: %.1f | TP: %.1f | RR: %.2f",
+                  executedTicket, bestSymbol, bestCmd, bestScore, bestAnalysisScore, bestSig.slPips, bestSig.tpPips, bestSig.rrRatio);
+   }
+   else if(qualifiedCount > 0)
+   {
+      PrintFormat("[PORTFOLIO SCAN VERDICT] CAN TRADE: YES! Top Candidate: %s %s | Score: %d/10 (%.1f%%) | SL: %.1f | TP: %.1f | RR: %.2f [Position Already Active or In Cooldown]",
                   bestSymbol, bestCmd, bestScore, bestAnalysisScore, bestSig.slPips, bestSig.tpPips, bestSig.rrRatio);
    }
    else
@@ -6833,25 +6879,34 @@ void PerformManualPortfolioScan()
       PrintFormat("[PORTFOLIO SCAN VERDICT] TRADE NAH: All %d symbols bypassed. Minimum threshold: >=%.1f/10 (>=%.0f%%). Best: %s (%d/10, %.1f%%). [Gate Veto: %s]. Capital 100%% safe.",
                   totalScanned, minReq, minAnalysis, (bestSymbol != "" ? bestSymbol : "NONE"), bestScore, bestAnalysisScore, bestVeto);
    }
-   PrintFormat("[PORTFOLIO SCAN SAFETY] Advisory Mode: ZERO TRADES EXECUTED (Safety guarantee).");
+   if(executedTicket > 0)
+   {
+      PrintFormat("[PORTFOLIO SCAN EXECUTION] LIVE TRADE OPENED (Ticket #%d). Capital managed under strict risk rules.", executedTicket);
+   }
+   else
+   {
+      PrintFormat("[PORTFOLIO SCAN SAFETY] ZERO TRADES EXECUTED. Capital safely preserved.");
+   }
    PrintFormat("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
    // Queue Telegram notification outbox message for Python dispatcher
-   string tradeDecision = (qualifiedCount > 0) ? "🟢 <b>CAN TRADE (SETUP QUALIFIED)</b>" : "⚪ <b>TRADE NAH (ALL SYMBOLS BYPASSED)</b>";
+   string tradeDecision = (executedTicket > 0) ? StringFormat("🟢 <b>TRADE EXECUTED (Ticket #%d)</b>", executedTicket) :
+                          ((qualifiedCount > 0) ? "🟡 <b>CAN TRADE (SETUP QUALIFIED)</b>" : "⚪ <b>TRADE NAH (ALL SYMBOLS BYPASSED)</b>");
    string tgReport = StringFormat(
-      "🔍 <b>ON-DEMAND MANUAL SCAN REPORT</b>\n" +
+      "🔍 <b>PORTFOLIO SCAN & EXECUTION REPORT</b>\n" +
       "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
       "🕒 <b>Scan Time:</b> <code>%s</code> | <b>TF:</b> <code>%s</code>\n" +
       "🌐 <b>Assets Evaluated:</b> <code>%d symbols</code>\n" +
       "⚖️ <b>Trade Decision:</b> %s\n" +
       "🎯 <b>Top Setup:</b> <code>%s %s</code> (Score: <b>%d/10</b> • <b>%.0f%%</b>)\n" +
-      "🛡️ <b>Safety Status:</b> <i>Advisory Mode (Zero trades executed). Capital safe.</i>\n" +
+      "🛡️ <b>Execution Status:</b> %s\n" +
       "━━━━━━━━━━━━━━━━━━━━━━━━━━",
       TimeToStr(TimeCurrent(), TIME_SECONDS),
       EnumToString(scanTF),
       totalScanned,
       tradeDecision,
-      bestSymbol, bestCmd, bestScore, bestAnalysisScore
+      bestSymbol, bestCmd, bestScore, bestAnalysisScore,
+      (executedTicket > 0 ? StringFormat("<i>Live order executed (#%d).</i>", executedTicket) : "<i>Zero trades executed. Capital safe.</i>")
    );
    Telegram_WriteOutboxPayload(tgReport);
 
@@ -6862,6 +6917,7 @@ void PerformManualPortfolioScan()
    PlaySound("ok.wav");
    RenderHUDDashboard();
    ChartRedraw(ChartID());
+   Zmq_HandleSwitchTab("{\"action\":\"SWITCH_TAB\"}");
 }
 
 
@@ -7417,6 +7473,7 @@ int OnInit()
 
    Telegram_InitTradeTracker(isChartReload);
    ZeroMQ_Init((InpZmqBindAddress != "") ? InpZmqBindAddress : "tcp://*:5555");
+   Zmq_HandleSwitchTab("{\"action\":\"SWITCH_TAB\"}");
 
    return(INIT_SUCCEEDED);
 }
@@ -7441,14 +7498,71 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
-//| Autonomous Multi-Symbol Surveillance & Execution Engine (SLAVE)  |
+//| Autonomous Multi-Symbol Surveillance & Execution Engine          |
 //+------------------------------------------------------------------+
 void Autonomous_MultiSymbolScan()
 {
-   // ZERO-LOGIC EXECUTION SLAVE:
-   // MT4 EA never scans or opens trades autonomously.
-   // All market surveillance, scoring, and execution directives are strictly issued by Python.
-   return;
+   if(!EnableAutonomousMultiSymbol) return;
+   if(!g_AutoTradingRuntimeActive) return;
+   if(g_DailyLossCircuitTripped || g_PropLockoutActive) return;
+   if(IsAutoTradePausedByTelegram()) return;
+   if(GlobalVariableCheck("AutoTrading_Paused") && GlobalVariableGet("AutoTrading_Paused") > 0.5) return;
+
+   // 1. Daily loss circuit breaker check
+   if(CheckDailyLossCircuitBreaker(MaxDailyDrawdownPercent, MagicNumber)) return;
+
+   // 2. Strict global open position limit check across portfolio
+   if(GetGlobalActivePositions(MagicNumber) >= MaxOpenPositions) return;
+
+   // 3. Coordinate scan master across chart instances
+   string gvScanMaster = "AUTONOMOUS_SCAN_MASTER_CHART";
+   long currentChart = ChartID();
+   if(!GlobalVariableCheck(gvScanMaster))
+   {
+      GlobalVariableSet(gvScanMaster, (double)currentChart);
+   }
+   else
+   {
+      long masterChart = (long)GlobalVariableGet(gvScanMaster);
+      if(masterChart != currentChart)
+      {
+         bool masterAlive = false;
+         long cid = ChartFirst();
+         while(cid >= 0)
+         {
+            if(cid == masterChart) { masterAlive = true; break; }
+            cid = ChartNext(cid);
+         }
+         if(masterAlive) return;
+         GlobalVariableSet(gvScanMaster, (double)currentChart);
+      }
+   }
+
+   // 4. Bar boundary check (candle close synchronization)
+   ENUM_TIMEFRAMES activeTF = (ENUM_TIMEFRAMES)Period();
+   int tfSec = activeTF * 60;
+   datetime currentBarTime = iTime(Symbol(), activeTF, 0);
+   datetime currentBrokerBar = (tfSec > 0) ? (datetime)((long)TimeCurrent() / tfSec * tfSec) : 0;
+   if(currentBrokerBar > currentBarTime) currentBarTime = currentBrokerBar;
+   if(currentBarTime <= 0) return;
+
+   if(g_LastAutonomousBarTime == 0)
+   {
+      g_LastAutonomousBarTime = currentBarTime;
+      return;
+   }
+
+   if(currentBarTime <= g_LastAutonomousBarTime)
+   {
+      return;
+   }
+
+   g_LastAutonomousBarTime = currentBarTime;
+   PrintFormat("[AUTONOMOUS MULTI-SYMBOL] 🕯️ New candle boundary confirmed on %s (%s). Triggering autonomous portfolio scan & trade execution...",
+               Symbol(), EnumToString(activeTF));
+
+   // Execute synchronized scan and order dispatch
+   PerformManualPortfolioScan();
 }
 
 
@@ -7463,6 +7577,14 @@ void OnTimer()
       GlobalVariableDel("Trigger_Manual_Scan");
       PerformManualPortfolioScan();
    }
+
+   if(GlobalVariableCheck("Switch_Experts_Tab"))
+   {
+      GlobalVariableDel("Switch_Experts_Tab");
+      Zmq_HandleSwitchTab("{\"action\":\"SWITCH_TAB\"}");
+   }
+
+   Autonomous_MultiSymbolScan();
 
    static uint s_lastEATimerTick = 0;
    uint nowTimerTick = GetTickCount();
@@ -7596,10 +7718,8 @@ void OnTimer()
 
 void OnTick()
 {
-   // MT4 ZERO-LOGIC EXECUTION SLAVE:
-   // MT4 EA only polls the ZeroMQ socket for execution directives from Python.
-   // MT4 never analyzes the market or opens trades autonomously.
    ZeroMQ_Poll();
+   Autonomous_MultiSymbolScan();
 }
 //+------------------------------------------------------------------+
 
