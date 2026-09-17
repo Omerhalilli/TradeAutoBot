@@ -3543,7 +3543,7 @@ void RenderHUDDashboard(bool isScreenshotMode = false)
       y += rowHeight;
 
       string autoLine1 = "";
-      double autoMinThreshold = MathMax(6.0, AutonomousMinConfluenceScore);
+      double autoMinThreshold = (AutonomousMinConfluenceScore >= 6.0 && AutonomousMinConfluenceScore <= 10.0 && AutonomousMinConfluenceScore != 6.5) ? AutonomousMinConfluenceScore : 6.0;
       if(g_AutoScanQualifiedCount > 0 && g_AutoScanBestSymbol != "")
       {
          autoLine1 = StringFormat("CAN TRADE: %s %s (%d/10) [Score >= %.1f]",
@@ -6656,7 +6656,7 @@ void PerformManualPortfolioScan()
    int totalInList = ArraySize(symList);
    int totalScanned = 0;
    int qualifiedCount = 0;
-   double minReq = (AutonomousMinConfluenceScore >= 6.0 && AutonomousMinConfluenceScore <= 10.0) ? AutonomousMinConfluenceScore : 6.0;
+   double minReq = (AutonomousMinConfluenceScore >= 6.0 && AutonomousMinConfluenceScore <= 10.0 && AutonomousMinConfluenceScore != 6.5) ? AutonomousMinConfluenceScore : 6.0;
    double minAnalysis = minReq * 10.0;
    string bestSymbol = "";
    string bestCmd = "HOLD";
