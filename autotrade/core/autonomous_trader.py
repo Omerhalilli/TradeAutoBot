@@ -747,6 +747,20 @@ class AutonomousMultiSymbolTrader:
         except Exception:
             pass
 
+        # Rule 11: Institutional Smart Money Equilibrium Gate
+        # Strictly prohibits buying in Premium (> 50%) or selling in Discount (< 50%)
+        if "dealing_range_pct" in item and item["dealing_range_pct"] is not None:
+            try:
+                dr_pct = float(item["dealing_range_pct"])
+                if sig == "BUY" and dr_pct > 0.50:
+                    logger.debug(f"AutonomousTrader: Rejecting {raw_sym} BUY in Premium zone ({dr_pct*100:.1f}% > 50.0%).")
+                    return False
+                if sig == "SELL" and dr_pct < 0.50:
+                    logger.debug(f"AutonomousTrader: Rejecting {raw_sym} SELL in Discount zone ({dr_pct*100:.1f}% < 50.0%).")
+                    return False
+            except (ValueError, TypeError):
+                pass
+
         return True
 
     async def execute_autonomous_cycle(self, bot=None) -> List[Dict[str, Any]]:
@@ -875,6 +889,9 @@ class AutonomousMultiSymbolTrader:
                 tp_p = float(it.get("tp_pips", 60.0))
                 rr = float(it.get("rr_ratio", (tp_p / sl_p) if sl_p > 0 else 1.0))
 
+                has_sweep = 1.0 if it.get("liquidity_sweep") is True else 0.0
+                has_fvg = 1.0 if it.get("fvg") is True else 0.0
+
                 raw_sym = str(it.get("symbol", "")).strip().upper()
                 canon_sym = canonical_symbol(raw_sym)
                 pip_unit = 0.01 if ("JPY" in canon_sym or "XAU" in canon_sym or "OIL" in canon_sym) else 0.0001
@@ -887,7 +904,7 @@ class AutonomousMultiSymbolTrader:
                 spread_cost = spread_points * point_unit
                 spread_to_atr = (spread_cost / atr_val) if atr_val > 0.0 else (spread_points / 50.0)
 
-                return (-sc, -analysis_sc, spread_to_atr, -rr)
+                return (-has_sweep, -has_fvg, -sc, -analysis_sc, spread_to_atr, -rr)
 
             candidates.sort(key=_safety_sort_key)
 
@@ -1074,6 +1091,43 @@ class AutonomousMultiSymbolTrader:
                     logger.info(f"AutonomousTrader: Pre-flight risk veto for {raw_sym}: {risk_res.reason}")
                     continue
                 lots = risk_res.adjusted_lots
+
+                # Institutional Quantitative & SMC Confluence Telemetry via QuantitativeConfluenceEngine
+                try:
+                    import numpy as np
+                    rates_res = await zmq_client.get_rates_async(raw_sym, timeframe=self.timeframe, count=60)
+                    if rates_res.get("status") == "ok" and rates_res.get("rates"):
+                        r_list = rates_res.get("rates", [])
+                        if len(r_list) >= 30:
+                            c_arr = np.array([float(r["close"]) for r in r_list], dtype=np.float64)
+                            h_arr = np.array([float(r["high"]) for r in r_list], dtype=np.float64)
+                            l_arr = np.array([float(r["low"]) for r in r_list], dtype=np.float64)
+                            o_arr = np.array([float(r["open"]) for r in r_list], dtype=np.float64)
+                            v_arr = np.array([float(r.get("volume", 1.0)) for r in r_list], dtype=np.float64)
+                            ohlcv_dict = {"open": o_arr, "high": h_arr, "low": l_arr, "close": c_arr, "volume": v_arr}
+
+                            from autotrade.core.pipeline import confluence_engine
+                            quant_eval = confluence_engine.evaluate_symbol(
+                                symbol=raw_sym,
+                                ohlcv=ohlcv_dict,
+                                spread_points=spread,
+                                bid=entry_ref,
+                                ask=entry_ref,
+                                account_equity=acc_equity
+                            )
+                            logger.info(
+                                f"🔬 [INSTITUTIONAL QUANT TELEMETRY] {raw_sym} | Regime: {quant_eval.tier1_regime} "
+                                f"(Hurst={quant_eval.hurst_exponent:.2f}, KER={quant_eval.ker_ratio:.2f}) | "
+                                f"Dealing Range: {quant_eval.dealing_range_pct*100:.1f}% | "
+                                f"In OTE/FVG: {quant_eval.in_ote_or_fvg} | Sweep: {quant_eval.liquidity_swept}"
+                            )
+                            if quant_eval.tier1_regime == "CHOPPY_NOISE" and quant_eval.hurst_exponent < 0.42:
+                                logger.info(
+                                    f"AutonomousTrader: Quant Veto for {raw_sym} - Hostile choppy noise regime (Hurst {quant_eval.hurst_exponent:.2f} < 0.42)."
+                                )
+                                continue
+                except Exception as ex:
+                    logger.debug(f"AutonomousTrader: Quant telemetry note: {ex}")
 
                 # Execute order directly on MetaTrader
                 logger.info(

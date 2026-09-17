@@ -2372,6 +2372,9 @@ string Zmq_HandleScanSymbols(const string reqJson)
       json += "\"valid\":" + (sig.valid ? "true" : "false") + ",";
       json += "\"veto_reason\":\"" + Zmq_JsonEscape(sig.vetoReason) + "\",";
       json += "\"proposed_cmd\":" + IntegerToString(sig.proposedCmd) + ",";
+      json += "\"fvg\":" + (sig.hasFVG ? "true" : "false") + ",";
+      json += "\"liquidity_sweep\":" + (sig.hasLiquiditySweep ? "true" : "false") + ",";
+      json += "\"dealing_range_pct\":" + DoubleToString(sig.dealingRangePct, 2) + ",";
       json += "\"bar_time\":" + IntegerToString((long)iTime(sym, tf, 0));
       json += "}";
       validCount++;

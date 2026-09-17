@@ -50,6 +50,7 @@ class TestScalperMicroEngine(unittest.TestCase):
         self.np = np
         from autotrade.core.pipeline import confluence_engine
         self.engine = confluence_engine
+        self.engine._rolling_spreads.clear()
 
     def _generate_scalper_bullish_ohlcv(self, n=50):
         np = self.np

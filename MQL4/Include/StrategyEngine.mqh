@@ -58,7 +58,108 @@ struct StrategySignal
    double mtfSellPts;
    int    proposedCmd;       // Proposed direction before safety gates: OP_BUY, OP_SELL, or -1
    string vetoReason;        // Detailed reason if vetoed, or 'ALL GATES PASSED'
+   bool   hasFVG;            // Fair Value Gap detected
+   bool   hasLiquiditySweep; // Institutional liquidity sweep (stop hunt) detected
+   double dealingRangePct;   // Relative position in 50-bar dealing range (0.0 to 1.0)
 };
+
+//+------------------------------------------------------------------+
+//| Smart Money Concepts (SMC) & Institutional Liquidity Detection   |
+//+------------------------------------------------------------------+
+void DetectInstitutionalSMC(string sym, ENUM_TIMEFRAMES tf,
+                            bool &hasBullishFVG, bool &hasBearishFVG,
+                            bool &hasBullishSweep, bool &hasBearishSweep,
+                            double &dealingRangePct,
+                            double &smcBuyPts, double &smcSellPts)
+{
+   hasBullishFVG   = false;
+   hasBearishFVG   = false;
+   hasBullishSweep = false;
+   hasBearishSweep = false;
+   dealingRangePct = 0.50;
+   smcBuyPts       = 0.0;
+   smcSellPts      = 0.0;
+
+   int barsCount = iBars(sym, tf);
+   if(barsCount < 55) return;
+
+   int highBar = iHighest(sym, tf, MODE_HIGH, 50, 1);
+   int lowBar  = iLowest(sym,  tf, MODE_LOW,  50, 1);
+   double swingHigh = (highBar != -1) ? iHigh(sym, tf, highBar) : iClose(sym, tf, 1);
+   double swingLow  = (lowBar  != -1) ? iLow(sym,  tf, lowBar)  : iClose(sym, tf, 1);
+   double range = swingHigh - swingLow;
+   double close1 = iClose(sym, tf, 1);
+
+   if(range > 0.0)
+   {
+      dealingRangePct = (close1 - swingLow) / range;
+   }
+
+   // 1. Fair Value Gap (FVG) 3-bar imbalance detection in last 5 bars
+   for(int k = 1; k <= 4; k++)
+   {
+      double h_k2 = iHigh(sym, tf, k + 2);
+      double l_k  = iLow(sym, tf, k);
+      if(l_k > h_k2)
+      {
+         // Bullish FVG imbalance: Bar k+2 high < Bar k low
+         if(close1 >= h_k2 && close1 <= (l_k + (range * 0.05)))
+         {
+            hasBullishFVG = true;
+            smcBuyPts += 3.0;
+            break;
+         }
+      }
+
+      double l_k2 = iLow(sym, tf, k + 2);
+      double h_k  = iHigh(sym, tf, k);
+      if(h_k < l_k2)
+      {
+         // Bearish FVG imbalance: Bar k+2 low > Bar k high
+         if(close1 <= l_k2 && close1 >= (h_k - (range * 0.05)))
+         {
+            hasBearishFVG = true;
+            smcSellPts += 3.0;
+            break;
+         }
+      }
+   }
+
+   // 2. Liquidity Sweep (Stop Hunt) Detection in last 3 bars
+   double pt = MarketInfo(sym, MODE_POINT);
+   if(pt <= 0.0) pt = 0.0001;
+
+   for(int s = 1; s <= 3; s++)
+   {
+      double sHigh  = iHigh(sym, tf, s);
+      double sLow   = iLow(sym, tf, s);
+      double sClose = iClose(sym, tf, s);
+      double sOpen  = iOpen(sym, tf, s);
+      double body   = MathAbs(sClose - sOpen);
+      double lowerWick = MathMin(sClose, sOpen) - sLow;
+      double upperWick = sHigh - MathMax(sClose, sOpen);
+
+      // Bullish liquidity sweep: pierced swing low, but closed above with long lower wick
+      if(sLow <= swingLow && sClose > swingLow && lowerWick >= (1.5 * MathMax(body, pt)))
+      {
+         hasBullishSweep = true;
+         smcBuyPts += 4.0;
+         break;
+      }
+
+      // Bearish liquidity sweep: pierced swing high, but closed below with long upper wick
+      if(sHigh >= swingHigh && sClose < swingHigh && upperWick >= (1.5 * MathMax(body, pt)))
+      {
+         hasBearishSweep = true;
+         smcSellPts += 4.0;
+         break;
+      }
+   }
+
+   // 3. Equilibrium Bonus
+   if(dealingRangePct <= 0.45) smcBuyPts += 2.0;
+   if(dealingRangePct >= 0.55) smcSellPts += 2.0;
+}
 
 //+------------------------------------------------------------------+
 //| Candlestick Pattern Recognition Helper                           |
@@ -265,6 +366,9 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    sig.mtfSellPts    = 0.0;
    sig.proposedCmd   = -1;
    sig.vetoReason    = "Pending evaluation";
+   sig.hasFVG        = false;
+   sig.hasLiquiditySweep = false;
+   sig.dealingRangePct   = 0.50;
 
    if(iBars(sym, tf) < 205)
    {
@@ -470,7 +574,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    if(volSellPts > 15.0) volSellPts = 15.0;
 
    // =================================================================
-   // 4. KEY SUPPORT / RESISTANCE & DAILY PIVOTS (0 - 15 points)
+   // 4. KEY S/R, DAILY PIVOTS & INSTITUTIONAL SMC (0 - 15 points)
    // =================================================================
    // Swing High/Low lookback (50 bars)
    int highBar = iHighest(sym, tf, MODE_HIGH, 50, 1);
@@ -481,11 +585,11 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    double proximityDist = (atr > 0.0) ? (atr * 1.2) : (pipPt * 20.0);
    if(MathAbs(close1 - swingLow) <= proximityDist && close1 > swingLow)
    {
-      srBuyPts += 7.0; // Rebound from swing support
+      srBuyPts += 4.0; // Rebound from swing support
    }
    if(MathAbs(close1 - swingHigh) <= proximityDist && close1 < swingHigh)
    {
-      srSellPts += 7.0; // Rebound from swing resistance
+      srSellPts += 4.0; // Rebound from swing resistance
    }
 
    // Daily Pivot Points
@@ -498,14 +602,27 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       double pivotS1 = (2.0 * pivotP) - dHigh;
       double pivotR1 = (2.0 * pivotP) - dLow;
 
-      if(close1 > pivotP && MathAbs(close1 - pivotP) <= proximityDist) srBuyPts += 8.0;
-      else if(close1 > pivotS1 && MathAbs(close1 - pivotS1) <= proximityDist) srBuyPts += 8.0;
+      if(close1 > pivotP && MathAbs(close1 - pivotP) <= proximityDist) srBuyPts += 4.0;
+      else if(close1 > pivotS1 && MathAbs(close1 - pivotS1) <= proximityDist) srBuyPts += 4.0;
 
-      if(close1 < pivotP && MathAbs(close1 - pivotP) <= proximityDist) srSellPts += 8.0;
-      else if(close1 < pivotR1 && MathAbs(close1 - pivotR1) <= proximityDist) srSellPts += 8.0;
+      if(close1 < pivotP && MathAbs(close1 - pivotP) <= proximityDist) srSellPts += 4.0;
+      else if(close1 < pivotR1 && MathAbs(close1 - pivotR1) <= proximityDist) srSellPts += 4.0;
    }
+
+   // Smart Money Concepts (SMC): Liquidity Sweeps, Fair Value Gaps & Equilibrium
+   bool hasBullishFVG = false, hasBearishFVG = false;
+   bool hasBullishSweep = false, hasBearishSweep = false;
+   double dealingRangePct = 0.50;
+   double smcBuyPts = 0.0, smcSellPts = 0.0;
+   DetectInstitutionalSMC(sym, tf, hasBullishFVG, hasBearishFVG, hasBullishSweep, hasBearishSweep, dealingRangePct, smcBuyPts, smcSellPts);
+
+   srBuyPts  += smcBuyPts;
+   srSellPts += smcSellPts;
+
    if(srBuyPts > 15.0)  srBuyPts = 15.0;
    if(srSellPts > 15.0) srSellPts = 15.0;
+
+   sig.dealingRangePct = NormalizeDouble(dealingRangePct, 2);
 
    // =================================================================
    // 5. PRICE ACTION, CANDLESTICK PATTERNS & VOLUME / VSA (0 - 10 points)
@@ -736,6 +853,13 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    // Strictly prohibits buying into swing resistance, upper Bollinger rejection, or bearish reversal patterns
    if(sig.cmd == OP_SELL)
    {
+      if(dealingRangePct < 0.50)
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.vetoReason = StringFormat("Selling in Discount zone (Dealing range %.1f%% < 50.0%%)", dealingRangePct * 100.0);
+         return sig; // Veto: Never sell in Discount
+      }
       double suppMargin = (atr > 0.0) ? (atr * 0.75) : (pipPt * 15.0);
       if(close1 <= swingLow || MathAbs(close1 - swingLow) <= suppMargin)
       {
@@ -768,6 +892,13 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    }
    else if(sig.cmd == OP_BUY)
    {
+      if(dealingRangePct > 0.50)
+      {
+         sig.cmd = -1;
+         sig.valid = false;
+         sig.vetoReason = StringFormat("Buying in Premium zone (Dealing range %.1f%% > 50.0%%)", dealingRangePct * 100.0);
+         return sig; // Veto: Never buy in Premium
+      }
       double resMargin = (atr > 0.0) ? (atr * 0.75) : (pipPt * 15.0);
       if(close1 >= swingHigh || MathAbs(close1 - swingHigh) <= resMargin)
       {
@@ -910,6 +1041,10 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
       sig.vetoReason = "Invalid protective stop levels calculated";
       return sig;
    }
+
+   // Set institutional SMC flags for telemetry and downstream validation
+   sig.hasFVG = (sig.cmd == OP_BUY ? hasBullishFVG : (sig.cmd == OP_SELL ? hasBearishFVG : false));
+   sig.hasLiquiditySweep = (sig.cmd == OP_BUY ? hasBullishSweep : (sig.cmd == OP_SELL ? hasBearishSweep : false));
 
    sig.valid = true;
    sig.vetoReason = "ALL GATES PASSED (Trade Qualified)";
