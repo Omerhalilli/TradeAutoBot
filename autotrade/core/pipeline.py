@@ -769,12 +769,34 @@ class QuantitativeConfluenceEngine:
             return res
 
         # ----------------------------------------------------------------------
-        # DYNAMIC SELF-TUNING INDICATOR PERIODS (KER ADAPTATION)
+        # DYNAMIC SELF-TUNING INDICATOR PERIODS (KER & GA WALK-FORWARD CALIBRATION)
         # ----------------------------------------------------------------------
         H = indicators.hurst_exponent(closes, max_lags=20)
         res.hurst_exponent = round(H, 3)
 
-        adaptive_p = indicators.compute_dynamic_kaufman_periods(closes, base_rsi=14, base_fast_ema=20, base_slow_ema=50, ker_period=14)
+        # Query evolved Walk-Forward GA calibration parameters for this symbol
+        base_rsi = 14
+        base_fast_ema = 20
+        base_slow_ema = 50
+        atr_period = 14
+        try:
+            from autotrade.optimizer.parameter_calibrator import parameter_calibrator
+            calib = parameter_calibrator.get_calibrated_params(symbol)
+            if calib:
+                base_rsi = calib.rsi_period
+                base_fast_ema = calib.fast_ema_period
+                base_slow_ema = calib.slow_ema_period
+                atr_period = calib.atr_period
+        except Exception:
+            pass
+
+        adaptive_p = indicators.compute_dynamic_kaufman_periods(
+            closes,
+            base_rsi=base_rsi,
+            base_fast_ema=base_fast_ema,
+            base_slow_ema=base_slow_ema,
+            ker_period=14
+        )
         ker = adaptive_p.ker
         res.ker_ratio = round(ker, 3)
         res.adaptive_rsi_period = adaptive_p.rsi_period
@@ -788,8 +810,8 @@ class QuantitativeConfluenceEngine:
         else:
             res.tier1_regime = "CHOPPY_NOISE"
 
-        # Baseline ATR & Spread-to-ATR
-        atr_arr = indicators.atr(highs, lows, closes, 14)
+        # Baseline ATR & Spread-to-ATR using calibrated ATR lookback
+        atr_arr = indicators.atr(highs, lows, closes, atr_period)
         atr_val = float(atr_arr[-1]) if not np.isnan(atr_arr[-1]) else (0.0020 if "JPY" not in canon else 0.20)
         res.atr_value = atr_val
         atr_pips = (atr_val / pip_unit) if pip_unit > 0 else 20.0
@@ -1068,6 +1090,13 @@ class QuantitativeConfluenceEngine:
         dna_gate_reason = ""
         dna_edge_boost = 0.0
         opt_sl_mult = 2.0
+        try:
+            from autotrade.optimizer.parameter_calibrator import parameter_calibrator
+            calib = parameter_calibrator.get_calibrated_params(symbol)
+            if calib:
+                opt_sl_mult = calib.sl_atr_mult
+        except Exception:
+            pass
         try:
             from autotrade.analytics.historical_profiler import historical_profiler
             dna_passed, dna_gate_reason, dna_edge_boost, opt_sl_mult = historical_profiler.check_empirical_gate(

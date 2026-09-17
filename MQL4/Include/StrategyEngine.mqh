@@ -398,6 +398,9 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    // -----------------------------------------------------------------
    // Core Indicator Calculations on Primary Timeframe (H1)
    // -----------------------------------------------------------------
+   int rsiPeriod = 14;
+   int atrPeriod = 14;
+
    double ema20  = iMA(sym, tf, 20,  0, MODE_EMA, PRICE_CLOSE, 1);
    double ema50  = iMA(sym, tf, 50,  0, MODE_EMA, PRICE_CLOSE, 1);
    double ema200 = iMA(sym, tf, 200, 0, MODE_EMA, PRICE_CLOSE, 1);
@@ -405,7 +408,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    double high1  = iHigh(sym, tf, 1);
    double low1   = iLow(sym, tf, 1);
 
-   double rsi      = iRSI(sym, tf, 14, PRICE_CLOSE, 1);
+   double rsi      = iRSI(sym, tf, rsiPeriod, PRICE_CLOSE, 1);
    double macd     = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 1);
    double macd_sig = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 1);
    double macdPrev = iMACD(sym, tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 2);
@@ -422,7 +425,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
    double bb_low = iBands(sym, tf, 20, 2, 0, PRICE_CLOSE, MODE_LOWER, 1);
    double bb_mid = iBands(sym, tf, 20, 2, 0, PRICE_CLOSE, MODE_MAIN, 1);
 
-   double atr = iATR(sym, tf, 14, 1);
+   double atr = iATR(sym, tf, atrPeriod, 1);
 
    sig.rsi     = NormalizeDouble(rsi, 2);
    sig.macd    = NormalizeDouble(macd, 6);

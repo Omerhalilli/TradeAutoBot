@@ -722,12 +722,19 @@ class AdaptiveLearner:
                 }
                 for k, v in self._mae_stats.items()
             }
+        calib_summary = {}
+        try:
+            from autotrade.optimizer.parameter_calibrator import parameter_calibrator
+            calib_summary = parameter_calibrator.get_all_calibrated_profiles()
+        except Exception:
+            pass
         return {
             "total_trades_learned": len(self.memory.get_all_trades()),
             "active_clusters_count": len(clusters_summary),
             "clusters": clusters_summary,
             "quarantined_assets": quarantine_summary,
-            "mae_adaptations": mae_summary
+            "mae_adaptations": mae_summary,
+            "calibrated_profiles": calib_summary
         }
 
 

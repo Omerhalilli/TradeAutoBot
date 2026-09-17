@@ -260,6 +260,32 @@ class DatabaseEngine:
                 );
             """)
 
+            # 11. Calibrated Symbol Parameters Table (Walk-Forward Genetic Optimization)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS calibrated_symbol_parameters (
+                    symbol TEXT PRIMARY KEY,
+                    timeframe TEXT NOT NULL,
+                    rsi_period INTEGER NOT NULL,
+                    fast_ema_period INTEGER NOT NULL,
+                    slow_ema_period INTEGER NOT NULL,
+                    atr_period INTEGER NOT NULL,
+                    atr_multiplier REAL NOT NULL,
+                    min_score_threshold REAL NOT NULL,
+                    sl_atr_mult REAL NOT NULL,
+                    tp_atr_mult REAL NOT NULL,
+                    wfe_pct REAL NOT NULL,
+                    in_sample_sharpe REAL NOT NULL,
+                    out_of_sample_sharpe REAL NOT NULL,
+                    profit_factor REAL NOT NULL,
+                    win_rate REAL NOT NULL,
+                    sample_bars INTEGER NOT NULL,
+                    is_active INTEGER DEFAULT 1,
+                    last_calibrated_at REAL NOT NULL,
+                    meta_json TEXT
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_calib_sym ON calibrated_symbol_parameters(symbol);")
+
     def execute(self, query: str, params: Union[tuple, dict] = ()) -> sqlite3.Cursor:
         """Synchronously executes a parameterized query."""
         conn = self.get_connection()
@@ -503,6 +529,67 @@ class DatabaseEngine:
         else:
             query = "SELECT * FROM asset_behavioral_dna ORDER BY symbol, setup_type, session;"
             return self.fetch_all(query)
+
+    def upsert_calibrated_params(self, p_dict: Dict[str, Any]) -> None:
+        """Upserts calibrated parameters into calibrated_symbol_parameters table."""
+        query = """
+            INSERT INTO calibrated_symbol_parameters (
+                symbol, timeframe, rsi_period, fast_ema_period, slow_ema_period,
+                atr_period, atr_multiplier, min_score_threshold, sl_atr_mult, tp_atr_mult,
+                wfe_pct, in_sample_sharpe, out_of_sample_sharpe, profit_factor, win_rate,
+                sample_bars, is_active, last_calibrated_at, meta_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                timeframe = excluded.timeframe,
+                rsi_period = excluded.rsi_period,
+                fast_ema_period = excluded.fast_ema_period,
+                slow_ema_period = excluded.slow_ema_period,
+                atr_period = excluded.atr_period,
+                atr_multiplier = excluded.atr_multiplier,
+                min_score_threshold = excluded.min_score_threshold,
+                sl_atr_mult = excluded.sl_atr_mult,
+                tp_atr_mult = excluded.tp_atr_mult,
+                wfe_pct = excluded.wfe_pct,
+                in_sample_sharpe = excluded.in_sample_sharpe,
+                out_of_sample_sharpe = excluded.out_of_sample_sharpe,
+                profit_factor = excluded.profit_factor,
+                win_rate = excluded.win_rate,
+                sample_bars = excluded.sample_bars,
+                is_active = excluded.is_active,
+                last_calibrated_at = excluded.last_calibrated_at,
+                meta_json = excluded.meta_json;
+        """
+        self.execute(query, (
+            p_dict["symbol"].upper(),
+            p_dict.get("timeframe", "H1").upper(),
+            int(p_dict.get("rsi_period", 14)),
+            int(p_dict.get("fast_ema_period", 20)),
+            int(p_dict.get("slow_ema_period", 50)),
+            int(p_dict.get("atr_period", 14)),
+            float(p_dict.get("atr_multiplier", 2.0)),
+            float(p_dict.get("min_score_threshold", 6.0)),
+            float(p_dict.get("sl_atr_mult", 2.0)),
+            float(p_dict.get("tp_atr_mult", 3.0)),
+            float(p_dict.get("wfe_pct", 0.0)),
+            float(p_dict.get("in_sample_sharpe", 0.0)),
+            float(p_dict.get("out_of_sample_sharpe", 0.0)),
+            float(p_dict.get("profit_factor", 1.0)),
+            float(p_dict.get("win_rate", 0.5)),
+            int(p_dict.get("sample_bars", 0)),
+            1 if p_dict.get("is_active", True) else 0,
+            float(p_dict.get("last_calibrated_at", time.time())),
+            str(p_dict.get("meta_json", "{}"))
+        ))
+
+    def fetch_calibrated_params(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Retrieves calibrated parameters for a symbol."""
+        query = "SELECT * FROM calibrated_symbol_parameters WHERE symbol = ? AND is_active = 1;"
+        return self.fetch_one(query, (symbol.upper(),))
+
+    def fetch_all_calibrated_params(self) -> List[Dict[str, Any]]:
+        """Retrieves all active calibrated symbol parameter profiles."""
+        query = "SELECT * FROM calibrated_symbol_parameters WHERE is_active = 1 ORDER BY symbol ASC;"
+        return self.fetch_all(query)
 
     def insert_market_bars(self, symbol: str, timeframe: str, bars: Any) -> int:
         """Batch inserts historical market bars for replay profiling."""

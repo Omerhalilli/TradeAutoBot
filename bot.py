@@ -116,6 +116,39 @@ async def autonomous_trading_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.debug(f"Autonomous trading background job exception: {e}")
 
+async def walk_forward_calibration_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Executes periodic monthly Walk-Forward Genetic Parameter Calibration across the portfolio."""
+    try:
+        from autotrade.optimizer.parameter_calibrator import parameter_calibrator
+        calib_res = await parameter_calibrator.calibrate_portfolio_async(
+            timeframe="H1",
+            count=500,
+            force=False
+        )
+        results = calib_res.get("results", {})
+        if results and ALLOWED_CHAT_IDS:
+            lines = [
+                "🧬 <b>AUTONOMOUS MONTHLY GA CALIBRATION COMPLETE</b>",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                f"Updated <code>{len(results)}</code> symbols with anti-overfitting parameters:\n"
+            ]
+            for sym, p in results.items():
+                lines.append(
+                    f"• <b>{sym}:</b> RSI=<code>{p.get('rsi_period')}</code> | ATR Mult=<code>{p.get('atr_multiplier')}x</code> | "
+                    f"WFE=<code>{p.get('wfe_pct', 0.0):.1f}%</code>"
+                )
+            for cid in ALLOWED_CHAT_IDS:
+                try:
+                    await context.bot.send_message(
+                        chat_id=cid,
+                        text="\n".join(lines),
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.debug(f"Walk-Forward calibration background job note: {e}")
+
 # Cache for debouncing identical outbox alerts: (chat_id, text_sha256) -> dispatch_timestamp
 _recent_outbox_dispatches: dict[tuple[str, str], float] = {}
 _OUTBOX_DEBOUNCE_WINDOW_SEC: float = 10.0
@@ -317,6 +350,8 @@ def create_application():
     app.add_handler(CommandHandler(["symbols", "watchlist"], handlers.cmd_symbols))
     app.add_handler(CommandHandler(["news", "calendar"], handlers.cmd_news))
     app.add_handler(CommandHandler(["mode", "speed"], handlers.cmd_mode))
+    app.add_handler(CommandHandler(["calibrate", "optimize"], handlers.cmd_calibrate))
+    app.add_handler(CommandHandler(["calibrated", "opt_status"], handlers.cmd_calibrated))
 
     # Slash text commands from EA messages: /close_12345, /half_12345, /be_12345, /shot_SYM_TF
     app.add_handler(MessageHandler(filters.Regex(r"^/(close|half|be|shot)_\w+"), handlers.handle_slash_action))
@@ -351,12 +386,13 @@ def create_application():
     # Error Handler
     app.add_error_handler(error_handler)
 
-    # Schedule background news alerts, MT4 outbox poller, and autonomous multi-symbol trading
+    # Schedule background news alerts, MT4 outbox poller, autonomous trading, and Walk-Forward GA calibration
     if app.job_queue:
         app.job_queue.run_repeating(news_alert_job, interval=60, first=10)
         app.job_queue.run_repeating(outbox_alert_job, interval=0.5, first=1, job_kwargs={"max_instances": 2})
         app.job_queue.run_repeating(autonomous_trading_job, interval=5, first=5)
-        logger.info(f"News alert (60s), MT4 outbox (500ms), and autonomous trader (candle-synchronized, 5s boundary poll) background schedulers registered")
+        app.job_queue.run_repeating(walk_forward_calibration_job, interval=21600, first=60)
+        logger.info(f"News alert (60s), MT4 outbox (500ms), autonomous trader (5s), and monthly GA calibrator (6h check) background schedulers registered")
 
     return app
 

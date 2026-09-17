@@ -3132,3 +3132,104 @@ cmd_reset_risk = cmd_reset_safeguards
 cmd_reset_prop = cmd_reset_safeguards
 cmd_order = cmd_trade
 
+
+@restricted
+async def cmd_calibrate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Triggers on-demand Walk-Forward Genetic Parameter Calibration."""
+    from autotrade.optimizer.parameter_calibrator import parameter_calibrator
+    args = context.args or []
+    target_sym = args[0].strip().upper() if args else "ALL"
+
+    wait_msg = await update.message.reply_text(
+        f"🧬 <b>WALK-FORWARD & GENETIC CALIBRATION ENGAGED</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Target:</b> <code>{target_sym}</code>\n"
+        f"• <b>Methodology:</b> Rolling Chronological Folds (70% IS / 30% OOS)\n"
+        f"• <b>Algorithm:</b> Multi-Generation Genetic Algorithm\n"
+        f"• <b>Parameters:</b> RSI Period, Fast/Slow EMA, ATR Mult, SL/TP ATR\n"
+        f"• <b>Safeguard:</b> Walk-Forward Efficiency (WFE ≥ 50%) Anti-Overfitting\n\n"
+        f"<i>⏳ Simulating historical data across CPU threads... Please wait ~10-15s.</i>",
+        parse_mode=ParseMode.HTML
+    )
+
+    try:
+        symbols = None if target_sym == "ALL" else [target_sym]
+        calib_res = await parameter_calibrator.calibrate_portfolio_async(
+            symbols=symbols,
+            timeframe="H1",
+            count=500,
+            force=True
+        )
+
+        results = calib_res.get("results", {})
+        if not results:
+            await wait_msg.edit_text(
+                f"⚠️ <b>Calibration Completed</b>\n"
+                f"No symbols were updated (insufficient historical bars from MT4 or market closed).",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        lines = [
+            "✅ <b>WALK-FORWARD GA CALIBRATION COMPLETE</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ]
+        for sym, p in results.items():
+            wfe = p.get("wfe_pct", 0.0)
+            robust_icon = "🟢" if wfe >= 50.0 else "🟡"
+            lines.append(
+                f"{robust_icon} <b>{sym}</b>\n"
+                f"   • <b>RSI Period:</b> <code>{p.get('rsi_period')}</code> (Base: 14)\n"
+                f"   • <b>ATR Multiplier:</b> <code>{p.get('atr_multiplier')}x</code>\n"
+                f"   • <b>EMA (Fast/Slow):</b> <code>{p.get('fast_ema_period')}/{p.get('slow_ema_period')}</code>\n"
+                f"   • <b>SL / TP Mult:</b> <code>{p.get('sl_atr_mult')}x / {p.get('tp_atr_mult')}x</code>\n"
+                f"   • <b>WFE:</b> <b>{wfe:.1f}%</b> | <b>OOS Sharpe:</b> <code>{p.get('out_of_sample_sharpe'):.2f}</code>\n"
+                f"   • <b>Min Score:</b> <code>{p.get('min_score_threshold')}</code>"
+            )
+
+        lines.append("\n<i>💡 Self-Adaptive Learning: Parameters updated in SQLite & live trading memory.</i>")
+        await wait_msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+    except Exception as ex:
+        logger.error(f"Error in cmd_calibrate: {ex}")
+        await wait_msg.edit_text(f"❌ <b>Calibration Error:</b> <code>{ex}</code>", parse_mode=ParseMode.HTML)
+
+
+@restricted
+async def cmd_calibrated(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays current active calibrated parameters for all symbols."""
+    from autotrade.optimizer.parameter_calibrator import parameter_calibrator
+    profiles = parameter_calibrator.get_all_calibrated_profiles()
+
+    if not profiles:
+        await update.message.reply_text(
+            "ℹ️ <b>No Calibrated Profiles Found</b>\n"
+            "Run /calibrate to trigger the first Walk-Forward Genetic Optimization cycle.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    lines = [
+        "🧬 <b>ACTIVE EVOLVED PARAMETER PROFILES</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"<b>Total Calibrated Assets:</b> <code>{len(profiles)}</code>\n"
+    ]
+
+    for sym, p in sorted(profiles.items()):
+        wfe = p.get("wfe_pct", 0.0)
+        icon = "🟢" if wfe >= 50.0 else "🟡"
+        lines.append(
+            f"{icon} <b>{sym}</b> (H1)\n"
+            f"   RSI: <code>{p.get('rsi_period')}</code> | ATR Mult: <code>{p.get('atr_multiplier')}x</code> | "
+            f"EMA: <code>{p.get('fast_ema_period')}/{p.get('slow_ema_period')}</code>\n"
+            f"   SL/TP: <code>{p.get('sl_atr_mult')}x / {p.get('tp_atr_mult')}x</code> | "
+            f"WFE: <code>{wfe:.1f}%</code> | Sharpe: <code>{p.get('out_of_sample_sharpe'):.2f}</code>"
+        )
+
+    lines.append("\n<i>Run /calibrate to re-optimize with latest 3-month data.</i>")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+cmd_opt_status = cmd_calibrated
+cmd_optimize = cmd_calibrate
+

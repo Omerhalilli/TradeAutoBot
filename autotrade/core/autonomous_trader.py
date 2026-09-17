@@ -633,7 +633,15 @@ class AutonomousMultiSymbolTrader:
                 return False
             return True
 
+        # Rule 1: Minimum Score Threshold (incorporates Walk-Forward GA calibrated threshold per symbol)
         effective_min = max(self.min_score, 6.0)
+        try:
+            from autotrade.optimizer.parameter_calibrator import parameter_calibrator
+            calib_min = parameter_calibrator.get_min_score(raw_sym, default=6.0)
+            effective_min = max(self.min_score, calib_min)
+        except Exception:
+            pass
+
         if sig not in ("BUY", "SELL") or effective_score < effective_min:
             return False
 
