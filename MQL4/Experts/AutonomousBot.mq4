@@ -35,7 +35,7 @@ input string             Sec_PerTradeSafety            = "=== 2. PER-TRADE & SCA
 input double             MinConfluenceScore            = 6.0;               // Minimum Confluence Score to Execute (stands on 6.0 or past 6.0)
 input double             MinRewardToRisk               = 1.5;               // Minimum Reward-to-Risk Ratio (TP >= 1.5 * SL)
 input double             MaxSpreadPoints               = 40.0;              // Maximum Allowed Spread (Points)
-input double             MinATRPips                    = 10.0;              // Minimum ATR in Pips (Filter dead / choppy market)
+input double             MinATRPips                    = 7.0;               // Minimum ATR in Pips (Filter dead / choppy market)
 input double             MaxATRPips                    = 150.0;             // Maximum ATR in Pips (Filter extreme volatility / spikes)
 input int                CooldownMinutes               = 60;                // Per-Symbol Trade Cooldown (Minutes)
 input string             IncludeSymbols                = "";                // Whitelist Symbols (empty = all Market Watch)

@@ -653,7 +653,7 @@ string HandleScreenshot(const string reqJson)
    string telemPoints = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_03_Points", OBJPROP_TEXT) : "";
    if(telemSignal == "")
    {
-      StrategySignal sig = EvaluateSymbolOpportunity(matchedSymbol, (ENUM_TIMEFRAMES)tf, 6, 1.5, 10.0, 150.0);
+      StrategySignal sig = EvaluateSymbolOpportunity(matchedSymbol, (ENUM_TIMEFRAMES)tf, 6, 1.5, 7.0, 150.0);
       int dispScore = sig.score;
       string dispCmd = (sig.buyScore > sig.sellScore) ? "BUY" : ((sig.sellScore > sig.buyScore) ? "SELL" : "FLAT");
       telemSignal = StringFormat("Evaluating: %s %d/10 (%.1f/100) (Need: 6)", dispCmd, dispScore, sig.analysisScore);

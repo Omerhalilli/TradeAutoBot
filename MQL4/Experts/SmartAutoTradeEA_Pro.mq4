@@ -1151,7 +1151,7 @@ void DetectCandlestickPatternsModule(int &outCandleBuy, int &outCandleSell)
 void ExecuteScoringPipeline(int &totalBuyScore, int &totalSellScore)
 {
    int effectiveMinScore = MathMax(6, MinRequiredScore);
-   StrategySignal sig = EvaluateSymbolOpportunity(Symbol(), (ENUM_TIMEFRAMES)Period(), effectiveMinScore, 1.5, 10.0, 150.0);
+   StrategySignal sig = EvaluateSymbolOpportunity(Symbol(), (ENUM_TIMEFRAMES)Period(), effectiveMinScore, 1.5, 7.0, 150.0);
 
    totalBuyScore  = sig.buyScore;
    totalSellScore = sig.sellScore;
@@ -6723,7 +6723,7 @@ void PerformManualPortfolioScan()
 
       totalScanned++;
 
-      StrategySignal sig = EvaluateSymbolOpportunity(sym, scanTF, 6, 1.5, 10.0, 150.0);
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, scanTF, 6, 1.5, 7.0, 150.0);
       if(sig.score <= 0 && sig.analysisScore > 0)
       {
          sig.score = (int)MathFloor(sig.analysisScore / 10.0);

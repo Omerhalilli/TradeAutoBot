@@ -608,7 +608,7 @@ class AutonomousMultiSymbolTrader:
         3. Higher Timeframe Confluence: H4/D1 must not contradict entry.
         4. ADX Trend Strength: must be > 20.0 to reject flat choppy ranges.
         5. Strict RSI Momentum Corridor: [40.0, 55.0] for BUY (veto if > 55), [45.0, 60.0] for SELL (veto if < 45).
-        6. Volatility Gate: ATR >= 10.0 pips to reject illiquid chop.
+        6. Volatility Gate: ATR >= 7.0 pips to reject illiquid chop.
         7. Session & Rollover Liquidity Gates.
         8. Candlestick Pattern Confirmation.
         9. Empirical Asset DNA & Adaptive Quarantine Pre-Flight Veto (Win Rate >= 65%, Expectancy >= 1.2R).
@@ -668,7 +668,7 @@ class AutonomousMultiSymbolTrader:
             except (ValueError, TypeError):
                 return False
 
-        # Rule 6: Volatility Gate (ATR must be >= 10.0 pips; reject low-liquidity dormant markets)
+        # Rule 6: Volatility Gate (ATR must be >= 7.0 pips; reject low-liquidity dormant markets)
         if "atr" in item and item["atr"] is not None:
             try:
                 atr_val = float(item["atr"])
@@ -676,8 +676,8 @@ class AutonomousMultiSymbolTrader:
                 canon_sym = canonical_symbol(raw_sym)
                 pip_unit = 0.01 if ("JPY" in canon_sym or "XAU" in canon_sym or "OIL" in canon_sym) else 0.0001
                 atr_pips = (atr_val / pip_unit) if pip_unit > 0 else 0.0
-                if atr_val > 0.0 and atr_pips < 10.0:
-                    logger.debug(f"AutonomousTrader: Rejecting {raw_sym} - ATR {atr_pips:.1f} pips < 10.0 pips threshold.")
+                if atr_val > 0.0 and atr_pips < 7.0:
+                    logger.debug(f"AutonomousTrader: Rejecting {raw_sym} - ATR {atr_pips:.1f} pips < 7.0 pips threshold.")
                     return False
             except (ValueError, TypeError):
                 return False

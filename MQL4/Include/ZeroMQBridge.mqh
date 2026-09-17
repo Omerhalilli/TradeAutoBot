@@ -850,7 +850,7 @@ string Zmq_HandleOpenOrder(const string reqJson)
       // 2. Institutional Confluence Gate: independently verify score >= 6 and deep technical confluence
       ENUM_TIMEFRAMES evalTF = (ENUM_TIMEFRAMES)Period();
       if(evalTF == PERIOD_CURRENT || evalTF == 0) evalTF = PERIOD_H1;
-      StrategySignal liveSig = EvaluateSymbolOpportunity(sym, evalTF, 6, 1.5, 10.0, 150.0);
+      StrategySignal liveSig = EvaluateSymbolOpportunity(sym, evalTF, 6, 1.5, 7.0, 150.0);
       if(!liveSig.valid || liveSig.cmd != cmd || liveSig.score < 6)
       {
          PrintFormat("[ZeroMQ VETO] 🛑 Autonomous order rejected for %s: Live confluence check failed (Score: %d/10, Valid: %s, Cmd: %d vs Req: %d)",
@@ -1694,7 +1694,7 @@ string Zmq_HandleScreenshot(const string reqJson)
    string telemPoints = hasHud ? ObjectGetString(hudChart, "SmartEA_HUD_03_Points", OBJPROP_TEXT) : "";
    if(telemSignal == "")
    {
-      StrategySignal sig = EvaluateSymbolOpportunity(matchedSymbol, (ENUM_TIMEFRAMES)tf, 6, 1.5, 10.0, 150.0);
+      StrategySignal sig = EvaluateSymbolOpportunity(matchedSymbol, (ENUM_TIMEFRAMES)tf, 6, 1.5, 7.0, 150.0);
       int dispScore = sig.score;
       string dispCmd = (sig.buyScore > sig.sellScore) ? "BUY" : ((sig.sellScore > sig.buyScore) ? "SELL" : "FLAT");
       telemSignal = StringFormat("Evaluating: %s %d/10 (%.1f/100) (Need: 6)", dispCmd, dispScore, sig.analysisScore);
@@ -2280,8 +2280,8 @@ string Zmq_HandleScanSymbols(const string reqJson)
       double spread = Zmq_GetSpreadPoints(sym);
       int dig = (int)MarketInfo(sym, MODE_DIGITS);
       
-      // Comprehensive 0-100 Multi-Indicator Analysis (Strict 10.0 pip ATR volatility gate)
-      StrategySignal sig = EvaluateSymbolOpportunity(sym, tf, 6, 1.5, 10.0, 150.0);
+      // Comprehensive 0-100 Multi-Indicator Analysis (Strict 7.0 pip ATR volatility gate)
+      StrategySignal sig = EvaluateSymbolOpportunity(sym, tf, 6, 1.5, 7.0, 150.0);
       if(sig.score <= 0 && sig.analysisScore > 0)
       {
          sig.score = (int)MathFloor(sig.analysisScore / 10.0);

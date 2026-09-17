@@ -220,7 +220,7 @@ StrategySignal EvaluateSymbolOpportunity(string sym,
                                           ENUM_TIMEFRAMES tf = PERIOD_H1, 
                                           int minConfluenceScore = 6,
                                           double minRewardToRisk = 1.5,
-                                          double minATRPips = 10.0,
+                                          double minATRPips = 7.0,
                                           double maxATRPips = 150.0)
 {
    StrategySignal sig;

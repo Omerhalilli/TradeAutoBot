@@ -926,8 +926,10 @@ class TestAutonomousMultiSymbolTrader(unittest.TestCase):
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "adx": "invalid"}))
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "rsi": "invalid"}))
 
-        # 9. ATR < 10.0 pips rejected
+        # 9. ATR < 7.0 pips rejected, >= 7.0 accepted
         self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "atr": 0.0005, "server_time": "2026.09.08 14:00:00"}))
+        self.assertFalse(self.trader.is_qualified_candidate({**valid_buy, "atr": 0.00065, "server_time": "2026.09.08 14:00:00"}))
+        self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "atr": 0.0008, "server_time": "2026.09.08 14:00:00"}))
         self.assertTrue(self.trader.is_qualified_candidate({**valid_buy, "atr": 0.0025, "server_time": "2026.09.08 14:00:00"}))
 
         # 10. session_active = False rejected
@@ -1546,12 +1548,12 @@ class TestTelegramAutonomousHandlers(unittest.TestCase):
                 "results": [
                     {
                         "symbol": "EURUSD", "score": 9, "analysis_score": 90.0, "signal": "BUY", "trend": "BULLISH",
-                        "spread": 20.0, "atr": 0.0020, "sl_pips": 30.0, "tp_pips": 60.0,
+                        "spread": 20.0, "atr": 0.0020, "sl_pips": 30.0, "tp_pips": 60.0, "ask": 1.1000, "bid": 1.0998,
                         "adx": 25.0, "rsi": 50.0, "htf_trend": "BULLISH"
                     },
                     {
                         "symbol": "XAUUSD", "score": 9, "analysis_score": 90.0, "signal": "BUY", "trend": "BULLISH",
-                        "spread": 30.0, "atr": 15.0, "sl_pips": 150.0, "tp_pips": 300.0,
+                        "spread": 30.0, "atr": 15.0, "sl_pips": 150.0, "tp_pips": 300.0, "ask": 2400.0, "bid": 2399.5,
                         "adx": 25.0, "rsi": 50.0, "htf_trend": "BULLISH"
                     }
                 ]
