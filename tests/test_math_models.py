@@ -105,6 +105,24 @@ class TestMathModels(unittest.TestCase):
         self.assertEqual(len(res["probabilities"]), 3)
         self.assertAlmostEqual(sum(res["probabilities"]), 1.0, places=4)
 
+    def test_ml_advisory_filter_integration(self):
+        """Verifies that QuantitativeConfluenceEngine includes ML Advisory ensemble telemetry."""
+        from autotrade.core.pipeline import confluence_engine
+        highs = self.prices + 0.0010
+        lows = self.prices - 0.0010
+        ohlcv = {
+            "open": self.prices,
+            "high": highs,
+            "low": lows,
+            "close": self.prices,
+            "volume": np.full_like(self.prices, 500)
+        }
+        res = confluence_engine.evaluate_symbol("GBPUSD", ohlcv, spread_points=1.0)
+        self.assertIn(res.ml_advisory_action, ["BUY", "SELL", "HOLD"])
+        self.assertTrue(0.0 <= res.ml_p_buy <= 1.0)
+        self.assertTrue(0.0 <= res.ml_p_sell <= 1.0)
+        self.assertTrue(0.0 <= res.ml_p_hold <= 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

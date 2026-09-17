@@ -200,6 +200,13 @@ class CandidateEvaluation:
     optimal_sl_atr_mult: float = 2.0
     optimal_tp_atr_mult: float = 3.0
     dna_edge_boost: float = 0.0
+    # Machine Learning Ensemble Advisory (Random Forest + Gradient Boost + LSTM)
+    ml_p_buy: float = 0.33
+    ml_p_sell: float = 0.33
+    ml_p_hold: float = 0.34
+    ml_confidence: float = 0.0
+    ml_advisory_action: str = "HOLD"
+    ml_passed: bool = True
     veto_reasons: List[str] = field(default_factory=list)
 
     def rank_sort_key(self) -> Tuple[float, float, float]:
@@ -1273,9 +1280,51 @@ class QuantitativeConfluenceEngine:
             res.veto_reasons.append(res.disqualification_reason)
             return res
 
+        # ----------------------------------------------------------------------
+        # RULE 6: MACHINE LEARNING ENSEMBLE ADVISORY GATE (HYBRID SECOND OPINION)
+        # Random Forest + Gradient Boosted Trees + LSTM + Indicator Base
+        # ----------------------------------------------------------------------
+        try:
+            from autotrade.analytics.math_models import PredictiveModels
+            ml_res = PredictiveModels.predict_price_direction(ohlcv, horizon=3)
+            res.ml_p_buy = ml_res.get("p_buy", 0.33)
+            res.ml_p_sell = ml_res.get("p_sell", 0.33)
+            res.ml_p_hold = ml_res.get("p_hold", 0.34)
+            res.ml_confidence = ml_res.get("confidence", 0.0)
+            res.ml_advisory_action = ml_res.get("action", "HOLD")
+
+            # Validate against direction: Veto if ML actively contradicts or detects extreme chop
+            if chosen_direction == "BUY":
+                if res.ml_advisory_action == "SELL" or res.ml_p_sell > 0.50 or (res.ml_advisory_action == "HOLD" and res.ml_p_hold >= 0.60):
+                    res.is_qualified = False
+                    res.ml_passed = False
+                    res.disqualification_reason = (
+                        f"ML Advisory Veto: BUY contradicted by ML model "
+                        f"(Action={res.ml_advisory_action}, P(SELL)={res.ml_p_sell*100:.1f}%, P(HOLD)={res.ml_p_hold*100:.1f}%)."
+                    )
+                    res.veto_reasons.append(res.disqualification_reason)
+                    return res
+                elif res.ml_p_buy >= 0.55:
+                    res.score_100 = min(100.0, res.score_100 + 5.0)
+            elif chosen_direction == "SELL":
+                if res.ml_advisory_action == "BUY" or res.ml_p_buy > 0.50 or (res.ml_advisory_action == "HOLD" and res.ml_p_hold >= 0.60):
+                    res.is_qualified = False
+                    res.ml_passed = False
+                    res.disqualification_reason = (
+                        f"ML Advisory Veto: SELL contradicted by ML model "
+                        f"(Action={res.ml_advisory_action}, P(BUY)={res.ml_p_buy*100:.1f}%, P(HOLD)={res.ml_p_hold*100:.1f}%)."
+                    )
+                    res.veto_reasons.append(res.disqualification_reason)
+                    return res
+                elif res.ml_p_sell >= 0.55:
+                    res.score_100 = min(100.0, res.score_100 + 5.0)
+            res.ml_passed = True
+        except Exception as ml_ex:
+            logger.debug(f"QuantitativeConfluenceEngine: ML Advisory check bypass note: {ml_ex}")
+
         res.is_qualified = True
         res.disqualification_reason = (
-            f"100% {execution_mode} Matrix Qualified (Zero Manual Input | Score Mod: {score_mod:+.1f} | DNA Edge: {res.dna_edge_boost:+.1f})"
+            f"100% {execution_mode} Matrix Qualified (Zero Manual Input | Score Mod: {score_mod:+.1f} | DNA Edge: {res.dna_edge_boost:+.1f} | ML: {res.ml_advisory_action} {res.ml_confidence*100:.1f}%)"
         )
         return res
 

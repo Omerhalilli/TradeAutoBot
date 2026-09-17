@@ -1134,6 +1134,34 @@ class AutonomousMultiSymbolTrader:
                                     f"AutonomousTrader: Quant Veto for {raw_sym} - Hostile choppy noise regime (Hurst {quant_eval.hurst_exponent:.2f} < 0.42)."
                                 )
                                 continue
+
+                            # Rule 12: Machine Learning Advisory Ensemble Gate (Second Opinion Confirmation)
+                            logger.info(
+                                f"🤖 [ML ADVISORY ENSEMBLE] {raw_sym} | Signal: {signal} | "
+                                f"P(BUY)={quant_eval.ml_p_buy*100:.1f}%, P(SELL)={quant_eval.ml_p_sell*100:.1f}%, "
+                                f"P(HOLD)={quant_eval.ml_p_hold*100:.1f}% | Action: {quant_eval.ml_advisory_action} "
+                                f"(Confidence: {quant_eval.ml_confidence*100:.1f}%)"
+                            )
+                            # Strictly veto if ML actively contradicts proposed trade (e.g. BUY while ML says SELL)
+                            # or if ML detects extreme uncertainty / hostile chop (HOLD with high confidence >= 60%).
+                            if signal == "BUY" and (quant_eval.ml_advisory_action == "SELL" or quant_eval.ml_p_sell > 0.50):
+                                logger.info(
+                                    f"AutonomousTrader: 🛑 ML Advisory Veto for {raw_sym} BUY - "
+                                    f"Contradicted by ML model (Action={quant_eval.ml_advisory_action}, P(SELL)={quant_eval.ml_p_sell*100:.1f}%)."
+                                )
+                                continue
+                            if signal == "SELL" and (quant_eval.ml_advisory_action == "BUY" or quant_eval.ml_p_buy > 0.50):
+                                logger.info(
+                                    f"AutonomousTrader: 🛑 ML Advisory Veto for {raw_sym} SELL - "
+                                    f"Contradicted by ML model (Action={quant_eval.ml_advisory_action}, P(BUY)={quant_eval.ml_p_buy*100:.1f}%)."
+                                )
+                                continue
+                            if quant_eval.ml_advisory_action == "HOLD" and quant_eval.ml_p_hold >= 0.60:
+                                logger.info(
+                                    f"AutonomousTrader: 🛑 ML Advisory Veto for {raw_sym} {signal} - "
+                                    f"ML detects extreme chop / uncertainty (P(HOLD)={quant_eval.ml_p_hold*100:.1f}% >= 60.0%)."
+                                )
+                                continue
                 except Exception as ex:
                     logger.debug(f"AutonomousTrader: Quant telemetry note: {ex}")
 
